@@ -211,68 +211,39 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(msg)
         return 1
 
-    # Try to connect to store and query
     try:
-        from ftmon import store
-    except ImportError:
-        msg = "no data - is the daemon running? (ftmon daemon)"
-        if args.json:
-            print(json.dumps({"status": "unavailable", "message": msg}))
-        else:
-            print(msg)
-        return 2
-
-    try:
-        db = store.db.connect(paths.db_file, readonly=True)
-
-        # Lazy-import clock for age computation
+        # Submodule imports, lazily: `ftmon.store` the package deliberately
+        # re-exports nothing (DESIGN section 1 layering keeps import cost at
+        # the composition points).
         from ftmon.clock import SystemClock
+        from ftmon.store.db import connect
+        from ftmon.store.query import Query
 
-        clock = SystemClock()
-        now = clock.now()
-
-        # Try to query incidents (query module added in later WP)
-        open_count = 0
-        max_severity = -1
+        now = SystemClock().now()
+        conn = connect(paths.db_file, readonly=True)
         try:
-            from ftmon import store as _store_module
-            if hasattr(_store_module, 'query'):
-                query = _store_module.query.Query(db)
-                incidents = query.incidents(state="open")
-                open_count = len(incidents)
-                max_severity = max(
-                    (i.severity for i in incidents), default=-1
-                ) if incidents else -1
-        except (ImportError, AttributeError):
-            pass  # query module not available yet
+            query = Query(conn)
+            info = query.status(now=now)
+            incidents = query.incidents(state="open")
+            max_severity = max((row["severity"] for row in incidents), default=-1)
+        finally:
+            conn.close()
 
-        # Get db size
-        db_size_mb = paths.db_file.stat().st_size / (1024 * 1024)
-        last_tick_ts = now  # placeholder; will be from db in M2
-
-        # Determine exit code based on max severity
+        # CL-04 exit codes: 0 all clear, 1 warnings-and-below, 2 errors+.
         if max_severity < 0:
             exit_code = 0
-        elif max_severity <= 2:  # notice/warning
+        elif max_severity <= 2:
             exit_code = 1
-        else:  # error/critical
+        else:
             exit_code = 2
 
+        age = info.get("last_tick_age_s")
         if args.json:
-            output = {
-                "status": "ok",
-                "last_tick_age_s": now - last_tick_ts,
-                "db_size_mb": db_size_mb,
-                "open_incidents": open_count,
-                "max_severity": max_severity if max_severity >= 0 else None,
-            }
-            print(json.dumps(output))
+            print(json.dumps({"status": "ok", "max_severity": max_severity, **info}))
         else:
-            print(f"Last tick: {now - last_tick_ts:.0f}s ago")
-            print(f"Database: {db_size_mb:.1f} MB")
-            print(f"Open incidents: {open_count}")
-
-        db.close()
+            print(f"Last tick: {age:.0f}s ago" if age is not None else "Last tick: never")
+            print(f"Database: {info['db_bytes'] / 2**20:.1f} MB")
+            print(f"Open incidents: {info['open_incidents']}")
         return exit_code
 
     except Exception as e:
@@ -342,9 +313,15 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # daemon
-    subparsers.add_parser(
+    daemon_parser = subparsers.add_parser(
         "daemon",
         help="Run the daemon (main monitoring process)"
+    )
+    daemon_parser.add_argument(
+        "--clock",
+        choices=["system", "controlled"],
+        default="system",
+        help="controlled = test-harness clock via FTMON_CLOCK_SOCK (TS-05)",
     )
 
     # mcp
@@ -451,9 +428,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "status":
         return cmd_status(args)
     elif args.command == "daemon":
-        print("daemon: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        # Imported lazily: the daemon pulls in psutil/sqlite machinery that
+        # a `ftmon version` in a broken environment should not need.
+        from ftmon.daemon import run as daemon_run
+
+        return daemon_run(args)
     elif args.command == "mcp":
         print("mcp: not implemented yet (arrives in a later milestone)",
               file=sys.stderr)

@@ -272,10 +272,12 @@ class TestStatus:
 class TestNotImplemented:
     """[CL-01] Stub subcommands return 2."""
 
+    # NOTE: "daemon" left this list when it became real (M1/WP6); its core is
+    # tested in test_engine.py with a FakeClock - invoking it here would
+    # start the actual scheduler loop and hang the suite.
     @pytest.mark.parametrize(
         "cmd",
         [
-            "daemon",
             "mcp",
             "web",
             "top",
