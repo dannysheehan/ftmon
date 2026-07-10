@@ -504,6 +504,8 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **DO-01** `docs/definitions.md`: complete monitor-definition reference (schema, every function with examples, the EX-06 truth table, cookbook: "watch this log pattern", "alert when X grows"). Written to be pasted into an AI context and exposed as the MCP resource (MC-05) — the primary consumer is `define_monitor` authors, human or model.
 - **DO-02** `docs/install.md`: uv install, `ftmon init`, systemd unit, MCP client registration snippet (Claude Code/Desktop), web UI.
 - **DO-03** Man-page-style `--help` for every CLI subcommand.
+- **DO-04** `docs/manual.md`: the user manual — installation, concepts (monitors, rules, incidents, baselines, episodes), daily use (CLI, web UI, notifications), tuning thresholds, writing definitions (pointer to DO-01), AI/MCP setup, troubleshooting (`ftmon doctor`, config errors, budget breaches). Grows one chapter per milestone; a milestone's user-visible feature is not done until its manual chapter exists.
+- **DO-05** Code documentation follows `CONTRIBUTING.md`: module/function docstrings record rationale and cite requirement IDs; comments explain *why* (constraints, trade-offs), never mechanics; test docstrings carry bracketed requirement tags (feeds TS-01).
 
 ---
 
