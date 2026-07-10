@@ -20,18 +20,26 @@ from dataclasses import dataclass, field
 from ftmon import definitions
 from ftmon.clock import Clock, ControlledClock, SystemClock
 from ftmon.definitions.loader import MonitorDef
-from ftmon.engine.pipeline import Pipeline
+from ftmon.engine import incidents as inc
+from ftmon.engine.effects import EffectExecutor
+from ftmon.engine.pipeline import EvalOutcome, Pipeline
 from ftmon.engine.rings import RingStore
 from ftmon.engine.scheduler import DueTable, Scheduler
+from ftmon.model import GroupState, IncidentCore, RungState
+from ftmon.notify import FileNotifier
+from ftmon.notify.base import Notifier
 from ftmon.paths import Paths, get_paths
 from ftmon.selfmon import SelfSampler, SelfStats
 from ftmon.sources.disk import DiskSampler
 from ftmon.sources.process import ProcessSampler
 from ftmon.sources.system import SystemSampler
 from ftmon.store import db as store_db
+from ftmon.store.outbox import Outbox
 from ftmon.store.writer import TickWriter
 
 _RESCAN_EVERY_S = 30.0  # PM-04
+
+IncidentKey = tuple[str, str, str]  # (monitor, entity_id, group)
 
 
 @dataclass
@@ -43,6 +51,7 @@ class DaemonCore:
     paths: Paths
     clock: Clock
     monitors: dict[str, MonitorDef] = field(default_factory=dict)
+    notifiers: list[Notifier] | None = None
     stop: bool = False
 
     def __post_init__(self) -> None:
@@ -60,8 +69,21 @@ class DaemonCore:
         }
         self.pipeline = Pipeline(self.samplers, self.rings, self.stats.count)
         self.due = DueTable()
+        # Incident machinery (M2): pure engine + executor + outbox delivery.
+        # The file notifier is unconditional (NO-02: it is the audit trail);
+        # production run() appends the desktop channel.
+        self.executor = EffectExecutor(self.writer)
+        self.outbox = Outbox(
+            self.conn,
+            self.notifiers if self.notifiers is not None
+            else [FileNotifier(self.paths.notifications_file)],
+        )
+        self._istates: dict[IncidentKey, GroupState] = {}
+        self._group_rungs: dict[tuple[str, str], tuple[inc.RungConfig, ...]] = {}
         self._last_rescan = -_RESCAN_EVERY_S
         self._load_definitions(initial=True)
+        self._rebuild_incidents()
+        self.outbox.recover(self.clock.now())  # NO-04 startup pass
 
     def _load_definitions(self, initial: bool = False) -> None:
         """PM-04: apply adds/changes/removes; an invalid file keeps the
@@ -87,18 +109,127 @@ class DaemonCore:
             current = self.monitors.get(mdef.name)
             if current is not None and current.content_hash == mdef.content_hash:
                 continue
+            if current is not None:
+                # MD-06: a changed definition never inherits confirmation
+                # progress or open incidents from its previous self.
+                self._supersede_monitor(mdef.name, now)
             windows: dict[str, float] = {}
             for metric, w in mdef.windows:
                 windows[metric] = max(w, windows.get(metric, 0.0))
             self.rings.configure(mdef.name, mdef.interval_s, windows)
             self.monitors[mdef.name] = mdef
+            self._index_groups(mdef)
             self.due.add(mdef.name, mdef.interval_s, self.clock.monotonic())
             self.writer.record_monitor_load(mdef.name, now, mdef.content_hash,
                                             mdef.normalized_toml)
         for name in [n for n in self.monitors if n not in seen]:
+            self._supersede_monitor(name, now)  # MD-09
             del self.monitors[name]
             self.due.remove(name)
             self.rings.forget_monitor(name)
+
+    def _index_groups(self, mdef: MonitorDef) -> None:
+        """Rung configs per (monitor, group), severity-descending — the
+        order the incident engine's ownership rule depends on (IN-03)."""
+        by_group: dict[str, list[inc.RungConfig]] = {}
+        for rule in mdef.rules:
+            by_group.setdefault(rule.group, []).append(
+                inc.RungConfig(
+                    rule_id=rule.id,
+                    severity=rule.severity,
+                    confirm_cycles=rule.confirm_cycles,
+                    clear_cycles=rule.clear_cycles,
+                    action=rule.action,
+                    notify_recovery=rule.notify_recovery,
+                )
+            )
+        for key in [k for k in self._group_rungs if k[0] == mdef.name]:
+            del self._group_rungs[key]
+        for group, rungs in by_group.items():
+            rungs.sort(key=lambda r: -r.severity)
+            self._group_rungs[(mdef.name, group)] = tuple(rungs)
+
+    def _group_cfg(self, monitor: str, entity_id: str, group: str) -> inc.GroupConfig | None:
+        rungs = self._group_rungs.get((monitor, group))
+        if rungs is None:
+            return None
+        return inc.GroupConfig(monitor=monitor, entity_id=entity_id, group=group, rungs=rungs)
+
+    def _supersede_monitor(self, monitor: str, now: float) -> None:
+        for key in [k for k in self._istates if k[0] == monitor]:
+            cfg = self._group_cfg(*key)
+            if cfg is None:
+                self._istates.pop(key)
+                continue
+            st, effects = inc.clear_superseded(cfg, self._istates[key], now)
+            if effects:
+                st = self.executor.apply(cfg, st, effects, now)
+            self._istates.pop(key)
+
+    def _rebuild_incidents(self) -> None:
+        """Restart continuity (IN-02/DM-14): reload open/acked incidents so
+        backoff schedules survive. The owning rung is marked confirmed —
+        conservative: a genuinely recovered condition still needs its
+        clear_cycles of FALSE to close, but an incident can never evaporate
+        just because the daemon restarted. Confirm counters themselves are
+        memory-only by design (DESIGN D3)."""
+        rows = self.conn.execute(
+            "SELECT * FROM incidents WHERE state IN ('open', 'acked')"
+        ).fetchall()
+        for row in rows:
+            key = (row["monitor"], row["entity_id"], row["grp"])
+            cfg = self._group_cfg(*key)
+            now = self.clock.now()
+            if cfg is None:
+                # Monitor/group no longer exists on disk: MD-09 supersede.
+                self.writer.upsert_incident(
+                    row["id"], row["monitor"], row["grp"], row["entity_id"],
+                    state="cleared", severity=row["severity"],
+                    owning_rule=row["owning_rule"], opened_ts=row["opened_ts"],
+                    last_change_ts=now, cleared_ts=now, clear_reason="superseded",
+                    ack_by=row["ack_by"], ack_ts=row["ack_ts"],
+                    notify_count=row["notify_count"], occurrences=row["occurrences"],
+                    flapping=bool(row["flapping"]),
+                )
+                continue
+            last_notify = self.conn.execute(
+                "SELECT MAX(created_ts) FROM outbox WHERE incident_id = ?", (row["id"],)
+            ).fetchone()[0]
+            rungs = {r.rule_id: RungState() for r in cfg.rungs}
+            owner = next((r for r in cfg.rungs if r.rule_id == row["owning_rule"]),
+                         cfg.rungs[0])
+            rungs[owner.rule_id] = RungState(confirmed=True,
+                                             confirm_count=owner.confirm_cycles)
+            core = IncidentCore(
+                incident_id=row["id"],
+                state=row["state"],
+                severity=row["severity"],
+                owning_rule=owner.rule_id,
+                opened_ts=row["opened_ts"],
+                last_notify_ts=float(last_notify) if last_notify else row["opened_ts"],
+                notify_count=row["notify_count"],
+                backoff_tier=(len(inc.BACKOFF_S) - 1 if row["flapping"]
+                              else min(max(row["notify_count"] - 1, 0),
+                                       len(inc.BACKOFF_S) - 1)),
+                flap_clears=(),
+                occurrences=row["occurrences"],
+            )
+            self._istates[key] = GroupState(rungs=rungs, core=core)
+
+    def _refresh_acks(self) -> None:
+        """Acks land in the DB from CLI/MCP/web (PM-03 small writes); the
+        engine only needs the flag flipped on its in-memory core."""
+        from dataclasses import replace
+
+        acked = {row["id"] for row in self.conn.execute(
+            "SELECT id FROM incidents WHERE state = 'acked'"
+        ).fetchall()}
+        for key, st in self._istates.items():
+            core = st.core
+            if core and core.state == "open" and core.incident_id in acked:
+                self._istates[key] = GroupState(
+                    rungs=st.rungs, core=replace(core, state="acked")
+                )
 
     def on_tick(self, wall: float, mono: float, gap_s: float) -> None:
         started = self.clock.monotonic()
@@ -107,21 +238,56 @@ class DaemonCore:
         if mono - self._last_rescan >= _RESCAN_EVERY_S:
             self._last_rescan = mono
             self._load_definitions()
+            self._refresh_acks()
         cache: dict = {}
+        outcomes: list[EvalOutcome] = []
         for name in self.due.due(mono, lambda _n: self._overrun()):
             mdef = self.monitors.get(name)
             if mdef is None:
                 continue
             # SA-02: sampler budget of 10s inside the 5s-tick world means an
             # overrunning monitor skips slots rather than queueing (SA-01).
-            self.pipeline.run_monitor(mdef, wall, mono + 10.0, self.writer, cache)
+            outcomes.extend(
+                self.pipeline.run_monitor(mdef, wall, mono + 10.0, self.writer, cache)
+            )
+        self._step_incidents(outcomes, wall)
+        for monitor, entity_id in self.pipeline.drain_gone():
+            self._clear_gone(monitor, entity_id, wall)
         for ev in self.pipeline.drain_self_events():
             self.writer.add_event(ev)
         self.stats.ring_mem_bytes = self.rings.mem_bytes()
         self.rings.evict_if_over(self._is_protected, self.stats.count)
         self.writer.set_meta("last_tick_ts", repr(wall))
         self.writer.commit_tick()
+        # NO-04: delivery strictly after the transition committed.
+        self.outbox.flush(wall)
         self.stats.cycle_s = self.clock.monotonic() - started
+
+    def _step_incidents(self, outcomes: list[EvalOutcome], wall: float) -> None:
+        grouped: dict[IncidentKey, dict[str, inc.RungEval]] = {}
+        for o in outcomes:
+            grouped.setdefault((o.monitor, o.entity_id, o.group), {})[o.rule_id] = (
+                inc.RungEval(o.result, o.message)
+            )
+        for key, evals in grouped.items():
+            cfg = self._group_cfg(*key)
+            if cfg is None:
+                continue
+            st = self._istates.get(key) or inc.empty_state(cfg)
+            st, effects = inc.step_group(cfg, st, evals, wall)
+            if effects:
+                st = self.executor.apply(cfg, st, effects, wall)
+            self._istates[key] = st
+
+    def _clear_gone(self, monitor: str, entity_id: str, wall: float) -> None:
+        for key in [k for k in self._istates if k[0] == monitor and k[1] == entity_id]:
+            cfg = self._group_cfg(*key)
+            if cfg is None:
+                continue
+            st, effects = inc.clear_for_entity_gone(cfg, self._istates[key], wall)
+            if effects:
+                st = self.executor.apply(cfg, st, effects, wall)
+            self._istates[key] = st
 
     def _overrun(self) -> None:
         self.stats.tick_overruns += 1
@@ -153,7 +319,15 @@ def run(args) -> int:
     else:
         clock = SystemClock()
 
-    core = DaemonCore(paths=paths, clock=clock)
+    # Production channels (NO-02): audit file always; desktop popups when a
+    # notification daemon is reachable. DaemonCore tests run file-only.
+    from ftmon.notify import DesktopNotifier
+
+    core = DaemonCore(
+        paths=paths,
+        clock=clock,
+        notifiers=[FileNotifier(paths.notifications_file), DesktopNotifier()],
+    )
 
     def _stop(_sig, _frame):
         core.stop = True

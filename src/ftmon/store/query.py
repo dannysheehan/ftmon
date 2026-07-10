@@ -6,6 +6,7 @@ Connections used here should be opened readonly (`db.connect(path, readonly=True
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from dataclasses import dataclass
@@ -225,3 +226,35 @@ class Query:
             "db_bytes": page_count * page_size,
             "open_incidents": open_incidents,
         }
+
+
+class SmallWrites:
+    """Non-daemon write surface (PM-03): short transactions, busy_timeout
+    handles contention with the daemon's tick commit. Kept separate from
+    Query so read-only consumers can stay on read-only connections."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def ack(self, incident_id: int, by: str, ts: float, note: str | None = None) -> bool:
+        """Ack an open incident (IN-02: quiet, not resolved). Returns False
+        if the incident wasn't open (already acked/cleared/unknown)."""
+        cur = self._conn.execute(
+            "UPDATE incidents SET state = 'acked', ack_by = ?, ack_ts = ? "
+            "WHERE id = ? AND state = 'open'",
+            (by, round(ts), incident_id),
+        )
+        if cur.rowcount:
+            seq = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM incident_history "
+                "WHERE incident_id = ?",
+                (incident_id,),
+            ).fetchone()[0]
+            detail = {"by": by} if note is None else {"by": by, "note": note}
+            self._conn.execute(
+                "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
+                "VALUES (?, ?, ?, 'acked', ?)",
+                (incident_id, seq, round(ts), json.dumps(detail)),
+            )
+        self._conn.commit()
+        return bool(cur.rowcount)

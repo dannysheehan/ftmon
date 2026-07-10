@@ -70,6 +70,14 @@ class TickWriter:
         self._pending_cursors: dict[str, tuple[str, int]] = {}
         self._pending_meta: dict[str, str] = {}
         self._pending_monitor_loads: list[tuple[str, int, str, str]] = []
+        # incidents keyed by id so open+update within one tick collapses to
+        # the final row (the state machine may open and escalate same-tick)
+        self._pending_incidents: dict[int, tuple] = {}
+        self._pending_history: list[tuple[int, int, int, str, str]] = []
+        self._pending_outbox: list[tuple[int, int, str, str, int]] = []
+        self._next_incident_id: int | None = None
+        self._next_outbox_id: int | None = None
+        self._history_seq: dict[int, int] = {}
 
     # -- id allocation -----------------------------------------------
 
@@ -158,6 +166,84 @@ class TickWriter:
         """DM-15."""
         self._pending_cursors[source] = (cursor, round(ts))
 
+    # -- incidents / outbox (DM-11..14, NO-04) --------------------------
+
+    def alloc_incident_id(self) -> int:
+        """Ids are allocated in-process (same rationale as series/events):
+        the effect executor needs the id inside the tick, before commit."""
+        if self._next_incident_id is None:
+            (max_id,) = self._conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM incidents"
+            ).fetchone()
+            self._next_incident_id = max_id + 1
+        new_id = self._next_incident_id
+        self._next_incident_id += 1
+        return new_id
+
+    def upsert_incident(
+        self,
+        incident_id: int,
+        monitor: str,
+        group: str,
+        entity_id: str,
+        *,
+        state: str,
+        severity: int,
+        owning_rule: str,
+        opened_ts: float,
+        last_change_ts: float,
+        cleared_ts: float | None,
+        clear_reason: str | None,
+        ack_by: str | None,
+        ack_ts: float | None,
+        notify_count: int,
+        occurrences: int,
+        flapping: bool,
+    ) -> None:
+        """Last write per (id) in a tick wins — see _pending_incidents."""
+        self._pending_incidents[incident_id] = (
+            incident_id, monitor, group, entity_id, state, severity, owning_rule,
+            round(opened_ts), round(last_change_ts),
+            round(cleared_ts) if cleared_ts is not None else None,
+            clear_reason, ack_by,
+            round(ack_ts) if ack_ts is not None else None,
+            notify_count, occurrences, int(flapping),
+        )
+
+    def add_incident_history(self, incident_id: int, ts: float, kind: str,
+                             detail: Mapping) -> None:
+        """DM-12; the DM-13 cap (500 entries, oldest summarized) is enforced
+        by retention, not per-write."""
+        seq = self._history_seq.get(incident_id)
+        if seq is None:
+            (max_seq,) = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM incident_history WHERE incident_id=?",
+                (incident_id,),
+            ).fetchone()
+            seq = max_seq
+        seq += 1
+        self._history_seq[incident_id] = seq
+        self._pending_history.append(
+            (incident_id, seq, round(ts), kind,
+             json.dumps(dict(detail), ensure_ascii=False, sort_keys=True))
+        )
+
+    def add_outbox(self, incident_id: int, kind: str, body: Mapping, created_ts: float) -> int:
+        """NO-04: committed in the same transaction as the incident
+        transition that caused it; delivery happens post-commit."""
+        if self._next_outbox_id is None:
+            (max_id,) = self._conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM outbox"
+            ).fetchone()
+            self._next_outbox_id = max_id + 1
+        new_id = self._next_outbox_id
+        self._next_outbox_id += 1
+        self._pending_outbox.append(
+            (new_id, incident_id, kind,
+             json.dumps(dict(body), ensure_ascii=False, sort_keys=True), round(created_ts))
+        )
+        return new_id
+
     def set_meta(self, key: str, value: str) -> None:
         self._pending_meta[key] = value
 
@@ -227,6 +313,38 @@ class TickWriter:
                     """,
                     list(self._pending_meta.items()),
                 )
+            if self._pending_incidents:
+                cur.executemany(
+                    """
+                    INSERT INTO incidents(id, monitor, grp, entity_id, state, severity,
+                        owning_rule, opened_ts, last_change_ts, cleared_ts, clear_reason,
+                        ack_by, ack_ts, notify_count, occurrences, flapping)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        state = excluded.state, severity = excluded.severity,
+                        owning_rule = excluded.owning_rule,
+                        last_change_ts = excluded.last_change_ts,
+                        cleared_ts = excluded.cleared_ts,
+                        clear_reason = excluded.clear_reason,
+                        ack_by = excluded.ack_by, ack_ts = excluded.ack_ts,
+                        notify_count = excluded.notify_count,
+                        occurrences = excluded.occurrences,
+                        flapping = excluded.flapping
+                    """,
+                    list(self._pending_incidents.values()),
+                )
+            if self._pending_history:
+                cur.executemany(
+                    "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    self._pending_history,
+                )
+            if self._pending_outbox:
+                cur.executemany(
+                    "INSERT INTO outbox(id, incident_id, kind, body, created_ts) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    self._pending_outbox,
+                )
             if self._pending_monitor_loads:
                 cur.executemany(
                     "INSERT OR REPLACE INTO monitor_loads(monitor, loaded_ts, hash, normalized) "
@@ -264,3 +382,6 @@ class TickWriter:
             self._pending_cursors.clear()
             self._pending_meta.clear()
             self._pending_monitor_loads.clear()
+            self._pending_incidents.clear()
+            self._pending_history.clear()
+            self._pending_outbox.clear()

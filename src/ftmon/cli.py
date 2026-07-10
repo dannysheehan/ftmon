@@ -255,6 +255,61 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_incidents(args: argparse.Namespace) -> int:
+    """List incidents (CL-01). Default: open + acked; --all includes cleared."""
+    paths = get_paths()
+    if not paths.db_file.exists():
+        print("no data - is the daemon running? (ftmon daemon)", file=sys.stderr)
+        return 1
+    from ftmon.model import severity_name
+    from ftmon.store.db import connect
+    from ftmon.store.query import Query
+
+    conn = connect(paths.db_file, readonly=True)
+    try:
+        rows = Query(conn).incidents(state=None if args.all else "open")
+        if not args.all:
+            rows = [r for r in rows if r["state"] in ("open", "acked")]
+        if args.json:
+            print(json.dumps([dict(r) for r in rows]))
+            return 0
+        if not rows:
+            print("no incidents")
+            return 0
+        for r in rows:
+            flap = " (flapping)" if r["flapping"] else ""
+            print(
+                f"#{r['id']:<4} {r['state']:<7} {severity_name(r['severity']):<8} "
+                f"{r['monitor']}/{r['grp']} {r['entity_id']}{flap}"
+            )
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_ack(args: argparse.Namespace) -> int:
+    """Acknowledge an incident: stop renotifying, keep watching (IN-02)."""
+    paths = get_paths()
+    if not paths.db_file.exists():
+        print("no data - is the daemon running? (ftmon daemon)", file=sys.stderr)
+        return 1
+    from ftmon.clock import SystemClock
+    from ftmon.store.db import connect
+    from ftmon.store.query import SmallWrites
+
+    conn = connect(paths.db_file)
+    try:
+        ok = SmallWrites(conn).ack(args.id, by="cli", ts=SystemClock().now(), note=args.note)
+    finally:
+        conn.close()
+    if ok:
+        print(f"incident #{args.id} acknowledged (it will still clear on recovery)")
+        return 0
+    print(f"incident #{args.id} is not open (already acked, cleared, or unknown)",
+          file=sys.stderr)
+    return 1
+
+
 def cmd_not_implemented(cmd_name: str) -> int:
     """Stub: print not-implemented message and return 2."""
     def handler(args: argparse.Namespace) -> int:
@@ -343,10 +398,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # incidents
-    subparsers.add_parser(
+    incidents_parser = subparsers.add_parser(
         "incidents",
-        help="List all open incidents"
+        help="List open/acked incidents (--all includes cleared)"
     )
+    incidents_parser.add_argument("--all", action="store_true",
+                                  help="Include cleared incidents")
+    incidents_parser.add_argument("--json", action="store_true", help="Output JSON")
 
     # incident
     incident_parser = subparsers.add_parser(
@@ -360,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         "ack",
         help="Acknowledge an incident"
     )
-    ack_parser.add_argument("id", help="Incident ID")
+    ack_parser.add_argument("id", type=int, help="Incident ID")
     ack_parser.add_argument("--note", help="Acknowledgment note")
 
     # events
@@ -446,17 +504,13 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     elif args.command == "incidents":
-        print("incidents: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        return cmd_incidents(args)
     elif args.command == "incident":
         print("incident: not implemented yet (arrives in a later milestone)",
               file=sys.stderr)
         return 2
     elif args.command == "ack":
-        print("ack: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        return cmd_ack(args)
     elif args.command == "events":
         print("events: not implemented yet (arrives in a later milestone)",
               file=sys.stderr)

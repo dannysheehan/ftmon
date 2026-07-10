@@ -281,7 +281,6 @@ class TestNotImplemented:
             "mcp",
             "web",
             "top",
-            "incidents",
             "events",
             "query",
             "monitors",

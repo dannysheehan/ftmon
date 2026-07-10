@@ -21,9 +21,10 @@ from dataclasses import dataclass, field
 
 from ftmon.definitions.loader import MonitorDef
 from ftmon.engine.context import EntityCtx
+from ftmon.engine.render import render_message
 from ftmon.engine.rings import RingStore
 from ftmon.expr.tribool import to_tribool
-from ftmon.model import EventRecord, Snapshot, TriBool
+from ftmon.model import EventRecord, Snapshot, TriBool, severity_name
 from ftmon.sources.base import Sampler
 
 _DEMOTE_AFTER_S = 30 * 60  # SA-05: demote after 30m without the heuristic holding
@@ -37,6 +38,7 @@ class EvalOutcome:
     rule_id: str
     group: str
     result: TriBool
+    message: str = ""  # rendered rule message; non-empty only when TRUE (MD-02)
 
 
 @dataclass
@@ -62,6 +64,9 @@ class Pipeline:
         # the records to the writer - the pipeline must not depend on
         # writer.add_event ordering relative to sample writes.
         self._events: list[EventRecord] = []
+        # Gone entities this tick, drained by the daemon so the incident
+        # engine can auto-clear (CA-08 -> IN-07).
+        self._gone: list[tuple[str, str]] = []
 
     def run_monitor(
         self,
@@ -105,12 +110,24 @@ class Pipeline:
             # CA-07: exempt entities are sampled (above) but no rules fire.
             if any(e.eval(ctx, counter=self._counter) is True for e in mdef.exempt):
                 continue
+            # Message values are this cycle's numbers; rendered only for TRUE
+            # results because that is the only case a notification can use.
+            values: dict[str, object] = dict(mdef.parameters)
+            values.update(ent.attrs)
+            values.update(ent.metrics)
+            values.update(derived_vals.get(ent.entity_id, {}))
+            values["entity"] = ent.attrs.get("name", ent.entity_id)
+            values["monitor"] = mdef.name
             for rule in mdef.rules:
                 result = to_tribool(rule.when.eval(ctx, counter=self._counter))
                 if result is TriBool.UNKNOWN:
                     self._counter("eval_unknown_total")
+                message = ""
+                if result is TriBool.TRUE:
+                    values["severity"] = severity_name(rule.severity)
+                    message = render_message(rule.message, values)
                 outcomes.append(
-                    EvalOutcome(mdef.name, ent.entity_id, rule.id, rule.group, result)
+                    EvalOutcome(mdef.name, ent.entity_id, rule.id, rule.group, result, message)
                 )
 
         self._persist(mdef, snap, derived_vals, st, now, writer)
@@ -194,6 +211,7 @@ class Pipeline:
             st.promoted.pop(entity_id, None)
             self._rings.forget_entity(mdef.name, entity_id)
             writer.upsert_entity(mdef.name, entity_id, last_seen, {}, gone_ts=now)
+            self._gone.append((mdef.name, entity_id))  # incident engine input (IN-07)
             self._self_event(mdef, now, f"entity gone: {entity_id}")
 
     def _self_event(self, mdef: MonitorDef, now: float, message: str) -> None:
@@ -212,4 +230,9 @@ class Pipeline:
     def drain_self_events(self) -> list[EventRecord]:
         out = list(self._events)
         self._events.clear()
+        return out
+
+    def drain_gone(self) -> list[tuple[str, str]]:
+        out = list(self._gone)
+        self._gone.clear()
         return out

@@ -97,13 +97,18 @@ stale data with a clear "last checked N minutes ago".
 ```sh
 ftmon status            # one screen; exit code 0/1/2 = clear/warnings/errors
 ftmon check             # validate definitions (run after editing)
-ftmon incidents         # open problems                     (M2)
-ftmon incident 42       # full story of one incident        (M2)
-ftmon ack 42            # stop re-notifying, keep watching  (M2)
-ftmon top rss --range 3h  # what was eating memory          (M2)
+ftmon incidents         # open/acked problems (--all includes cleared)
+ftmon ack 42            # stop re-notifying, keep watching
+ftmon incident 42       # full story of one incident        (soon)
+ftmon top rss --range 3h  # what was eating memory          (soon)
 ftmon events --min-severity error                          # (M3)
 ftmon doctor            # database health, backup           (M6)
 ```
+
+Desktop notifications are live: an incident opens after its confirmation
+cycles, re-notifies on the backing-off schedule, and sends one recovery
+notice when it clears. Every notification is also appended to
+`~/.local/state/ftmon/notifications.jsonl` (the audit trail).
 
 Every listing command takes `--json` for scripting.
 
