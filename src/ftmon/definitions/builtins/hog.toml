@@ -1,0 +1,42 @@
+# FTMON built-in: CPU hog detector (SPEC 7.7.2)
+schema = 1
+
+[monitor]
+name = "hog"
+description = "Detects processes with sustained high CPU use"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "process"
+
+[parameters]
+warn_pct = { value = 80, doc = "Warn when average CPU%% over 5m exceeds this" }
+crit_pct = { value = 90, doc = "Error when average CPU%% over 15m exceeds this" }
+
+# Legit heavy lifters — uncomment to silence compilers/encoders:
+# exempt = [ 'matches(name, "^(cc1|cc1plus|rustc|ld|clang|make|cargo|ffmpeg)$")' ]
+
+[[rule]]
+id = "hog-warn"
+group = "hog"
+when = 'avg(cpu_pct, "5m") > warn_pct'
+severity = "warning"
+confirm_cycles = 5
+message = "{entity} hogging CPU: {cpu_5m:.0f}% avg over 5m"
+
+[[rule]]
+id = "hog-crit"
+group = "hog"
+when = 'avg(cpu_pct, "15m") > crit_pct'
+severity = "error"
+confirm_cycles = 5
+message = "{entity} pegging CPU: {cpu_15m:.0f}% avg over 15m"
+
+[[derived]]
+name = "cpu_5m"
+expr = 'avg(cpu_pct, "5m")'
+
+[[derived]]
+name = "cpu_15m"
+expr = 'avg(cpu_pct, "15m")'

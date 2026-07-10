@@ -1,0 +1,38 @@
+# FTMON built-in: journal/event-log entries of interest (SPEC 7.7.3)
+# Event rules open "episodes" (IN-08): a matching event opens/refreshes an
+# incident; it clears after clear_after with no matching events.
+schema = 1
+
+[monitor]
+name = "events"
+description = "Raises incidents for journal entries of interest"
+version = 1
+enabled = true
+platforms = ["linux"]
+source = "events"
+
+[[rule]]
+id = "errors"
+when = 'severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")'
+severity = "error"
+cooldown = "10m"
+clear_after = "30m"
+message = "{provider}: {message}"
+
+[[rule]]
+id = "oom"
+when = 'provider == "kernel" and contains(message, "Out of memory")'
+severity = "critical"
+cooldown = "5m"
+clear_after = "30m"
+message = "OOM killer fired: {message}"
+
+# Windows-style specific event id (works unchanged once the eventlog source
+# lands — event_id is a string on every platform, PL-02):
+# [[rule]]
+# id = "unexpected-shutdown"
+# when = 'event_id == "6008"'
+# severity = "error"
+# cooldown = "1h"
+# clear_after = "1h"
+# message = "Unexpected shutdown recorded ({provider})"

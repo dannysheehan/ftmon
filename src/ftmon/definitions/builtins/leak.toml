@@ -1,0 +1,49 @@
+# FTMON built-in: per-process memory-leak detector (SPEC 7.7.1)
+# Tune parameters below; run `ftmon check` after editing.
+schema = 1
+
+[monitor]
+name = "leak"
+description = "Detects processes whose memory grows steadily (memory leaks)"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "process"
+
+[parameters]
+warn_mb_per_h = { value = 32, doc = "Warn when RSS grows faster than this (MB/hour), sustained" }
+crit_mb_per_h = { value = 128, doc = "Error when RSS grows faster than this (MB/hour)" }
+promote_mb = { value = 16, doc = "Growth over 15m that makes a process worth tracking long-term" }
+
+# Which processes get long-term history (SA-05c). Evaluated over the short
+# all-process window every cycle.
+[promotion]
+expr = 'monot(rss_bytes, "15m") >= 0.8 and delta(rss_bytes, "15m") > promote_mb * MB'
+
+# Browsers leak by design; exempt them here if the noise annoys you.
+# exempt = [ 'matches(name, "^(firefox|chrome|chromium)$")' ]
+
+[[rule]]
+id = "leak-warn"
+group = "leak"
+when = 'slope(rss_bytes, "45m") * 3600 > warn_mb_per_h * MB'
+severity = "warning"
+confirm_cycles = 3
+message = "{entity} leaking: RSS growing {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
+
+[[rule]]
+id = "leak-crit"
+group = "leak"
+when = 'slope(rss_bytes, "45m") * 3600 > crit_mb_per_h * MB'
+severity = "error"
+confirm_cycles = 3
+message = "{entity} leaking fast: RSS growing {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
+
+[[derived]]
+name = "rss_slope_mbph"
+expr = 'slope(rss_bytes, "45m") * 3600 / MB'
+
+[[derived]]
+name = "rss_mb"
+expr = 'rss_bytes / MB'

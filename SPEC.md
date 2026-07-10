@@ -279,6 +279,10 @@ Watchlist of expected listeners (`proto:port`) → `present` metric, error when 
 ```toml
 schema = 1                       # definition-format version (VC-02)
 
+# Top-level keys (schema, exempt) MUST appear before the first [table]
+# header - TOML binds bare keys to the most recently opened table otherwise.
+exempt = [ "matches(fstype, '^(tmpfs|iso9660|squashfs)$')" ]
+
 [monitor]
 name = "disk"                    # [a-z][a-z0-9_]{1,31}, unique
 description = "Disk space and filling"
@@ -298,8 +302,6 @@ crit_pct  = { value = 97, doc = "Critical threshold" }
 [[derived]]                      # optional derived metrics (may reference other derived, MD-08)
 name = "filling"
 expr = "monot(used_bytes, '70m')"
-
-exempt = [ "matches(fstype, '^(tmpfs|iso9660|squashfs)$')" ]
 
 [[rule]]
 id = "space-warn"                # unique within monitor, [a-z0-9-]+
