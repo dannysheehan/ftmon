@@ -158,7 +158,8 @@ class Clock(Protocol):                              # TS-03
 
 class Sampler(Protocol):                            # PL-01
     decl: ClassVar[SourceDecl]
-    def sample(self, deadline_mono: float, options: Mapping) -> Snapshot: ...
+    def sample(self, now: float, deadline_mono: float, options: Mapping) -> Snapshot: ...
+    # now = wall ts to stamp on the Snapshot (samplers never read clocks, TS-03);
     # deadline is cooperative for in-process samplers, hard (kill) for subprocess ones (SA-02)
 
 class EventSource(Protocol):                        # PL-01, DM-15
