@@ -1,0 +1,62 @@
+# FTMON built-in: self-monitoring (SPEC 7.7 / RB-02)
+# The monitor must not become the hog; if it does, it tells on itself.
+# Always installed; tunable, not deletable.
+schema = 1
+
+[monitor]
+name = "self"
+description = "FTMON watches its own resource budget and pipeline health"
+version = 1
+enabled = true
+platforms = ["linux", "windows", "darwin"]
+interval = "60s"
+source = "self"
+
+[parameters]
+cpu_budget_pct = { value = 1.5, doc = "Warn when daemon CPU%% (10m avg) exceeds this (RB-01 is 1.0)" }
+rss_budget_mb = { value = 100, doc = "Warn when daemon RSS exceeds this (MB)" }
+db_budget_mb = { value = 200, doc = "Warn when database exceeds this (MB)" }
+stall_s = { value = 600, doc = "Warn when the event reader has been silent this long (s)" }
+
+[[rule]]
+id = "cpu-budget"
+group = "budget"
+when = 'avg(cpu_pct, "10m") > cpu_budget_pct'
+severity = "warning"
+confirm_cycles = 3
+message = "FTMON over CPU budget: {cpu_10m:.1f}% (10m avg)"
+
+[[rule]]
+id = "rss-budget"
+group = "budget"
+when = 'rss_bytes > rss_budget_mb * MB'
+severity = "warning"
+confirm_cycles = 5
+message = "FTMON over memory budget: {rss_mb:.0f} MB RSS"
+
+[[rule]]
+id = "db-budget"
+group = "budget"
+when = 'db_bytes > db_budget_mb * MB'
+severity = "warning"
+confirm_cycles = 3
+message = "FTMON database over budget: {db_mb:.0f} MB (pruning should engage)"
+
+[[rule]]
+id = "event-stall"
+when = 'source_activity_age_s > stall_s'
+severity = "warning"
+confirm_cycles = 2
+message = "Event reader silent for {source_activity_age_s:.0f}s"
+
+[[derived]]
+name = "cpu_10m"
+expr = 'avg(cpu_pct, "10m")'
+
+[[derived]]
+name = "rss_mb"
+expr = 'rss_bytes / MB'
+
+[[derived]]
+name = "db_mb"
+expr = 'db_bytes / MB'

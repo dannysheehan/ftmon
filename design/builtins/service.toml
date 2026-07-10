@@ -1,0 +1,38 @@
+# FTMON built-in: service / process presence (SPEC 7.7.6)
+# Watchlist-driven: nothing is monitored until you add targets below.
+# Watchlist entities are synthetic (CA-08): `present` is 1/0, never missing.
+schema = 1
+
+[monitor]
+name = "service"
+description = "Watchdog for systemd units and expected processes"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "unit"
+
+[source_options]
+watchlist = [
+  # { unit = "syncthing.service" },
+  # { process = "^ssh-agent$" },
+  # { unit = "backup.service", during = "09:00-18:00" },
+]
+
+[[rule]]
+id = "down"
+when = 'present == 0'
+severity = "error"
+confirm_cycles = 2
+message = "{entity} is not running"
+
+[[rule]]
+id = "flapping"
+when = 'delta(restarts, "30m") >= 3'
+severity = "notice"
+confirm_cycles = 1
+message = "{entity} restarted {restarts_30m:.0f} times in 30m"
+
+[[derived]]
+name = "restarts_30m"
+expr = 'delta(restarts, "30m")'

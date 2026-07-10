@@ -1,0 +1,2471 @@
+#define WIN32_LEAN_AND_MEAN
+
+#include <tchar.h>
+#include <windows.h>
+#include <lm.h>
+#include <pdh.h>
+#include <pdhmsg.h>
+#include <psapi.h>
+#include <mmsystem.h>
+#include "EXTERN.h"
+#include "perl.h"
+#include "XSUB.h"
+
+#define MAX_PACKAGE_LEN 256
+#define MAX_COUNTERS 100
+#define MAX_QUERIES 30
+#define MAX_PROCESSES 1024
+#define BUFFER_SIZE 2048
+#define MAX_SID_SIZE 2048
+
+#define MAX_VOLUME_NAME 512
+#define MAX_FS_NAME 512
+
+#define MAX_NAME_STRING 1024
+#define MAX_ERROR_STRING 2048
+
+#define MAX_PROCESS_QUERIES 5
+
+#define B_DRIVE_UNKNOWN     0x01
+#define B_DRIVE_NO_ROOT_DIR 0x02
+#define B_DRIVE_REMOVABLE   0x04
+#define B_DRIVE_FIXED       0x08
+#define B_DRIVE_REMOTE      0x10
+#define B_DRIVE_CDROM       0x20
+#define B_DRIVE_RAMDISK     0x40 
+
+
+typedef struct _TypeStr
+{
+ unsigned int type;
+ char  *str;
+
+} TypeStr;
+
+typedef struct _EnumWindowsProcData
+{
+  AV           *applications;
+  unsigned int timeout;
+} EnumWindowsProcData;
+
+typedef struct pic
+{
+  char  name[MAX_NAME_STRING];
+  int   count;
+} PerfInstanceCount;
+
+typedef struct _ProcessPriorityClassStr
+{
+  DWORD priority_class;
+  char  *message;
+} ProcessPriorityClassStr;
+
+
+typedef struct _PerfCounterInstance
+{
+  char      name[MAX_NAME_STRING];
+  HCOUNTER  ph_counter;
+} PerfCounterInstance;
+
+typedef struct _PDH_Query
+{
+  char   package[MAX_PACKAGE_LEN];
+  HQUERY query;
+  PerfCounterInstance counter_instances[MAX_COUNTERS];
+} PDH_Query;
+
+
+typedef struct _PerfCounterArray
+{
+  HCOUNTER hcounter;
+  DWORD buffer_size;
+  DWORD buffer_count;
+  PPDH_FMT_COUNTERVALUE_ITEM item_buffer;
+} PerfCounterArray;
+
+
+typedef struct _ProcessID
+{
+    DWORD  pid;
+    HANDLE handle;
+    char   *owner;
+    char   *name;
+    char   *path;
+} ProcessID;
+
+
+typedef struct _ProcessQuery
+{
+  char package[MAX_PACKAGE_LEN];
+  int num_processes;
+  ProcessID processes[MAX_PROCESSES];
+} ProcessQuery;
+
+
+typedef struct _PDH_Errors
+{
+  long  status;
+  char  *message;
+} PDH_Errors;
+
+static char big_buffer[BUFFER_SIZE];
+static int num_process_queries = 0;
+static ProcessQuery process_queries[MAX_PROCESS_QUERIES];
+static HANDLE heap_handle;
+
+ProcessQuery *FindProcessQuery(char *package)
+{
+  int i;
+  for ( i = 0; i < num_process_queries; i++ )
+  {
+    if ( ! strcmp(package, process_queries[i].package) )
+    {
+      return(&process_queries[i]);
+    }
+  }
+  
+  strcpy(process_queries[i].package, package);
+  process_queries[i].num_processes = 0;
+  num_process_queries++;
+
+  return(&process_queries[i]);
+}
+
+
+static char *error_message(char *msg, DWORD status)
+{
+  
+  static char msg_buff[MAX_ERROR_STRING];
+  int msg_len = strlen(msg); 
+  char *c;
+
+  strcpy(msg_buff, msg);
+  FormatMessage( 
+    FORMAT_MESSAGE_FROM_SYSTEM | 
+    FORMAT_MESSAGE_IGNORE_INSERTS,
+    NULL,
+    status,
+    0,
+    (LPTSTR) (&msg_buff[msg_len]),
+    MAX_ERROR_STRING,
+    NULL);
+  
+  c = msg_buff;
+  while (*c)
+  {
+    if ( *c == '\r' || *c == '\n' )
+    {
+      *c = ' ';
+    }
+    c++;
+  }
+
+  return(msg_buff);
+}
+
+
+void nt_init()
+{
+  DWORD status;
+  HANDLE h_token;
+  LUID debug_value;
+  TOKEN_PRIVILEGES tkp;
+
+  if ( heap_handle == NULL )
+  {
+    heap_handle = HeapCreate(HEAP_NO_SERIALIZE, 2048, 0);
+    if ( heap_handle == NULL )
+    {
+      status = GetLastError();
+      croak(error_message("nt_init():" , status));
+    }
+
+    /*
+     * Ensure that have correct level of privelege.
+     *
+     */
+    if ( ! OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &h_token))
+    {
+      status = GetLastError();
+      croak(error_message("getProcesses(): OpenProcessToken(): ", status));
+    }
+
+    if ( ! LookupPrivilegeValue(
+             (LPSTR) NULL,
+             SE_DEBUG_NAME,
+             &debug_value))
+    {
+      status = GetLastError();
+      croak(error_message("getProcesses(): LookupPrivilegeValue():", status));
+    }
+
+    tkp.PrivilegeCount = 1;
+    tkp.Privileges[0].Luid = debug_value;
+    tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+    AdjustTokenPrivileges(h_token,
+        FALSE,
+        &tkp,
+        sizeof(TOKEN_PRIVILEGES),
+        (PTOKEN_PRIVILEGES) NULL,
+        (PDWORD) NULL);
+  }
+}
+
+
+BOOLEAN GetLocalLogonTime(
+  HKEY hCurrentUsers,
+  LPWSTR UserSid,
+  FILETIME *lastWriteTime )
+{
+  HKEY  hKey;
+  TCHAR  keyName[MAX_PATH];
+  TCHAR  class[1024];
+  DWORD  classSize;
+  DWORD  subKeys;
+  DWORD  maxSubKeyLen;
+  DWORD  maxClassLen;
+  DWORD  values;
+  DWORD  maxValueNameLen;
+  DWORD  maxValueLen;
+  DWORD  secDescLen;
+    
+  sprintf( keyName, "%s\\Volatile Environment", UserSid );
+  if( RegOpenKey(hCurrentUsers, keyName, &hKey) )
+  {
+    return FALSE;
+  }
+  classSize = sizeof(class);
+  if( RegQueryInfoKey( 
+        hKey,
+        class, 
+        &classSize, 
+        NULL,
+        &subKeys, &maxSubKeyLen,
+        &maxClassLen, 
+        &values, &maxValueNameLen, &maxValueLen,
+        &secDescLen,
+        lastWriteTime) )
+  {
+    RegCloseKey( hKey );
+    return FALSE;
+  }
+  FileTimeToLocalFileTime( lastWriteTime, lastWriteTime );
+  RegCloseKey( hKey );
+  return TRUE;
+}
+
+
+unsigned long Filetime2DiffSecs(FILETIME filetime)
+{
+  unsigned long secs;
+
+  SYSTEMTIME current_systemtime;
+  FILETIME current_filetime;
+  ULARGE_INTEGER current_filetime_i;
+  ULARGE_INTEGER filetime_i;
+
+  GetLocalTime(&current_systemtime);
+  SystemTimeToFileTime(&current_systemtime, &current_filetime );
+
+  current_filetime_i = *(PULARGE_INTEGER) &current_filetime;
+  filetime_i = *(PULARGE_INTEGER) &filetime;
+  current_filetime_i.QuadPart -= filetime_i.QuadPart;
+  secs = (unsigned long) (current_filetime_i.QuadPart / 10000000);
+
+  return(secs);
+}
+
+
+BOOL CALLBACK
+EnumWindowsProc(
+  HWND hwnd, 
+  EnumWindowsProcData *proc_data )
+{
+  DWORD pid = 0;
+  AV *ra;
+  char window_text[MAX_NAME_STRING];
+  DWORD result;
+  DWORD status;
+  int  not_responding = 0;
+
+  ra = (AV *)sv_2mortal((SV *)newAV()); 
+
+  av_push(ra, newSVuv(hwnd));
+
+  if ( ! IsWindowVisible((unsigned long) hwnd) ||
+       ( GetWindow(hwnd, GW_OWNER) != NULL ) )
+  {
+    status = GetLastError();
+    return TRUE;
+  }
+
+  if ( ! GetWindowText( hwnd, window_text, MAX_NAME_STRING) )
+  {
+    status = GetLastError();
+    return TRUE;
+  }
+
+  if ( strlen(window_text) == 0 )
+  {
+    status = GetLastError();
+    return TRUE;
+  }
+
+  av_push(ra, newSVpv(window_text, 0));
+
+  if ( ! GetWindowThreadProcessId( hwnd, &pid )) 
+  {
+    return TRUE;
+  }
+  av_push(ra, newSVuv(pid));
+
+
+  /*  
+   * Check if application parent window is responding 
+   * see HOWTO - ID: Q231844 
+   * 
+   */
+  not_responding = 0;
+  if ( ! SendMessageTimeout(
+      hwnd,
+      0,
+      NULL,
+      NULL,
+      ( SMTO_ABORTIFHUNG | SMTO_BLOCK ),
+      proc_data->timeout,
+      &result))
+  {
+    status = GetLastError();
+    if ( ! status )
+    {
+      not_responding = 1;
+    }
+    else
+    {
+      return TRUE;
+    }
+  }
+  av_push(ra, newSVuv(not_responding));
+
+  av_push(proc_data->applications, newRV((SV *)ra));
+
+  return TRUE;
+}
+
+
+double large_integer_2_double(ULARGE_INTEGER li)
+{
+  double d;
+  double dl = ( li.LowPart < 0)  ? ( 65536.0 * 65536.0 + li.LowPart )  : li.LowPart;
+  double dh = ( li.HighPart < 0) ? ( 65536.0 * 65536.0  + li.HighPart ) : li.HighPart;
+
+  d = 0.0 + dl  + ( 65536.0 * 65536.0 * dh);
+  return(d);
+}
+
+static char *GetPriorityClassStr(DWORD pri)
+{
+  int i;
+  static ProcessPriorityClassStr priority_classes[] =
+  {
+    {0,
+     "UNKNOWN"},
+    {ABOVE_NORMAL_PRIORITY_CLASS,
+     "ABOVE_NORMAL_PRIORITY_CLASS"},
+    {BELOW_NORMAL_PRIORITY_CLASS,
+     "BELOW_NORMAL_PRIORITY_CLASS"},
+    {HIGH_PRIORITY_CLASS,
+     "HIGH_PRIORITY_CLASS"},
+    {IDLE_PRIORITY_CLASS,
+     "IDLE_PRIORITY_CLASS"},
+    {NORMAL_PRIORITY_CLASS,
+     "NORMAL_PRIORITY_CLASS"},
+    {REALTIME_PRIORITY_CLASS,
+     "REALTIME_PRIORITY_CLASS"}
+  };
+  int num_priority_classes = 
+               ( sizeof(priority_classes) / sizeof(ProcessPriorityClassStr) );
+
+  i = 0;
+  while ( i < num_priority_classes )
+  {
+    if ( pri & priority_classes[i].priority_class )
+    {
+      return( priority_classes[i].message );
+    }
+    i++;
+  }
+  return( priority_classes[0].message );
+}
+
+
+HANDLE GetProcessHandle(
+    ProcessQuery *process_query,
+    DWORD pid)
+{
+  HANDLE handle;
+  DWORD status;
+  int i;
+  int found;
+
+
+  if (pid == 0 ) return(0);
+
+  handle = 0;
+  for (i = 0; i < process_query->num_processes && ! handle; i++ )
+  {
+    if ( process_query->processes[i].pid == pid )
+    {
+      handle = process_query->processes[i].handle;
+      return(handle);
+    }
+  }
+
+  if ( ( handle = OpenProcess(
+                      PROCESS_ALL_ACCESS,
+                      FALSE,
+                      pid)) == NULL )
+  {
+    if ( ( handle = OpenProcess(
+                      PROCESS_QUERY_INFORMATION,
+                      FALSE,
+                      pid)) == NULL )
+    {
+      status = GetLastError();
+      return(0);
+    }
+    
+  }
+
+  return(handle);
+}
+
+
+int GetProcessTimesData(
+  HANDLE handle,
+  AV *ra)
+{
+  DWORD bytes_needed = 0;
+  DWORD status;
+  int i;
+
+  char date_time_str[MAX_NAME_STRING];
+  char user_name_str[MAX_NAME_STRING];
+
+  FILETIME creation_time;
+  FILETIME exit_time;
+  FILETIME kernel_time;
+  FILETIME user_time;
+
+  double d_kernel_time = 0.0;
+  double d_user_time = 0.0;
+
+  ULARGE_INTEGER u_kernel_time;
+  ULARGE_INTEGER u_user_time;
+
+  SYSTEMTIME sys_creation_time;
+  SYSTEMTIME sys_exit_time;
+
+  date_time_str[0] = '\0';;
+
+  if ( ! handle ) return(0);
+
+  if ( ! GetProcessTimes(
+             handle,
+             &creation_time,
+             &exit_time,
+             &kernel_time,
+             &user_time) )
+  {
+    status = GetLastError();
+    av_push(ra, newSVuv(0));
+    av_push(ra, newSVpv(date_time_str, 0));
+    av_push(ra, newSVuv(0));
+    av_push(ra, newSVuv(0));
+    av_push(ra, newSVpv(date_time_str, 0));
+  }
+  else
+  {
+    FileTimeToLocalFileTime(&creation_time, &creation_time);
+    
+    av_push(ra, newSVuv(Filetime2DiffSecs(creation_time)));
+    FileTimeToSystemTime(&creation_time, &sys_creation_time);
+  
+    sprintf(date_time_str, "%d/%d/%d %02d:%02d:%02d.%d",
+                sys_creation_time.wDay,
+                sys_creation_time.wMonth,
+                sys_creation_time.wYear,
+                sys_creation_time.wHour,
+                sys_creation_time.wMinute,
+                sys_creation_time.wSecond,
+                sys_creation_time.wMilliseconds);
+    av_push(ra, newSVpv(date_time_str, 0));
+  
+  
+    u_kernel_time.LowPart = kernel_time.dwLowDateTime;
+    u_kernel_time.HighPart = kernel_time.dwHighDateTime;
+    d_kernel_time = large_integer_2_double(u_kernel_time)/10000000.0;
+    av_push(ra, newSVnv(d_kernel_time));
+  
+    u_user_time.LowPart = user_time.dwLowDateTime;
+    u_user_time.HighPart = user_time.dwHighDateTime;
+    d_user_time = large_integer_2_double(u_user_time)/10000000.0;
+    av_push(ra, newSVnv(d_user_time));
+  
+  
+    *date_time_str = '\0';
+    if ( exit_time.dwLowDateTime != 0 || exit_time.dwHighDateTime != 0 )
+    {
+      FileTimeToLocalFileTime(&exit_time, &exit_time);
+      FileTimeToSystemTime(&exit_time, &sys_exit_time);
+  
+      sprintf(date_time_str, "%d/%d/%d %02d:%02d:%02d.%d",
+                sys_exit_time.wDay,
+                sys_exit_time.wMonth,
+                sys_exit_time.wYear,
+                sys_exit_time.wHour,
+                sys_exit_time.wMinute,
+                sys_exit_time.wSecond,
+                sys_exit_time.wMilliseconds);
+    }
+    av_push(ra, newSVpv(date_time_str, 0));
+  }
+
+  return(status);
+}
+
+/*
+ *
+ */
+int GetProcessData(
+  HANDLE handle,
+  AV *ra)
+{
+  DWORD bytes_needed = 0;
+  DWORD status;
+  int i;
+
+  DWORD priority_class = 0;
+  DWORD process_affinity_mask = 0;
+  DWORD system_affinity_mask = 0;
+
+  if ( ! handle ) return(0);
+
+
+  if ( ! GetProcessAffinityMask(
+             handle,
+             &process_affinity_mask,
+             &system_affinity_mask) )
+  {
+    status = GetLastError();
+  }
+
+  av_push(ra, newSVuv(process_affinity_mask));
+  av_push(ra, newSVuv(system_affinity_mask));
+
+
+  priority_class = GetPriorityClass(handle);
+  if ( ! priority_class )
+  {
+    status = GetLastError();
+  }
+  av_push(ra, newSVuv(priority_class));
+
+  return(status);
+}
+
+
+
+int GetProcessStaticData(
+  HANDLE handle,
+  ProcessQuery *process_query,
+  char **owner,
+  char **name,
+  char **path)
+{
+  DWORD bytes_needed = 0;
+  DWORD status;
+  HMODULE module;
+  int i;
+
+  HANDLE token_handle;
+
+  char account_name[MAX_NAME_STRING];
+  DWORD account_name_size = MAX_NAME_STRING;
+
+  char domain_name[MAX_NAME_STRING];
+  DWORD domain_name_size = MAX_NAME_STRING;
+  char sid[MAX_NAME_STRING];
+  TOKEN_USER *token_user = (TOKEN_USER *) sid;
+
+  char user_name_str[MAX_NAME_STRING];
+  char module_name_str[MAX_NAME_STRING];
+
+  SID_NAME_USE sid_name_use;
+
+  account_name[0] = '\0';
+  domain_name[0] = '\0';
+  user_name_str[0] = '\0';
+  module_name_str[0] = '\0';
+
+  if ( ! handle ) return(0);
+
+  /*
+   * See if cached values exist from previous query.
+   */
+  for (i = 0; i < process_query->num_processes; i++ )
+  {
+    if ( process_query->processes[i].handle == handle )
+    {
+      *owner = process_query->processes[i].owner;
+      *name = process_query->processes[i].name;
+      *path = process_query->processes[i].name;
+      return(1);
+    }
+  }
+
+  
+  if ( ! OpenProcessToken(
+              handle,
+              TOKEN_READ,
+              &token_handle) )
+  {
+    status = GetLastError();
+
+    *owner = ( char * ) HeapAlloc(heap_handle, 0, strlen(user_name_str) + 1);
+    strcpy(*owner, user_name_str);
+
+    *name = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+    strcpy(*name, module_name_str);
+
+    *path = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+    strcpy(*path, &module_name_str[i]);
+
+  }
+  else
+  {
+    bytes_needed = BUFFER_SIZE;
+    if ( ! GetTokenInformation(
+             token_handle,
+             TokenUser,
+             (LPVOID) sid,
+             1024,
+             &bytes_needed) )
+    {
+      status = GetLastError();
+    *owner = ( char * ) HeapAlloc(heap_handle, 0, strlen(user_name_str) + 1);
+    strcpy(*owner, user_name_str);
+
+    *name = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+    strcpy(*name, module_name_str);
+
+    *path = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+    strcpy(*path, &module_name_str[i]);
+
+    }
+
+    if ( ! LookupAccountSid(
+             NULL,
+             token_user->User.Sid,
+             account_name,
+             &account_name_size,
+             domain_name,
+             &domain_name_size,
+             &sid_name_use) )
+    {
+      status = GetLastError();
+      *owner = ( char * ) HeapAlloc(heap_handle, 0, strlen(user_name_str) + 1);
+      strcpy(*owner, user_name_str);
+
+      *name = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+      strcpy(*name, module_name_str);
+
+      *path = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+      strcpy(*path, &module_name_str[i]);
+
+    }
+
+    sprintf(user_name_str, "%s\\%s", domain_name, account_name);
+    *owner = ( char * ) HeapAlloc(heap_handle, 0, strlen(user_name_str) + 1);
+    strcpy(*owner, user_name_str);
+
+    CloseHandle(token_handle);
+  }
+
+  if ( ! EnumProcessModules(
+              handle,
+              &module,
+              sizeof(HMODULE),
+              &bytes_needed) )
+  {
+    status = GetLastError();
+    *name = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+    strcpy(*name, module_name_str);
+
+    *path = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+    strcpy(*path, &module_name_str[i]);
+
+  }
+  else 
+  {
+    if ( ! GetModuleBaseName(
+              handle,
+              module,
+              module_name_str,
+              BUFFER_SIZE) )
+    {
+      status = GetLastError();
+      *name = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+      strcpy(*name, module_name_str);
+
+      *path = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+      strcpy(*path, &module_name_str[i]);
+
+    }
+    *name = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+    strcpy(*name, module_name_str);
+
+    if ( ! GetModuleFileNameEx(
+              handle,
+              module,
+              module_name_str,
+              BUFFER_SIZE))
+    {
+      status = GetLastError();
+      *name = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+      strcpy(*name, module_name_str);
+
+      *path = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+      strcpy(*path, &module_name_str[i]);
+    }
+    i = 0;
+    while ( module_name_str[i] == '\\' || module_name_str[i] == '?' )
+    {
+      i++;
+    }
+
+    *path = ( char * ) HeapAlloc(heap_handle, 0, strlen(module_name_str) + 1);
+    strcpy(*path, &module_name_str[i]);
+  }
+
+  return(status);
+}
+
+
+DWORD GetProcessExitStatus(HANDLE handle)
+{
+  DWORD exit_code;
+  DWORD status;
+  if ( ! GetExitCodeProcess(handle, &exit_code) )
+  {
+    status = GetLastError();
+    croak(error_message(
+     "GetProcesses(): GetProcessExitStatus(): GetExitCodeProcess(): ", status));
+  }
+  return(exit_code);
+}
+
+
+int matchDrive(UINT drive_types, UINT drive_type)
+{
+  UINT bitmask;
+  switch (drive_type )
+  {
+    case DRIVE_NO_ROOT_DIR:
+      bitmask = B_DRIVE_NO_ROOT_DIR;
+      break;
+  
+    case DRIVE_REMOVABLE:
+      bitmask = B_DRIVE_REMOVABLE;
+      break;
+  
+    case DRIVE_FIXED: 
+      bitmask = B_DRIVE_FIXED;
+      break;
+  
+    case DRIVE_REMOTE:
+      bitmask = B_DRIVE_REMOTE;
+      break;
+
+    case DRIVE_CDROM:
+      bitmask = B_DRIVE_CDROM;
+      break;
+
+    case DRIVE_RAMDISK:
+      bitmask = B_DRIVE_RAMDISK;
+      break;
+
+    case DRIVE_UNKNOWN:
+    default:
+      bitmask = B_DRIVE_UNKNOWN;
+      break;
+  }
+
+  if ( drive_types & bitmask )
+  {
+    return(1);
+  }
+  return(0);
+}
+
+
+int GetDriveData(char *drive, AV *ra)
+{
+
+  static TCHAR volume_name[MAX_VOLUME_NAME];
+  static TCHAR fs_name[MAX_FS_NAME];
+
+  DWORD volume_name_size = MAX_VOLUME_NAME;
+  DWORD fs_name_size = MAX_FS_NAME;
+
+  DWORD status = 0;
+  DWORD volume_serial_number;
+  DWORD max_filename_length;
+  DWORD fs_options;
+
+  ULARGE_INTEGER free_bytes_available;
+  ULARGE_INTEGER total_bytes;
+  ULARGE_INTEGER free_bytes_total;
+
+  double d_free_bytes_available = 0.0;
+  double d_total_bytes = 0.0;
+  double d_free_bytes_total = 0.0;
+
+  double percent_used = 0.0;
+
+
+  volume_name[0] = '\0';
+  fs_name[0] = '\0';
+  if ( ! GetVolumeInformation(
+           drive,
+           volume_name,
+           volume_name_size,
+           &volume_serial_number,
+           &fs_name_size,
+           &fs_options,
+           fs_name,
+           fs_name_size) )
+  {
+    status = GetLastError();
+  }
+
+  if ( ! GetDiskFreeSpaceEx(
+           drive,
+           &free_bytes_available,
+           &total_bytes,
+           &free_bytes_total) )
+  {
+    status = GetLastError();
+  }
+  else
+  {
+    d_free_bytes_available = large_integer_2_double(free_bytes_available);
+    d_total_bytes = large_integer_2_double(total_bytes);
+    d_free_bytes_total = large_integer_2_double(free_bytes_total);
+  }
+
+  av_push(ra, newSVuv(status));
+
+  av_push(ra, newSVpv(volume_name, 0));
+
+  av_push(ra, newSVpv(fs_name, 0));
+
+  av_push(ra, newSVnv(d_free_bytes_available));
+
+  av_push(ra, newSVnv(d_total_bytes));
+
+  av_push(ra, newSVnv(d_free_bytes_total));
+
+  percent_used = (d_total_bytes) 
+     ? ( 100.0 * (d_total_bytes - d_free_bytes_available) / d_total_bytes )
+     : (0.0);
+
+  av_push(ra, newSVnv(percent_used));
+           
+  return(1);
+}
+
+
+static char *pdh_error(char *msg, PDH_STATUS status)
+{
+  int i;
+  int found = 0;
+  int num_errors;
+
+  static char msg_buff[MAX_ERROR_STRING];
+  int msg_len = strlen(msg); 
+
+
+  static PDH_Errors pdh_errors[] =
+  {
+    { PDH_CALC_NEGATIVE_DENOMINATOR,
+     "A counter with a negative denominator value was detected."},
+  
+    { PDH_CALC_NEGATIVE_TIMEBASE,
+   "A counter with a negative timebase value was detected."}, 
+  
+    { PDH_CALC_NEGATIVE_VALUE,
+   "A counter with a negative value was detected."}, 
+  
+    { PDH_CANNOT_CONNECT_MACHINE,
+   "Unable to connect to the requested machine."}, 
+  
+    { PDH_CANNOT_READ_NAME_STRINGS,
+  "Unable to read the counter and/or explain text from the specified machine."}, 
+  
+    { PDH_CSTATUS_BAD_COUNTERNAME,
+   "Unable to parse the counter path. Check format and sytax."}, 
+  
+    { PDH_CSTATUS_INVALID_DATA,
+   "The data is not valid."},
+  
+    { PDH_CSTATUS_ITEM_NOT_VALIDATED,
+   "The data item has been added to the query but has not been validated or accessed."},
+  
+    { PDH_CSTATUS_NEW_DATA,
+   "The return data value is valid and different from the last sample."}, 
+  
+    { PDH_CSTATUS_NO_COUNTER,
+   "The specified counter could not be found."}, 
+  
+    { PDH_CSTATUS_NO_COUNTERNAME,
+   "No counter was specified."}, 
+  
+    { PDH_CSTATUS_NO_INSTANCE,
+   "The specified instance is not present."}, 
+  
+    { PDH_CSTATUS_NO_MACHINE,
+   "Unable to connect to specified machine or machine is off line."}, 
+  
+    { PDH_CSTATUS_NO_OBJECT,
+   "The specified object is not found on the system"}, 
+  
+    { PDH_CSTATUS_VALID_DATA,
+   "The returned data is valid."}, 
+  
+    { PDH_DATA_SOURCE_IS_LOG_FILE,
+   "The specified data source is a log file."}, 
+  
+    { PDH_DATA_SOURCE_IS_REAL_TIME,
+   "The specified data source is the current activity."}, 
+  
+    { PDH_DIALOG_CANCELLED,
+   "User cancelled the dialog box."}, 
+  
+    { PDH_END_OF_LOG_FILE,
+   "The end of the log file was reached."}, 
+  
+    { PDH_ENTRY_NOT_IN_LOG_FILE,
+   "The specified record was not found in the log file."}, 
+  
+    { PDH_FILE_ALREADY_EXISTS,
+   "There is already a file with the specified file name"}, 
+  
+    { PDH_FILE_NOT_FOUND,
+   "Unable to find the specified file."}, 
+  
+    { PDH_FUNCTION_NOT_FOUND,
+   "Unable to find the specified function."}, 
+  
+    { PDH_INSUFFICIENT_BUFFER,
+   "The requested data is larger than the buffer specified. Unable to return the requested data."}, 
+  
+    { PDH_INVALID_ARGUMENT,
+   "A required argument is missing or incorrect."}, 
+  
+    { PDH_INVALID_BUFFER,
+   "The buffer passed by the caller is invalid."}, 
+  
+    { PDH_INVALID_DATA,
+   "The data is not valid."}, 
+  
+    { PDH_INVALID_HANDLE,
+   "The handle is not a valid PDH object."}, 
+  
+    { PDH_INVALID_INSTANCE,
+   "The instance nambe could not be read from the specified counter path."}, 
+  
+    { PDH_INVALID_PATH,
+   "The specified counter patch could not be interpreted."}, 
+   
+    { PDH_LOG_FILE_CREATE_ERROR,
+   "Unable to create the specified log file."}, 
+  
+    { PDH_LOG_FILE_OPEN_ERROR,
+   "Unable to open the specified log file."}, 
+  
+    { PDH_LOG_TYPE_NOT_FOUND,
+   "The specified log file type has not been installed on this system."}, 
+  
+    { PDH_LOGSVC_NOT_OPENED,
+   "The Performance Data Log Service key could not be opened. This may be due to insufficient privilege or becauce the service has not been installed."}, 
+  
+    { PDH_LOGSVC_QUERY_NOT_FOUND,
+   "The specified Query from the Log Service could not be found/openend."}, 
+  
+    { PDH_MEMORY_ALLOCATION_FAILURE,
+   "A PDH function could not allocate enough temporary memory to complete the operation. Close some applications to extend the pagefile and retry the function."}, 
+  
+    { PDH_MORE_DATA,
+   "There is more data to return than would fit in the specified buffer. Allocate a larger buffer."}, 
+  
+    { PDH_NO_DATA,
+   "No data to return."}, 
+  
+    { PDH_NO_DIALOG_DATA,
+   "The dialog box data block was missing or invalid."}, 
+  
+    { PDH_NO_MORE_DATA,
+   "No more data is avilable."}, 
+  
+    { PDH_NOT_IMPLEMENTED,
+   "The function referenced has not been implemented."}, 
+  
+    { PDH_RETRY,
+   "The selected operation should be retried."}, 
+  
+    { PDH_STRING_NOT_FOUND,
+   "Unable to find the specified string in the list of performance name and explain text strings."}, 
+  
+  
+    { PDH_UNABLE_MAP_NAME_FILES,
+   "Unable to map to the performance counter name data files. The data will be read from the registry and stored localy."},
+  
+    { PDH_UNABLE_READ_LOG_HEADER,
+   "The log file header could not be read."}, 
+  
+    { PDH_UNKNOWN_LOG_FORMAT,
+   "The format of the specified log file is not recognized by the PDH DLL."}, 
+  
+    { PDH_UNKNOWN_LOGSVC_COMMAND,
+   "The specified Log Service ocmmand value is not recognized."}, 
+  };
+  num_errors = sizeof(pdh_errors)/sizeof(PDH_Errors);
+  strcpy(msg_buff, msg);
+
+
+  status = status & 0xFFFFFFFF;
+
+  i = 0;
+  while ( i < num_errors )
+  {
+    if ( pdh_errors[i].status == status )
+    {
+      strcpy(&msg_buff[msg_len], pdh_errors[i].message);
+      return(msg_buff);
+    }
+    i++;
+  }
+
+  return NULL;
+
+
+}
+
+MODULE = FTMON::NT		PACKAGE = FTMON::NT		
+
+
+void
+PlaySound(wave_file)
+ char *wave_file
+
+ CODE:
+
+  DWORD status;
+  char *c = wave_file;
+
+  while ( *c )
+  {
+    if ( *c == '/' )
+    {
+      *c = '\\';
+    }
+    c++;
+  }
+
+
+  
+
+  PlaySound( wave_file, SND_ASYNC, NULL);
+
+
+void
+SendMessage(host_name, message)
+ char *host_name
+ char *message
+  CODE:
+
+   NET_API_STATUS nasStatus;
+
+   WCHAR  wsz_host_name[MAX_NAME_STRING];           
+   WCHAR  *wsz_message;
+   DWORD wsz_message_len;
+
+   nt_init();
+
+   wsz_message_len = sizeof(WCHAR) * ( strlen(message) + 1);
+   wsz_message = (WCHAR *) HeapAlloc(heap_handle, 0, wsz_message_len);
+
+
+   MultiByteToWideChar( CP_ACP, 0, 
+         host_name, strlen(host_name)+1, 
+	 wsz_host_name, sizeof(wsz_host_name) );
+
+   MultiByteToWideChar( CP_ACP, 0, 
+         message, strlen(message)+1, 
+	 wsz_message, wsz_message_len );
+
+   nasStatus = NetMessageBufferSend(
+                  NULL, wsz_host_name, NULL, wsz_message, wsz_message_len);
+
+   HeapFree(heap_handle, 0, wsz_message);
+   if ( nasStatus != NERR_Success )
+   {
+     croak(error_message("SendMessage()", nasStatus));
+   }
+
+SV * 
+driveTypeStr(type)
+  unsigned int type
+
+  CODE:
+
+  int num_types;
+  int i;
+  int found = 0;
+  
+  static TypeStr types[] =
+  {
+    { DRIVE_NO_ROOT_DIR, "NO_ROOT_DIR" },
+
+    { DRIVE_REMOVABLE, "REMOVABLE" },
+    { DRIVE_FIXED, "FIXED" },
+    { DRIVE_REMOTE, "REMOTE" },
+    { DRIVE_CDROM, "CDROM" },
+    { DRIVE_RAMDISK, "RAMDISK" },
+    { DRIVE_UNKNOWN, "UNKNOWN" }
+  };
+
+  nt_init();
+
+
+  num_types = sizeof(types)/sizeof(TypeStr);
+
+  i = 0;
+  found = 0;
+  while ( i < num_types && ! found )
+  {
+    if (types[i].type == type )
+    {
+      RETVAL = newSVpv(types[i].str, 0);
+      found = 1;
+    }
+    i++;
+  }
+  if ( ! found )
+  {
+    RETVAL = newSVpv(types[num_types - 1].str, 0);
+  }
+
+  OUTPUT:
+    RETVAL
+
+SV * 
+ServiceTypeStr(type)
+  unsigned int type
+
+  CODE:
+
+  int num_types;
+  int i;
+  int found = 0;
+  
+  static TypeStr types[] =
+  {
+    { SERVICE_WIN32_OWN_PROCESS, "OWN_PROCESS" },
+    { SERVICE_WIN32_SHARE_PROCESS, "SHARE_PROCESS" },
+    { SERVICE_KERNEL_DRIVER, "KERNEL_DRIVER" },
+    { SERVICE_FILE_SYSTEM_DRIVER, "FILE_SYSTEM_DRIVER" },
+    { SERVICE_INTERACTIVE_PROCESS, "INTERACTIVE_PROCESS" },
+    { 0, "UNKNOWN" }
+  };
+
+  nt_init();
+
+
+  num_types = sizeof(types)/sizeof(TypeStr);
+
+  i = 0;
+  found = 0;
+  while ( i < num_types && ! found )
+  {
+    if (types[i].type == type )
+    {
+      RETVAL = newSVpv(types[i].str, 0);
+      found = 1;
+    }
+    i++;
+  }
+  if ( ! found )
+  {
+    RETVAL = newSVpv(types[num_types - 1].str, 0);
+  }
+
+  OUTPUT:
+    RETVAL
+
+
+SV * 
+ServiceState(type)
+  unsigned int type
+
+  CODE:
+
+  int num_types;
+  int i;
+  int found = 0;
+  
+  static TypeStr types[] =
+  {
+    { SERVICE_STOPPED, "STOPPED" },
+    { SERVICE_START_PENDING, "START_PENDING" },
+    { SERVICE_STOP_PENDING, "STOP_PENDING" },
+    { SERVICE_RUNNING, "RUNNING" },
+    { SERVICE_CONTINUE_PENDING, "CONTINUE_PENDING" },
+    { SERVICE_PAUSE_PENDING, "PAUSE_PENDING" },
+    { SERVICE_PAUSED, "PAUSED" },
+    { 0, "UNKNOWN" }
+  };
+
+  nt_init();
+
+
+  num_types = sizeof(types)/sizeof(TypeStr);
+
+  i = 0;
+  found = 0;
+  while ( i < num_types && ! found )
+  {
+    if (types[i].type == type )
+    {
+      RETVAL = newSVpv(types[i].str, 0);
+      found = 1;
+    }
+    i++;
+  }
+  if ( ! found )
+  {
+    RETVAL = newSVpv(types[num_types - 1].str, 0);
+  }
+
+  OUTPUT:
+    RETVAL
+
+SV * 
+ServiceStartType(type)
+  unsigned int type
+
+  CODE:
+
+  int num_types;
+  int i;
+  int found = 0;
+  
+  static TypeStr types[] =
+  {
+    { SERVICE_BOOT_START, "BOOT_START" },
+    { SERVICE_SYSTEM_START, "SYSTEM_START" },
+    { SERVICE_AUTO_START, "AUTO_START" },
+    { SERVICE_DEMAND_START, "DEMAND_START" },
+    { SERVICE_DISABLED, "DISABLED" },
+    { 0, "UNKNOWN" }
+  };
+
+  nt_init();
+
+  num_types = sizeof(types)/sizeof(TypeStr);
+
+  i = 0;
+  found = 0;
+  while ( i < num_types && ! found )
+  {
+    if (types[i].type == type )
+    {
+      RETVAL = newSVpv(types[i].str, 0);
+      found = 1;
+    }
+    i++;
+  }
+  if ( ! found )
+  {
+    RETVAL = newSVpv(types[num_types - 1].str, 0);
+  }
+
+  OUTPUT:
+    RETVAL
+
+SV * 
+ServiceErrorControlType(type)
+  unsigned int type
+
+  CODE:
+
+  int num_types;
+  int i;
+  int found = 0;
+  
+  static TypeStr types[] =
+  {
+    { SERVICE_ERROR_IGNORE, "ERROR_IGNORE" },
+    { SERVICE_ERROR_NORMAL, "ERROR_NORMAL" },
+    { SERVICE_ERROR_SEVERE, "ERROR_SEVERE" },
+    { SERVICE_ERROR_CRITICAL, "ERROR_CRITICAL" },
+    { 0, "UNKNOWN" }
+  };
+
+  nt_init();
+
+  num_types = sizeof(types)/sizeof(TypeStr);
+
+  i = 0;
+  found = 0;
+  while ( i < num_types && ! found )
+  {
+    if (types[i].type == type )
+    {
+      RETVAL = newSVpv(types[i].str, 0);
+      found = 1;
+    }
+    i++;
+  }
+  if ( ! found )
+  {
+    RETVAL = newSVpv(types[num_types - 1].str, 0);
+  }
+
+  OUTPUT:
+    RETVAL
+
+
+
+
+
+
+SV *
+getServices(host_name)
+ char *host_name
+   
+  CODE:
+    DWORD dwBytesNeeded, dwServicesReturned, dwResumeHandle, dwIndex;
+    ENUM_SERVICE_STATUSA essA[1000];
+    WCHAR wbuffer[MAX_PATH+1];
+    char szService[MAX_PATH+1];
+    char szDisplay[MAX_PATH+1];
+    LPSTR lpDisplayName, lpServiceName;
+    SERVICE_STATUS serviceStatus;
+    SC_HANDLE hSCManager;
+    SC_HANDLE sc_handle;
+    LPQUERY_SERVICE_CONFIG lpqscBuf; 
+
+
+    AV *services;
+    AV *ra;
+
+    if (host_name && *host_name == '\0')
+    {
+      host_name = NULL;
+    }
+
+    nt_init();
+
+    services = (AV *)sv_2mortal((SV *)newAV());
+
+    lpqscBuf = (LPQUERY_SERVICE_CONFIG) HeapAlloc(heap_handle, 0, 4096);
+    if (lpqscBuf == NULL)
+    {
+      croak("can't allocate memory");
+    }
+
+  
+    
+    hSCManager = OpenSCManagerA(
+                      host_name,
+                      NULL,
+                      SC_MANAGER_CONNECT|SC_MANAGER_ENUMERATE_SERVICE);
+    if (hSCManager != NULL) 
+    {
+      dwResumeHandle = 0;
+      dwBytesNeeded = 0;
+      dwServicesReturned = 0;
+      while (EnumServicesStatusA(
+                 hSCManager, 
+                 SERVICE_WIN32,
+                 SERVICE_STATE_ALL,
+                 essA, 
+                 sizeof(essA), 
+                 &dwBytesNeeded,
+                 &dwServicesReturned,
+                 &dwResumeHandle) == TRUE
+             || GetLastError() == ERROR_MORE_DATA)
+      {
+        lpServiceName = szService;
+        lpDisplayName = szDisplay;
+        for (dwIndex = 0; dwIndex < dwServicesReturned; ++dwIndex) 
+        {
+          lpServiceName = essA[dwIndex].lpServiceName;
+          lpDisplayName = essA[dwIndex].lpDisplayName;
+          serviceStatus = essA[dwIndex].ServiceStatus;
+  
+          ra = (AV *)sv_2mortal((SV *)newAV()); 
+          av_push(ra, newSVpv(lpServiceName, 0));
+          av_push(ra, newSVpv(lpDisplayName, 0));
+          av_push(ra, newSVnv(serviceStatus.dwServiceType));
+          av_push(ra, newSVnv(serviceStatus.dwCurrentState));
+          av_push(ra, newSVnv(serviceStatus.dwControlsAccepted));
+          av_push(ra, newSVnv(serviceStatus.dwWin32ExitCode));
+          av_push(ra, newSVnv(serviceStatus.dwServiceSpecificExitCode));
+          av_push(ra, newSVnv(serviceStatus.dwCheckPoint));
+          av_push(ra, newSVnv(serviceStatus.dwWaitHint));
+
+          sc_handle = OpenService(
+                        hSCManager,
+                        lpServiceName,
+                        SERVICE_ALL_ACCESS);
+          if ( sc_handle == NULL )
+          {
+            croak("can't open service");
+          }
+
+          if (! QueryServiceConfig( 
+                       sc_handle, 
+                       lpqscBuf, 
+                       4096, 
+                       &dwBytesNeeded) ) 
+          {
+            croak("can't query service");
+          }
+          av_push(ra, newSVnv(lpqscBuf->dwStartType));
+          av_push(ra, newSVnv(lpqscBuf->dwTagId));
+          av_push(ra, newSVpv(lpqscBuf->lpBinaryPathName, 0));
+          av_push(ra, newSVpv(lpqscBuf->lpLoadOrderGroup, 0));
+          av_push(ra, newSVpv(lpqscBuf->lpDependencies, 0));
+
+          av_push(services, newRV((SV *)ra));
+          CloseServiceHandle(sc_handle);
+        }
+  
+        if (dwResumeHandle == 0) 
+        {
+          break;
+        }
+      }
+
+      HeapFree(heap_handle,0, lpqscBuf);
+      CloseServiceHandle(hSCManager);
+    }
+    RETVAL = newRV((SV *)services);
+
+  OUTPUT:
+    RETVAL
+
+SV *
+getPerfObjects(lpHostName)
+ char *lpHostName
+   
+  CODE:
+    DWORD dwBytesNeeded;
+    LPTSTR buff;
+    LPTSTR obj;
+
+    AV *ra;
+    AV *perf_instances;
+
+    if (lpHostName && *lpHostName == '\0')
+    {
+        lpHostName = NULL;
+    }
+
+    nt_init();
+
+    perf_instances = (AV *)sv_2mortal((SV *)newAV());
+    
+    dwBytesNeeded = 0;
+    PdhEnumObjects(
+                 NULL,
+       lpHostName,
+       NULL,
+       &dwBytesNeeded,
+     PERF_DETAIL_WIZARD,
+     TRUE);
+
+    buff = (LPTSTR) HeapAlloc(heap_handle, 0, dwBytesNeeded);
+    if (buff == NULL)
+    {
+      croak("can't allocate memory");
+    }
+
+    PdhEnumObjects(
+                 NULL,
+       lpHostName,
+       buff,
+       &dwBytesNeeded,
+     PERF_DETAIL_WIZARD,
+     TRUE);
+    obj = buff;
+    ra = (AV *)sv_2mortal((SV *)newAV()); 
+    while ( *buff )
+    {
+      av_push(ra, newSVpv(buff, 0));
+      buff += lstrlen(buff) + 1;
+    }
+
+    RETVAL = newRV((SV *)ra);
+
+  OUTPUT:
+    RETVAL
+
+
+SV *
+getPerfInstances( package, objectName, av)
+ char *package
+ char *objectName
+ SV   *av
+   
+  CODE:
+    LPTSTR instance;
+    PDH_STATUS status;
+
+    static PDH_Query open_queries[MAX_QUERIES];
+    static int num_open_queries = 0;
+
+    int i;
+    int perf_i;
+    int found = 0;
+    int num_perf;
+    char *obj;
+    unsigned int buffer_size;
+
+    char counter_instance[MAX_NAME_STRING];
+    char counters[MAX_COUNTERS][MAX_NAME_STRING];
+
+    PerfCounterArray counter_array[MAX_COUNTERS];
+
+    AV *ra;
+    AV *perf;
+    SV *sv;
+    SV **psv;
+    STRLEN n_a;
+    PDH_Query *pdh_query;
+
+    nt_init();
+
+    perf = (AV *)sv_2mortal((SV *)newAV());
+
+    /*
+     * Convert perf counters from perl list structure.
+     */
+    num_perf = av_len((AV *)SvRV(av));
+    for ( perf_i = 0; perf_i <= num_perf; perf_i++ )
+    {
+      sv = SvRV(av);
+      psv = av_fetch((AV *)sv, perf_i, 0);
+      if ( psv != NULL )
+      {
+        obj = (char *)SvPV(*psv, n_a);
+        strcpy(counters[perf_i], obj);
+      }
+    }
+
+
+    /*
+     * See if the query has already been opened.
+     */
+    i = 0;
+    found = 0;
+    while ( i < num_open_queries && ! found )
+    {
+      if ( strcmp(package,  open_queries[i].package) == 0 )
+      {
+        found = 1;
+        pdh_query = &open_queries[i];
+      }
+      else
+      {
+        i++;
+      }
+    }
+
+    if ( ! found )
+    {
+      if ( num_open_queries > MAX_QUERIES )
+      {
+        croak("Only MAX_QUERES are supported");
+      }
+
+      pdh_query = &open_queries[num_open_queries];
+      if ( ( status = PdhOpenQuery(
+              NULL,
+              NULL,
+              &(pdh_query->query))) != ERROR_SUCCESS)
+      {
+        croak(pdh_error("getPerfInstances(): PdhOpenQuery(): ", status));
+      }
+
+      strcpy(open_queries[num_open_queries].package, package);
+      num_open_queries++;
+
+      /*
+       *
+       */
+      for ( perf_i = 0; perf_i <= num_perf; perf_i++ )
+      {
+        strcpy(counter_instance, "\\");
+        strcat(counter_instance, objectName);
+        strcat(counter_instance, "(*)\\");
+        strcat(counter_instance, counters[perf_i]);
+
+        strcpy(
+             pdh_query->counter_instances[perf_i].name, 
+             counter_instance);
+
+        if ( ( status = PdhAddCounter(
+                pdh_query->query, 
+                pdh_query->counter_instances[perf_i].name, 
+                (DWORD) &(pdh_query->counter_instances[perf_i]),
+                &(pdh_query->counter_instances[perf_i].ph_counter))) 
+                != ERROR_SUCCESS)
+        {
+          croak(pdh_error("getPerfInstances(): PdhAddCounter(): ", status));
+        }
+      }
+
+    }
+
+
+
+    if ( (status = PdhCollectQueryData(pdh_query->query)) != ERROR_SUCCESS)
+    {
+      croak(pdh_error("getPerfInstances(): PdhCollectQueryData() ", status));
+    }
+    if ( ! found )
+    {
+      sleep(1);
+      if ( (status = PdhCollectQueryData(pdh_query->query)) != ERROR_SUCCESS)
+      {
+        croak(pdh_error("getPerfInstances(): PdhCollectQueryData() ", status));
+      }
+    }
+
+    ra = (AV *)sv_2mortal((SV *)newAV()); 
+    for ( perf_i = 0; perf_i <= num_perf; perf_i++ )
+    {
+      counter_array[perf_i].buffer_size = 0;
+      counter_array[perf_i].buffer_count = 0;
+      buffer_size = 0;
+
+      PdhGetFormattedCounterArray(
+                        pdh_query->counter_instances[perf_i].ph_counter,
+                        PDH_FMT_DOUBLE,
+                        &(counter_array[perf_i].buffer_size),
+                        &(counter_array[perf_i].buffer_count),
+                        NULL);
+
+			#
+			# XP Problem.
+			#
+      counter_array[perf_i].buffer_size = 
+			   2 * counter_array[perf_i].buffer_size;
+      counter_array[perf_i].item_buffer =  
+                ( PPDH_FMT_COUNTERVALUE_ITEM) 
+                   HeapAlloc(heap_handle, 0, counter_array[perf_i].buffer_size);
+
+      if ( ( status = PdhGetFormattedCounterArray(
+                        pdh_query->counter_instances[perf_i].ph_counter,
+                        PDH_FMT_DOUBLE,
+                        &(counter_array[perf_i].buffer_size),
+                        &(counter_array[perf_i].buffer_count),
+                        counter_array[perf_i].item_buffer)) != ERROR_SUCCESS )
+      {
+        if ( status == PDH_INVALID_DATA )
+        {
+          if ( (status = PdhCollectQueryData(pdh_query->query)) 
+                              != ERROR_SUCCESS)
+          {
+            croak(pdh_error(
+               "getPerfInstances(): PdhCollectQueryData() ", status));
+          }
+
+          counter_array[perf_i].buffer_size = 
+			                  2 * counter_array[perf_i].buffer_size;
+
+          if ( ( status = PdhGetFormattedCounterArray(
+                        pdh_query->counter_instances[perf_i].ph_counter,
+                        PDH_FMT_DOUBLE,
+                        &(counter_array[perf_i].buffer_size),
+                        &(counter_array[perf_i].buffer_count),
+                        counter_array[perf_i].item_buffer)) != ERROR_SUCCESS )
+          {
+            croak(pdh_error(
+               "getPerfInstances(): PdhGetFormattedCounterArray()", status));
+          }
+        }
+      }
+    }
+
+    for ( i = 0; i < counter_array[0].buffer_count; i++ )
+    {
+      char *instance = counter_array[0].item_buffer[i].szName;
+      ra = (AV *)sv_2mortal((SV *)newAV()); 
+      av_push(ra, newSVpv(instance, 0));
+      for ( perf_i = 0; perf_i <= num_perf; perf_i++ )
+      {
+        av_push(ra, newSVnv(
+                 counter_array[perf_i].item_buffer[i].FmtValue.doubleValue));
+      } 
+      
+      av_push(perf, newRV((SV *)ra));
+    }
+
+    for ( perf_i = 0; perf_i <= num_perf; perf_i++ )
+    {
+      HeapFree(heap_handle, 0, counter_array[perf_i].item_buffer);  
+    }
+    
+    
+    RETVAL = newRV((SV *)perf);
+
+  OUTPUT:
+    RETVAL
+
+
+SV *
+getPerfCounters( package, av)
+ char *package
+ SV   *av
+   
+  CODE:
+    PDH_STATUS status;
+
+    PDH_FMT_COUNTERVALUE counter_value;
+    DWORD counter_type;
+
+    static PDH_Query open_queries[MAX_QUERIES];
+    static int num_open_queries = 0;
+
+    int i;
+    int perf_i;
+    int found = 0;
+    int num_perf;
+    char *obj;
+
+    char counters[MAX_COUNTERS][MAX_NAME_STRING];
+    
+
+    AV *perf;
+    AV *ra;
+
+    SV *sv;
+    SV **psv;
+    STRLEN n_a;
+    PDH_Query *pdh_query;
+
+    nt_init();
+    perf = (AV *)sv_2mortal((SV *)newAV());
+
+    num_perf = av_len((AV *)SvRV(av));
+    for ( perf_i = 0; perf_i <= num_perf; perf_i++ )
+    {
+      sv = SvRV(av);
+      psv = av_fetch((AV *)sv, perf_i, 0);
+      if ( psv != NULL )
+      {
+        obj = (char *)SvPV(*psv, n_a);
+        strcpy(counters[perf_i], obj);
+      }
+    }
+
+
+
+    /*
+     * See if the query has already been opened.
+     */
+    i = 0;
+    found = 0;
+    while ( i < num_open_queries && ! found )
+    {
+      if ( strcmp(package,  open_queries[i].package) == 0 )
+      {
+        found = 1;
+        pdh_query = &open_queries[i];
+      }
+      else
+      {
+        i++;
+      }
+    }
+
+    if ( ! found )
+    {
+      if ( num_open_queries > MAX_QUERIES )
+      {
+        croak("Only MAX_QUERES are supported");
+      }
+
+      pdh_query = &open_queries[num_open_queries];
+      if ( ( status = PdhOpenQuery(
+              NULL,
+              NULL,
+              &(pdh_query->query))) != ERROR_SUCCESS)
+      {
+        croak(pdh_error("getPerfCounters(): PdhOpenQuery(): ", status));
+      }
+
+      strcpy(open_queries[num_open_queries].package, package);
+      num_open_queries++;
+
+      /*
+       *
+       */
+      for ( perf_i = 0; perf_i <= num_perf; perf_i++ )
+      {
+        strcpy(
+             pdh_query->counter_instances[perf_i].name, 
+             counters[perf_i]);
+
+        if ( ( status = PdhAddCounter(
+                pdh_query->query, 
+                pdh_query->counter_instances[perf_i].name, 
+                (DWORD) &(pdh_query->counter_instances[perf_i]),
+                &(pdh_query->counter_instances[perf_i].ph_counter))) 
+                != ERROR_SUCCESS)
+        {
+          croak(pdh_error("getPerfCounters(): PdhAddCounter(): ", status));
+        }
+      }
+
+    }
+
+
+    if ( (status = PdhCollectQueryData(pdh_query->query)) != ERROR_SUCCESS)
+    {
+      croak(pdh_error("getPerfCounters(): PdhCollectQueryData(): ", status));
+    }
+    if ( ! found )
+    {
+      sleep(1);
+      if ( (status = PdhCollectQueryData(pdh_query->query)) != ERROR_SUCCESS)
+      {
+        croak(pdh_error("getPerfCounters(): PdhCollectQueryData(): ", status));
+      }
+    }
+
+    ra = (AV *)sv_2mortal((SV *)newAV()); 
+    for ( perf_i = 0; perf_i <= num_perf; perf_i++ )
+    {
+      if ( ( status = PdhGetFormattedCounterValue(
+                  pdh_query->counter_instances[perf_i].ph_counter,
+                  PDH_FMT_DOUBLE,
+                  &counter_type,
+                  &counter_value)) != ERROR_SUCCESS )
+      {
+        if ( status == PDH_INVALID_DATA )
+        {
+          if ( (status = PdhCollectQueryData(pdh_query->query)) 
+                              != ERROR_SUCCESS)
+          {
+            croak(pdh_error(
+              "getPerfCounters(): PdhCollectQueryData() ", status));
+          }
+          if ( ( status = PdhGetFormattedCounterValue(
+                  pdh_query->counter_instances[perf_i].ph_counter,
+                  PDH_FMT_DOUBLE,
+                  &counter_type,
+                  &counter_value)) != ERROR_SUCCESS )
+          {
+            croak(pdh_error(
+              "getPerfCounters(): PdhGetFormattedCounterValue(): ", status));
+          }
+        }
+      }
+      av_push(ra, newSVnv(counter_value.doubleValue));
+    }
+    av_push(perf, newRV((SV *)ra));
+
+    RETVAL = newRV((SV *)perf);
+
+  OUTPUT:
+    RETVAL
+
+
+SV *
+getLogicalDrives( package, drive_types)
+ char *package
+ unsigned int  drive_types
+   
+  CODE:
+
+    int i;
+    int finish;
+    DWORD status;
+    DWORD size;
+
+    AV *ra;
+    AV *drives;
+    char *str;
+    UINT drive_type;
+
+    nt_init();
+
+    drives = (AV *)sv_2mortal((SV *)newAV());
+
+
+    if ( ! (size = GetLogicalDriveStrings(
+                     BUFFER_SIZE,
+                     big_buffer)) )
+    {
+      status = GetLastError();
+      croak(error_message(
+              "getLogicalDrives(): GetLogicalDriveStrings(): ", status));
+    } 
+
+    i = 0;
+    str = big_buffer;
+    finish = 0;
+    while ( ! finish )
+    {
+      if ( ! big_buffer[i] )
+      {
+        drive_type = GetDriveType(str);
+        if ( matchDrive(drive_types, drive_type))
+        {
+          /*
+           * Stop CDROM / floppy generating pop ups.
+           */
+          if ( drive_type == DRIVE_REMOVABLE )
+          {
+            SetErrorMode(SEM_FAILCRITICALERRORS);
+            SetLastError(0);
+          }
+
+          ra = (AV *)sv_2mortal((SV *)newAV()); 
+          av_push(ra, newSVpv(str, 0));
+          av_push(ra, newSVnv(drive_type));
+          GetDriveData(str, ra);
+
+          if ( drive_type == DRIVE_REMOVABLE )
+          {
+            SetErrorMode(0);
+            SetLastError(0);
+          }
+          av_push(drives, newRV((SV *)ra));
+
+        }
+        str = &big_buffer[i+1];
+      }
+      finish = ( ! big_buffer[i] && ! big_buffer[i+1] );
+
+      i++;
+    }
+    
+    RETVAL = newRV((SV *)drives);
+
+  OUTPUT:
+    RETVAL
+
+
+
+SV *
+getProcesses( package )
+ char *package
+   
+  CODE:
+
+    int i;
+
+    AV *ra;
+    AV *processes;
+    DWORD bytes_needed;
+    DWORD num_processes;
+    DWORD status = 0;
+    DWORD return_status = 0;
+    DWORD exit_code;
+
+    static ProcessID new_processes[MAX_PROCESSES];
+
+    static DWORD process_pids[MAX_PROCESSES];
+
+    DWORD *pids = (DWORD *)process_pids;
+    HANDLE process_handle;
+    
+    ProcessQuery *process_query;
+
+
+
+    nt_init();
+
+
+
+
+    processes = (AV *)sv_2mortal((SV *)newAV());
+
+
+    /*
+     * Go thru. old processes and see if any have closed off.
+    */
+    process_query = FindProcessQuery(package);
+    for ( i = 0; i < process_query->num_processes; i++ )
+    {
+      exit_code = GetProcessExitStatus(process_query->processes[i].handle);
+
+      if ( exit_code != STILL_ACTIVE )
+      {
+        ra = (AV *)sv_2mortal((SV *)newAV()); 
+        av_push(ra, newSVuv(process_query->processes[i].pid));
+
+        av_push(ra, newSVuv((unsigned long)process_query->processes[i].handle));
+        av_push(ra, newSVnv(exit_code));
+        av_push(ra, newSVpv(error_message("", exit_code), 0));
+        status = GetProcessTimesData(process_query->processes[i].handle, ra);
+	return_status = ( ! return_status ) ? status : return_status;
+
+        av_push(ra, newSVuv(0));
+        av_push(ra, newSVuv(0));
+        av_push(ra, newSVuv(0));
+
+        av_push(ra, newSVpv(process_query->processes[i].owner, 0));
+        av_push(ra, newSVpv(process_query->processes[i].name, 0));
+        av_push(ra, newSVpv(process_query->processes[i].path, 0));
+        av_push(ra, newSVnv(return_status));
+        av_push(ra, newSVpv(error_message("", return_status), 0));
+
+        HeapFree(heap_handle, 0, process_query->processes[i].path);
+        HeapFree(heap_handle, 0, process_query->processes[i].owner);
+        HeapFree(heap_handle, 0, process_query->processes[i].name);
+        CloseHandle(process_query->processes[i].handle);
+        av_push(processes, newRV((SV *)ra));
+      }
+    }
+
+    /*
+     * Go thru. all currently open processes.
+     */
+    if ( ! EnumProcesses(
+             (DWORD *) process_pids,
+             BUFFER_SIZE,
+             &bytes_needed) )
+    {
+      status = GetLastError();
+      croak(error_message("getProcesses(): EnumProcesses(): ", status));
+    }
+
+    num_processes = bytes_needed / sizeof(DWORD);
+    for ( i = 0; i < num_processes; i++ )
+    {
+      ra = (AV *)sv_2mortal((SV *)newAV()); 
+
+      av_push(ra, newSVuv(pids[i]));
+
+      new_processes[i].pid = pids[i];
+      new_processes[i].handle = GetProcessHandle(process_query, pids[i]);
+      av_push(ra, newSVuv((unsigned long)new_processes[i].handle));
+      av_push(ra, newSVnv(STILL_ACTIVE));
+      av_push(ra, newSVpv("", 0));
+
+      new_processes[i].owner =  NULL;
+      new_processes[i].name =  NULL;
+      new_processes[i].path =  NULL;
+
+      /*
+       * Skip the System process (PID8) as we don't have sufficient permissions.
+       */
+      if ( new_processes[i].handle &&  pids[i] != 8 )
+      {
+        status = GetProcessTimesData(new_processes[i].handle, ra);
+	return_status = ( ! return_status ) ? status : return_status;
+
+        status = GetProcessData(new_processes[i].handle, ra);
+	return_status = ( ! return_status ) ? status : return_status;
+
+        status = GetProcessStaticData(
+             new_processes[i].handle,
+             process_query,
+             &(new_processes[i].owner),
+             &(new_processes[i].name),
+             &(new_processes[i].path));
+	return_status = ( ! return_status ) ? status : return_status;
+
+        av_push(ra, newSVpv(new_processes[i].owner, 0));
+        av_push(ra, newSVpv(new_processes[i].name, 0));
+        av_push(ra, newSVpv(new_processes[i].path, 0));
+        av_push(ra, newSVnv(return_status));
+        av_push(ra, newSVpv(error_message("", return_status), 0));
+
+        av_push(processes, newRV((SV *)ra));
+      }
+    }
+
+
+    /* 
+     * New set of old processes.
+     */
+    process_query->num_processes = 0;
+    for ( i = 0; i < num_processes; i++ )
+    {
+      if ( new_processes[i].handle )
+      {
+        process_query->processes[process_query->num_processes] =
+           new_processes[i];
+        ++process_query->num_processes;
+      }
+    }
+
+
+
+
+    RETVAL = newRV((SV *)processes);
+
+  OUTPUT:
+    RETVAL
+
+
+SV *
+getApplications(timeout)
+ unsigned int timeout
+   
+  CODE:
+
+    int i;
+
+    AV *applications;
+    EnumWindowsProcData proc_data;
+
+    nt_init();
+
+    applications = (AV *)sv_2mortal((SV *)newAV());
+
+    proc_data.applications = applications;
+    proc_data.timeout = timeout;
+    EnumWindows(EnumWindowsProc, (LPARAM)&proc_data );
+
+    RETVAL = newRV((SV *)applications);
+
+  OUTPUT:
+    RETVAL
+
+
+SV *
+getUsers( host_name)
+ char *host_name
+   
+  CODE:
+    int i;
+    char full_host_name[MAX_NAME_STRING];
+
+    AV *users;
+    LONG status;
+
+    HKEY users_key;
+    DWORD index;
+
+    TCHAR sub_key_name[MAX_PATH];
+    DWORD sub_key_name_size;
+
+    BYTE sub_authority_count;
+    DWORD revision;
+    DWORD authority_val;
+    DWORD sub_authority_val[8] = {0,0,0,0,0,0,0,0};
+    SID_IDENTIFIER_AUTHORITY authority;
+    PSID sid;
+    TCHAR user_name[MAX_NAME_STRING];
+    TCHAR full_user_name[MAX_NAME_STRING];
+    DWORD user_name_size;
+    TCHAR domain_name[MAX_NAME_STRING];
+    DWORD domain_name_size;
+    SID_NAME_USE sid_type;
+    SYSTEMTIME logon_time;
+    FILETIME last_write_time;
+    AV *ra;
+
+    nt_init();
+
+    ra = (AV *)sv_2mortal((SV *)newAV()); 
+
+    if (host_name && *host_name == '\0')
+    {
+      host_name = NULL;
+      if ( ( status = RegOpenKey(
+                         HKEY_USERS, NULL, &users_key) ) != ERROR_SUCCESS )
+      {
+        croak(error_message("getUsers(): RegOpenKey(): ", status));
+      }
+
+    }
+    else
+    {
+      strcpy(full_host_name, "\\\\");
+      strcpy(&full_host_name[2], host_name);
+      host_name = full_host_name;
+      if ( ( status = RegConnectRegistry( 
+                         host_name, HKEY_USERS, &users_key)) != ERROR_SUCCESS )
+      {
+        croak(error_message("getUsers(): RegConnectRegistry(): ", status));
+      }
+    }
+
+    users = (AV *)sv_2mortal((SV *)newAV());
+
+
+    /*
+     * Enumerate Keys.
+     */
+    index = 0;
+    sub_key_name_size = sizeof(sub_key_name);
+    while ( (status = RegEnumKeyEx(
+               users_key,
+               index,
+               sub_key_name,
+               &sub_key_name_size,
+               NULL,
+               NULL,
+               NULL,
+               &last_write_time)) == ERROR_SUCCESS )
+    {
+      if ( strcmp(sub_key_name, ".default") &&
+           strcmp(sub_key_name, ".DEFAULT") &&
+           strstr(sub_key_name, "Classes") == NULL )
+      {
+        sub_authority_count = 
+           sscanf(sub_key_name, 
+                   "S-%d-%x-%lu-%lu-%lu-%lu-%lu-%lu-%lu-%lu",
+                   &revision, 
+                   &authority_val,
+                   &sub_authority_val[0],
+                   &sub_authority_val[1],
+                   &sub_authority_val[2],
+                   &sub_authority_val[3],
+                   &sub_authority_val[4],
+                   &sub_authority_val[5],
+                   &sub_authority_val[6],
+                   &sub_authority_val[7] );
+
+        if ( sub_authority_count >= 3 ) 
+        {
+          sub_authority_count -= 2;
+                
+          authority.Value[5] = *(PBYTE)  &authority_val;
+          authority.Value[4] = *((PBYTE) &authority_val+1);
+          authority.Value[3] = *((PBYTE) &authority_val+2);
+          authority.Value[2] = *((PBYTE) &authority_val+3);
+          authority.Value[1] = 0;
+          authority.Value[0] = 0;
+
+          sid = NULL;
+          user_name_size   = MAX_NAME_STRING;
+          domain_name_size = MAX_NAME_STRING;
+
+          if ( ! AllocateAndInitializeSid( 
+                   &authority,
+                   sub_authority_count,
+                   sub_authority_val[0],
+                   sub_authority_val[1],
+                   sub_authority_val[2],
+                   sub_authority_val[3],
+                   sub_authority_val[4],
+                   sub_authority_val[5],
+                   sub_authority_val[6],
+                   sub_authority_val[7],
+                   &sid )) 
+          {
+            status = GetLastError();
+            RegCloseKey(users_key);
+            croak(error_message(
+                    "getUsers(): AllocateAndInitializeSid(): ", status));
+          }
+
+          if ( ! LookupAccountSid( 
+                    host_name,
+                    sid, 
+                    user_name,
+                    &user_name_size,
+                    domain_name,
+                    &domain_name_size,
+                    &sid_type )) 
+          {
+            status = GetLastError();
+            FreeSid( sid );
+            RegCloseKey(users_key);
+            croak(error_message("getUsers(): LookupAccountSid(): ", status));
+          }
+
+          ra = (AV *)sv_2mortal((SV *)newAV()); 
+
+          sprintf(full_user_name, "%s\\%s", domain_name, user_name);
+          av_push(ra, newSVpv(full_user_name, 0));
+
+          GetLocalLogonTime(
+                      users_key, 
+                      sub_key_name, 
+                      &last_write_time );
+
+          av_push(ra, newSVuv(Filetime2DiffSecs(last_write_time)));
+
+          FileTimeToSystemTime(&last_write_time, &logon_time );
+          sprintf(full_user_name, "%d/%d/%d %02d:%02d:%02d.%d",
+              logon_time.wDay,
+              logon_time.wMonth,
+              logon_time.wYear,
+              logon_time.wHour,
+              logon_time.wMinute,
+              logon_time.wSecond,
+              logon_time.wMilliseconds);
+          av_push(ra, newSVpv(full_user_name, 0));
+
+          FreeSid( sid );
+          av_push(users, newRV((SV *)ra));
+        }
+
+      }
+      sub_key_name_size = sizeof(sub_key_name);
+      index++;
+    }
+    RegCloseKey(users_key);
+               
+
+
+    RETVAL = newRV((SV *)users);
+
+  OUTPUT:
+    RETVAL
+
+
+SV *
+getSessions( host_name)
+ char *host_name
+   
+  CODE:
+    int i;
+    NET_API_STATUS n_status;
+    LPWSTR    p_sz_client_name = NULL;
+    LPWSTR    p_sz_user_name = NULL;
+    LPSESSION_INFO_10 p_buff = NULL;
+    LPSESSION_INFO_10 p_tmp_buff;
+
+    DWORD pref_max_len = -1;
+    DWORD entries_read = 0;
+    DWORD total_entries = 0;
+    DWORD resume_handle = 0;
+
+    char full_user_name[MAX_NAME_STRING];
+    char full_host_name[MAX_NAME_STRING];
+    WCHAR  wsz_full_host_name[MAX_NAME_STRING];           
+    WCHAR  *p_wsz_full_host_name;
+
+    ULARGE_INTEGER file_time_i;
+    FILETIME file_time;
+    SYSTEMTIME logon_time;
+
+    AV *sessions;
+    AV *ra;
+    LONG status;
+
+    nt_init();
+
+    if (host_name && *host_name == '\0')
+    {
+        p_wsz_full_host_name = NULL;
+    }
+    else
+    {
+      strcpy(full_host_name, "\\\\");
+      strcpy(&full_host_name[2], host_name);
+      MultiByteToWideChar( CP_ACP, 0, host_name,
+         strlen(host_name)+1, wsz_full_host_name, sizeof(wsz_full_host_name) );
+      p_wsz_full_host_name = wsz_full_host_name;
+
+    }
+
+    sessions = (AV *)sv_2mortal((SV *)newAV());
+
+    do
+    {
+      n_status = NetSessionEnum(
+                    p_wsz_full_host_name,
+                    p_sz_client_name,
+                    p_sz_user_name,
+                    10,
+                    (LPBYTE*)&p_buff,
+                    pref_max_len,
+                    &entries_read,
+                    &total_entries,
+                    &resume_handle);
+      if ( ! ( ( n_status == NERR_Success ) || 
+               ( n_status == ERROR_MORE_DATA ) )  
+         )
+      {
+        croak(error_message("getSessions(): NetSessionEnum(): ", n_status));
+      }
+        
+      p_tmp_buff = p_buff;
+      for ( i = 0; i < entries_read; i++ )
+      {
+        assert(p_tmp_buff != NULL);
+        if ( p_tmp_buff == NULL )
+        {
+          croak("An access violation has occurred");
+        }
+
+
+        ra = (AV *)sv_2mortal((SV *)newAV()); 
+
+        WideCharToMultiByte( 
+            CP_ACP, 0, p_tmp_buff->sesi10_cname, -1, 
+            full_user_name, MAX_NAME_STRING, NULL, NULL );
+        i = strlen(full_user_name);
+        strcpy(&full_user_name[i], "\\");
+        i += 1;
+        WideCharToMultiByte( 
+            CP_ACP, 0, p_tmp_buff->sesi10_username, -1, 
+            &full_user_name[i], MAX_NAME_STRING, NULL, NULL );
+
+
+        av_push(ra, newSVpv(full_user_name, 0));
+
+        av_push(ra, newSVuv(p_tmp_buff->sesi10_time));
+        av_push(ra, newSVuv(p_tmp_buff->sesi10_idle_time));
+
+        GetLocalTime(&logon_time);
+        SystemTimeToFileTime(&logon_time, &file_time );
+        file_time_i = *(PULARGE_INTEGER) &file_time;
+        file_time_i.QuadPart -= p_tmp_buff->sesi10_time * 10000000;
+        file_time = *(PFILETIME) &file_time_i;
+        FileTimeToSystemTime( &file_time, &logon_time );
+
+        sprintf(full_user_name, "%d/%d/%d %02d:%02d:%02d.%d",
+              logon_time.wDay,
+              logon_time.wMonth,
+              logon_time.wYear,
+              logon_time.wHour,
+              logon_time.wMinute,
+              logon_time.wSecond,
+              logon_time.wMilliseconds);
+        av_push(ra, newSVpv(full_user_name, 0));
+
+        av_push(sessions, newRV((SV *)ra));
+
+        p_tmp_buff++;
+      }
+
+      NetApiBufferFree(p_buff);
+      p_buff = NULL;
+    }
+    while ( n_status == ERROR_MORE_DATA);
+
+    RETVAL = newRV((SV *)sessions);
+
+  OUTPUT:
+    RETVAL
+

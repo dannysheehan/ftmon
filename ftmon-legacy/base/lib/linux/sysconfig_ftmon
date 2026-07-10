@@ -1,0 +1,35 @@
+#############################################################################
+#                    FTMON (Fast Track Systems Monitor)
+#
+#   Script: @(#) $RCSfile: sysconfig_ftmon,v $
+#
+#   DESCRIPTION:
+#
+#   @(#) This file is the default configuration file for the ftmon daemon
+#   @(#) process. It is to be copied to /etc/sysconfig/ftmon
+#
+#   $Source: /cvsroot/ftmon/base2/lib/linux/sysconfig_ftmon,v $
+#
+#   $Date: 2003/04/27 10:49:06 $
+#
+#   @(#) $Revision: 1.1 $
+###########################################################################
+
+# Base install directory for FTMON
+# Change this if you want to move the binaries
+BASE_DIR="/opt/ftmon/base"
+
+# Where html files are placed.
+HTML_DIR="/var/ftmon/html"
+
+# Were configuration is installed.
+CFG_DIR="/opt/ftmon/cfg"
+
+# Where log files are generated.
+LOG_DIR="/var/log/ftmon"
+
+# Where pid file is to be written.
+PID_FILE="/var/run/ftmon.pid"
+
+# How often monitor is invoked in seconds
+INTERVAL=60

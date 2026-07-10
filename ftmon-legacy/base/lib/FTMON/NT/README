@@ -1,0 +1,56 @@
+NT version 0.01
+===============
+
+This module provides a perl interface into Win32 objects for systems
+management. It is intended for use with FTMON.
+You will need Visual C++ and the SDK Platform from Microsoft for (psapi).
+INSTALLATION
+
+To install this module type the following:
+
+   perl Makefile.PL
+   nmake
+   nmake test
+   nmake install
+
+To copy the NT library to the correct place in a FTMON distribution run
+	install_lib.cmd
+
+To compile the FTMON eventlog messages
+	compile_messages.cmd
+
+To install the FTMON messages
+	install_messages.cmd
+
+
+
+DEPENDENCIES
+
+This module requires these other modules and libraries:
+	psapi
+	pdh
+
+COPYRIGHT AND LICENCE
+
+   Copyright (C) 2001  Danny Sheehan
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 2 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+      FTMON
+      PO Box 3228
+      Sydney NSW 1043
+      AUSTRALIA
+      dsheehan@ftmon.org
+      http://ftmon.org
