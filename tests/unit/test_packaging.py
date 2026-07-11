@@ -111,6 +111,7 @@ def test_demo_caddy_reference_has_real_rate_and_concurrency_caps_se_06():
     # Rate limiting is a pinned custom module; concurrency uses documented
     # stock reverse-proxy controls, so neither boundary is merely commentary.
     assert "github.com/mholt/caddy-ratelimit@5625512f" in caddy
+    assert "--output /tmp/caddy-ftmon-demo" in caddy
     assert "rate_limit {" in caddy
     assert "key {remote_host}" in caddy
     assert "unhealthy_request_count 32" in caddy

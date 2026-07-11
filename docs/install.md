@@ -334,12 +334,20 @@ Pinning makes this non-stock security dependency auditable and repeatable;
 silently falling back to stock Caddy would remove the promised request limit.
 
 ```sh
-xcaddy build v2.11.4 \
+xcaddy build v2.11.4 --output /tmp/caddy-ftmon-demo \
   --with github.com/mholt/caddy-ratelimit@5625512f24f6f59d6f64fb3aafe5eecff0b286db
-sudo install -o root -g root -m 0755 caddy /usr/local/bin/caddy-ftmon-demo
+/tmp/caddy-ftmon-demo list-modules | grep '^http.handlers.rate_limit$'
+sudo install -o root -g root -m 0755 /tmp/caddy-ftmon-demo \
+  /usr/local/bin/caddy-ftmon-demo
 sudo install -m 0644 src/ftmon/deploy/Caddyfile.demo /etc/caddy/Caddyfile
+sudo /usr/local/bin/caddy-ftmon-demo validate --config /etc/caddy/Caddyfile
 sudo systemctl edit caddy
 ```
+
+Do not continue if the build or module check fails. The explicit `/tmp` output
+path avoids accidentally installing a stale `caddy` file from another working
+directory—the service override is added only after the expected binary and
+configuration both validate.
 
 Use an override so distribution package upgrades cannot silently replace the
 pinned custom binary:
@@ -353,7 +361,6 @@ ExecReload=/usr/local/bin/caddy-ftmon-demo reload --config /etc/caddy/Caddyfile
 ```
 
 ```sh
-sudo /usr/local/bin/caddy-ftmon-demo validate --config /etc/caddy/Caddyfile
 sudo systemctl daemon-reload
 sudo systemctl enable caddy
 sudo systemctl restart caddy
