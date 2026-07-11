@@ -1,6 +1,6 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.3** — v0.2 incorporated the external review (`CODEX-SPEC-REVIEW.md`, disposition in §21); v0.3 adds two capacity-driven amendments from the design phase (DM-04, DM-09 — see `DESIGN.md` §9). All §19 open questions are resolved.
+Status: **DRAFT v0.4** — v0.4 specifies honest historical disk-trend visualization as the post-v1 M7 milestone. All §19 open questions are resolved.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -148,6 +148,7 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 - **DM-05** Total database size MUST stay under **200 MB**. On breach the daemon degrades in this fixed order until under budget: (1) oldest raw samples beyond 24 h, (2) oldest events beyond 7 d, (3) oldest 5-min rollups, (4) oldest 1-h rollups. Incidents are never pruned. Each degradation step records a self-event. The DB is created with `auto_vacuum=INCREMENTAL`; `PRAGMA incremental_vacuum` runs after prune batches, full `VACUUM` at most weekly, off-cycle.
 - **DM-06** Queries spanning tiers (raw → 5 m → 1 h) MUST be answered transparently by the query layer choosing resolution by range; callers never pick tables.
 - **DM-16** The design document MUST include a capacity worksheet deriving RB-01/DM-05 feasibility from stated assumptions — max tracked entities (budget: 400 persisted), metrics per entity (≤ 10), sample width in bytes, rows/day at 60 s intervals, event rates, ring-buffer memory (CA-04) — and the worksheet's assumptions become validation limits (a definition exceeding them is rejected).
+- **DM-17** Historical chart queries MUST expose the selected rollup statistic (`avg|min|max|last`) and, when requested, the stored minimum/maximum envelope. Rates and projections MUST be computed from observations before display downsampling; presentation code MUST NOT derive them from the ≤2 000 rendered points. Missing intervals remain gaps rather than being interpolated.
 
 ### 5.3 Canonical event record
 
@@ -244,6 +245,7 @@ Available in all expressions. `w` is a duration string (`"90s"`, `"10m"`, `"3h"`
 ### 7.6 Entity disappearance
 
 - **CA-08** When a **discovered** entity (process, mount) stops appearing in snapshots, its metrics simply stop (rules go `None` via CA-02). After `gone_grace` (default 5 m) the entity is marked gone (`gone_ts` in DM-03): its confirmation counters reset and any open incident for it clears with `clear_reason = entity_gone` and a recovery notification whose message says so (a leaking process that exits is a resolved leak). **Watchlist** entities (service units, expected listeners) never disappear: they are synthetic, always present, with a `present` (0/1) metric — absence is their alerting signal, not their removal.
+- **CA-09** The disk monitor persists a signed `fill_rate_bph` derived from the 70-minute least-squares slope of `used_bytes`. A projected-full time is displayable only when the rate is positive, `filling >= filling_frac`, and the slope window has sufficient coverage; otherwise consumers MUST report that no reliable projection is available. This gate prevents flat, shrinking, sparse, or irregular history from producing a mathematically finite but operationally misleading date.
 
 ### 7.7 Built-in monitors (seven user monitors + `self`)
 
@@ -436,6 +438,8 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **UI-07** The web server process is optional at runtime: nothing else may depend on it.
 - **UI-08** Request hardening despite loopback: exact `Host` header allowlist (`127.0.0.1:<port>`, `localhost:<port>`) — anything else is 400 (defeats DNS rebinding); POSTs require a matching `Origin`; no CORS headers are ever emitted; responses set `X-Content-Type-Options: nosniff` and the SE-02 CSP.
 - **UI-09** Accessibility: severity is never conveyed by color alone (icon + text label); all interactive elements keyboard-operable; `prefers-reduced-motion` respected; every chart has a text alternative (current value + trend sentence).
+- **UI-10** Historical disk trends MUST show synchronized capacity, signed fill-rate/confidence, and projection views for one mount and a shareable range. Capacity includes configured threshold lines and stored min/max rollup envelopes; incident transitions are overlaid. The response and page state identify units, resolution, coverage, and UTC timestamps.
+- **UI-11** Forecast presentation MUST be honest: unstable/unqualified projections are rendered as a gap and explanatory text, never as a huge sentinel value. Every disk-trend chart has a textual summary containing current use, change over the selected range, signed rate when qualified, filling confidence, and either a projected-full date or the reason it is unavailable.
 
 ---
 
@@ -498,6 +502,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ### 16.5 Tier-2 (opt-in, real system)
 
 - **TS-08** Marked `@pytest.mark.realsystem`, excluded from CI default: daemon starts under systemd user unit, samples real psutil ≥ 3 cycles, journald reader ingests a `logger`-injected marker event and resumes across a daemon restart via cursor, notify-send fires (assert via `notifications.jsonl` + non-fatal check of desktop), CLI/status/web respond, `ftmon doctor` clean, teardown cleans state.
+- **TS-09** Historical visualization tests MUST cover signed growth and cleanup, projection qualification/suppression, sparse-data gaps, rollup `avg/last` selection and min/max envelopes, incident overlays, the 2 000-point cap, hostile labels, shareable URL state, and textual alternatives. Tier-1 uses `disk-filling-linear` and `disk-ladder-updown`; browser-library behavior is tested at the HTTP/data-contract boundary rather than by pixel snapshots.
 
 ---
 
@@ -545,10 +550,13 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M4** | MCP server (MC-*), draft/approve flow (PM-06/MD-05) | AI integration |
 | **M5** | Web UI (UI-*) | human dashboard |
 | **M6** | Actions (AC-*), `doctor` (CL-05), tier-2 suite, docs (DO-*), packaging polish | v1.0 |
+| **M7** | Historical disk trends (DM-17, CA-09, UI-10/11, TS-09) | honest capacity forecasting |
 
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.4 (2026-07-11)** — adds M7 historical disk-trend visualization. The query contract exposes rollup statistics and extrema; signed fill rate is persisted before downsampling; projections are suppressed unless positive, sufficiently covered, and corroborated by monotonic filling confidence. This deliberately follows v1/M6 so richer analytics cannot delay the operational release.
 
 **v0.3 (2026-07-10)** — design-phase capacity amendments (DESIGN.md §9 worksheet, per DM-16): DM-04 hourly-rollup retention split (400 d durable series / 90 d process series); DM-09 event store-filter (severity ≥ notice or rule-matching; full journal volume cannot fit DM-05). No other changes.
 

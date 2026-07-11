@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.1**. Companion to `SPEC.md` v0.3 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
+Status: **DRAFT v0.2**. Companion to `SPEC.md` v0.4 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
 
 Design-phase artifacts:
 
@@ -420,6 +420,24 @@ Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics
 
 argparse tree; every subcommand is a function taking `(Paths, Query|…, argparse.Namespace)` so tests call them directly. Mapping: `daemon→daemon.run`, `mcp→mcp_server.run`, `web→web.run`, `init→definitions.install_builtins`, `check→definitions.check_cli` (CL-02), `status/top/incidents/incident/events/query/monitors→store.query` renderers (each with `--json`, CL-03; `status` exit codes per CL-04), `ack/monitor approve|enable|disable→SmallWrites/definitions`, `baseline reset→store`, `doctor→store.doctor` (CL-05: quick_check/--deep, WAL checkpoint, sizes, cursor ages, orphans, `--backup` via `sqlite3.Connection.backup`).
 
+### 15.1 Historical disk trends (M7, DM-17/CA-09/UI-10/11)
+
+The disk detail view uses three synchronized uPlot panels rather than one overloaded dual-axis chart:
+
+1. capacity (`used_pct`) with notice/warning/error thresholds and the selected rollup's min/max envelope;
+2. signed `fill_rate_bph` with a zero line, plus `filling` on its own fixed 0..1 confidence scale;
+3. qualified hours-to-full, rendered as gaps whenever projection prerequisites fail, with incident transition markers shared across all panels.
+
+Separation is deliberate: percentage, bytes/time, confidence, and time remaining have different units and failure modes. Putting them on one axis makes cleanup look like growth and enormous sentinel forecasts dominate autoscaling. Synchronized cursors preserve correlation without conflating scales.
+
+`disk.toml` adds the persisted derived metric `fill_rate_bph = slope(used_bytes, "70m") * 3600`. Persisting the signed rate means long-range charts use the value evaluated against the original ring window, not a derivative of visually downsampled points (DM-17). `full_in_h` remains available for compatibility, but the trend API converts unqualified values to `null`; no database migration is required because derived metrics already use the generic series tables. Pre-amendment history simply has no rate series and is reported as unavailable rather than reconstructed inaccurately from coarse rollups.
+
+`Query.series` gains keyword-only `statistic="avg"` and `include_envelope=False`. Raw points use their value for every statistic; rollups select the named stored column, and envelopes return stored `min/max`. Downsampling occurs after column selection. `Query.disk_trend` aligns series by timestamp, returns explicit units/resolution/coverage and incident markers, and qualifies each projection from persisted rate + confidence. It never linearly fills absent buckets.
+
+Routes: `GET /disks` · `GET /disks/{entity:path}` · `GET /api/disk-trend?entity=…&range=…`. Range state lives entirely in the URL. The JSON contract is `{entity, range, resolution, panels, thresholds, incidents, summary}`; each panel supplies columnar uPlot data and units. Server-rendered summary text is authoritative for UI-11 and remains useful when JavaScript is unavailable.
+
+uPlot remains D4's renderer: its small vendorable footprint, temporal scales, cursor synchronization, and high/low bands match this bounded local use. ECharts was rejected as a much broader dependency; Chart.js duplicates server-side decimation and is less specialized for synchronized dense time series. LTTB stays the general shape-preserving cap, while extrema remain separately visible through the rollup envelope rather than relying on LTTB to retain every spike.
+
 ---
 
 ## 16. Test infrastructure design (TS-01..08)
@@ -460,6 +478,8 @@ Jinja autoescape + CSP (SE-02); notification bodies strip control chars; CLI out
 | D7 | LTTB downsampling in query layer | one implementation serves UI-05 and MCP |
 | D8 | Store-filter for events (SPEC v0.3) | capacity worksheet §9; full journal storage impossible in 200 MB |
 | D9 | Hourly-rollup durable/ephemeral split (SPEC v0.3) | §9; process churn dominates otherwise |
+| D10 | Persist signed fill rate; qualify projections at presentation | derivatives of downsampled history and clamped sentinel forecasts are misleading (DM-17/CA-09) |
+| D11 | Three synchronized disk panels | preserves distinct units/scales while keeping temporal correlation (UI-10) |
 
 ---
 
@@ -471,5 +491,6 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
 - **M2**: WP9 incident engine · WP10 outbox+notifiers · WP11 retention/rollups/baselines · WP12 builtins leak/hog/disk/load/self + tier-1 harness + scenario library.
 - **M3**: WP13 journald+event pipeline · WP14 events/service/net builtins + unit/net sources.
 - **M4**: WP15 MCP server. **M5**: WP16 web UI. **M6**: WP17 actions+doctor+tier-2+docs.
+- **M7**: WP18 historical query envelopes + signed disk rate · WP19 uPlot disk views/API + Tier-1 visualization contract tests.
 
 Each WP names its FROZEN interfaces from §4–5; an implementing model receives: SPEC excerpt, this document's relevant sections, the WP's test files, and the interface stubs — nothing else is in scope for it.
