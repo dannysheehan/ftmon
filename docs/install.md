@@ -9,6 +9,18 @@ a server. Definitions and actions are intentionally confined to that account
 
 Python 3.11 or newer and [uv](https://docs.astral.sh/uv/) are required.
 
+Install the pinned `uv` release as the account that will run FTMON when `uv`
+is not already available:
+
+```sh
+curl -LsSf https://astral.sh/uv/0.11.28/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv --version
+```
+
+The public-demo procedure below installs a root-owned copy because system
+deployment must not depend on one administrator's home directory.
+
 ```sh
 git clone https://github.com/dsheehan/ftmon.git
 cd ftmon
@@ -259,6 +271,102 @@ is correctly routed. Point them at the public host, allow inbound TCP 80 and
 443, and keep port 8420 blocked externally. Caddy needs 80/443 to obtain and
 renew certificates; the FTMON backend remains on loopback so bypassing TLS and
 the hosting controls is impossible.
+
+#### Install the Ubuntu/Debian prerequisites
+
+The public demo needs `uv` to install FTMON, the stock Caddy package for its
+service account and systemd unit, and `Go` plus `xcaddy` to compile the pinned
+rate-limit module. Go and `xcaddy` are build-time tools; the running services do
+not need them after `/usr/local/bin/caddy-ftmon-demo` has been installed.
+
+Install basic download and repository tools first:
+
+```sh
+sudo apt update
+sudo apt install -y ca-certificates curl git gpg \
+  debian-keyring debian-archive-keyring apt-transport-https
+```
+
+Install a pinned `uv` release with Astral's official installer, then copy the
+verified user installation into the system administrator's path. Pinning keeps
+deployment rebuilds repeatable; update the version deliberately rather than
+silently following the latest installer.
+
+```sh
+curl -LsSf https://astral.sh/uv/0.11.28/install.sh | sh
+"$HOME/.local/bin/uv" --version
+sudo install -o root -g root -m 0755 "$HOME/.local/bin/uv" /usr/local/bin/uv
+uv --version
+```
+
+Caddy 2.11.4 requires Go 1.25.1 or newer. The commands below install Go 1.26.5
+from the official archive and verify its published checksum. Select the block
+matching `uname -m`; do not use an older distribution Go package merely because
+it is convenient.
+
+For `x86_64`:
+
+```sh
+cd /tmp
+curl -fLO https://go.dev/dl/go1.26.5.linux-amd64.tar.gz
+echo '5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053  '\
+  'go1.26.5.linux-amd64.tar.gz' | sha256sum -c -
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.26.5.linux-amd64.tar.gz
+```
+
+For `aarch64`/`arm64`:
+
+```sh
+cd /tmp
+curl -fLO https://go.dev/dl/go1.26.5.linux-arm64.tar.gz
+echo 'fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49  '\
+  'go1.26.5.linux-arm64.tar.gz' | sha256sum -c -
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.26.5.linux-arm64.tar.gz
+```
+
+Expose Go system-wide and verify it before installing `xcaddy`:
+
+```sh
+echo 'export PATH=/usr/local/go/bin:$PATH' | \
+  sudo tee /etc/profile.d/go.sh >/dev/null
+export PATH=/usr/local/go/bin:$PATH
+go version
+```
+
+Install the official stable Caddy package. The later custom binary deliberately
+keeps this package's `caddy` account, directories, and hardened service unit.
+
+```sh
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | \
+  sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | \
+  sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+sudo chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+  /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update
+sudo apt install -y caddy
+```
+
+Install `xcaddy` from its official Ubuntu/Debian repository. Although the
+package provides the `xcaddy` executable, it still invokes the separately
+installed Go compiler during each custom build.
+
+```sh
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/xcaddy/gpg.key' | \
+  sudo gpg --dearmor -o /usr/share/keyrings/caddy-xcaddy-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/xcaddy/debian.deb.txt' | \
+  sudo tee /etc/apt/sources.list.d/caddy-xcaddy.list >/dev/null
+sudo apt update
+sudo apt install -y xcaddy
+xcaddy version
+```
+
+If Caddy or `xcaddy` was already installed, compare the existing repository and
+service configuration before overwriting it. These commands target a dedicated
+Ubuntu/Debian demo host; follow the linked upstream installation references for
+other operating systems.
 
 Create a non-login account and install a root-owned program:
 
