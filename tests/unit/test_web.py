@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
 from ftmon.clock import FakeClock
@@ -74,8 +75,9 @@ def test_metrics_chart_has_text_alternative_ui_05_ui_09(tmp_path):
     page = client.get("/metrics?monitor=load&entity=host&metric=load1&hours=1",
                       headers={"host": "127.0.0.1:8420"})
     assert page.status_code == 200
-    assert "Current value 3.0; trend rising" in page.text
+    assert "Current 3" in page.text and "Trend rising" in page.text
     assert "role=\"img\"" in page.text
+    assert 'data-metric-chart' in page.text
 
 
 def test_metrics_explorer_uses_cascading_catalog_selectors_ui_02(tmp_path):
@@ -111,6 +113,100 @@ def test_metrics_explorer_uses_cascading_catalog_selectors_ui_02(tmp_path):
     assert ">used_pct</option>" in page.text and ">free_bytes</option>" in page.text
     assert "rss_mb" not in page.text  # another monitor's metric is not offered
     assert "using last" in page.text
+
+
+def test_series_api_uplot_contract_envelope_gaps_incidents_and_trend_ts_11(tmp_path):
+    """[TS-11][UI-13] Metrics shares envelopes, gaps, markers, units and links."""
+    client, paths = _client(tmp_path)
+    builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/disk.toml"
+    (paths.monitors_dir / "disk.toml").write_text(builtin.read_text())
+    conn = connect(paths.db_file)
+    conn.execute(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(1,'disk','/home','used_pct',1)"
+    )
+    conn.executemany(
+        "INSERT INTO rollup5m(series_id,bucket,avg,min,max,last,cnt) "
+        "VALUES(1,?,?,?,?,?,5)",
+        [(-300, 50, 45, 55, 52), (0, 55, 50, 60, 58),
+         (600, 65, 60, 70, 68), (900, 70, 65, 75, 72)],
+    )
+    conn.execute(
+        "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+        "opened_ts,last_change_ts,notify_count,occurrences) "
+        "VALUES(3,'disk','space','/home','open',2,'space-warn',200,200,1,1)"
+    )
+    conn.commit()
+    conn.close()
+    response = client.get(
+        "/api/series?monitor=disk&entity=/home&metric=used_pct&"
+        "range=7d&statistic=last",
+        headers={"host": "localhost:8420"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["unit"] == "percent" and data["statistic"] == "last"
+    assert data["resolution"] == "5m"
+    assert [point[1] for point in data["panel"]["lower"] if point[1] is not None] == [
+        45, 50, 60, 65
+    ]
+    assert any(point[1] is None for point in data["panel"]["points"])
+    assert data["incidents"][0]["id"] == 3
+    assert data["matching_trends"][0]["id"] == "space-growth"
+    assert "panels" not in data  # Metrics never fabricates interpreted panels
+
+
+@pytest.mark.parametrize(
+    ("statistic", "expected"),
+    [("avg", 20.0), ("min", 10.0), ("max", 40.0), ("last", 30.0)],
+)
+def test_series_api_all_statistics_and_unknown_unit_fallback_ts_11(
+    tmp_path, statistic, expected
+):
+    """[TS-11] API selects every rollup column and never guesses unknown units."""
+    client, paths = _client(tmp_path)
+    conn = connect(paths.db_file)
+    conn.execute(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(1,'custom','entity','mystery',1)"
+    )
+    conn.execute(
+        "INSERT INTO rollup5m(series_id,bucket,avg,min,max,last,cnt) "
+        "VALUES(1,0,20,10,40,30,4)"
+    )
+    conn.commit()
+    conn.close()
+    response = client.get(
+        f"/api/series?monitor=custom&entity=entity&metric=mystery&"
+        f"range=7d&statistic={statistic}",
+        headers={"host": "localhost:8420"},
+    )
+    assert response.status_code == 200
+    assert response.json()["panel"]["points"][-1][1] == expected
+    assert response.json()["unit"] == "value"
+
+
+def test_series_api_enforces_display_point_cap_ts_11(tmp_path):
+    """[TS-11] Browser payload stays bounded even when raw history is denser."""
+    client, paths = _client(tmp_path)
+    conn = connect(paths.db_file)
+    conn.execute(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(1,'custom','entity','dense',1)"
+    )
+    conn.executemany(
+        "INSERT INTO samples(series_id,ts,value) VALUES(1,?,?)",
+        [(ts, float(ts)) for ts in range(-1100, 1001)],
+    )
+    conn.commit()
+    conn.close()
+    response = client.get(
+        "/api/series?monitor=custom&entity=entity&metric=dense&range=6h",
+        headers={"host": "localhost:8420"},
+    )
+    assert response.status_code == 200
+    real_points = [p for p in response.json()["panel"]["points"] if p[1] is not None]
+    assert len(real_points) <= 2000
 
 
 def test_disk_trend_api_and_accessible_page_ui_10_ui_11_ts_09(tmp_path):

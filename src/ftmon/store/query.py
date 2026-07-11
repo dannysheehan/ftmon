@@ -35,6 +35,7 @@ class SeriesResult:
     statistic: str = "avg"
     lower: list[SeriesPoint] | None = None
     upper: list[SeriesPoint] | None = None
+    downsampled: bool = False
 
 
 def lttb(points: list[SeriesPoint], n: int) -> list[SeriesPoint]:
@@ -158,7 +159,8 @@ class Query:
                     for r in rows if r["min"] is not None and r["max"] is not None
                 }
 
-            if len(points) > max_points:
+            downsampled = len(points) > max_points
+            if downsampled:
                 points = lttb(points, max_points)
             lower = upper = None
             if include_envelope:
@@ -177,6 +179,7 @@ class Query:
                     statistic=statistic,
                     lower=lower,
                     upper=upper,
+                    downsampled=downsampled,
                 )
             )
         return results

@@ -253,6 +253,12 @@ def test_disk_fill_rate_persisted_before_query_downsampling_ts_09_ca_09(tmp_path
         )
         assert response.status_code == 200
         assert response.json()["rate"][-1][1] > 0
+        metric_response = web.get(
+            "/api/series?monitor=disk&entity=/data&metric=fill_rate_bph&range=6h",
+            headers={"host": "localhost:8420"},
+        )
+        assert metric_response.status_code == 200
+        assert metric_response.json()["matching_trends"][0]["id"] == "space-growth"
     finally:
         h.stop()
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import tomllib
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -22,6 +21,7 @@ from ftmon.definitions import loader, manage
 from ftmon.expr import ExprError, parse_duration
 from ftmon.model import severity_name
 from ftmon.paths import Paths, get_paths
+from ftmon.sources.base import SOURCE_DECLS
 from ftmon.store.db import connect
 from ftmon.store.query import Query, SmallWrites
 
@@ -180,15 +180,162 @@ async def metrics(request: Request):
             entity_id=entity, max_points=2000, statistic=statistic,
             include_envelope=True,
         )
-    series = [{"entity": r.entity_id, "resolution": r.resolution,
-               "points": [[x.ts, x.value] for x in r.points]} for r in rows]
+        payload = None if q is None or not rows else _series_payload(
+            request.app.state.paths, q, rows[0], monitor, entity, metric,
+            statistic, now-seconds, now,
+        )
     selected = {"monitor": monitor, "entity": entity, "metric": metric,
                 "range": range_text, "statistic": statistic}
     return _render(
         "metrics.html", request, title="Metrics", choices=choices,
         monitors=monitors, entities=entities, metrics=metrics,
-        series=series, series_json=json.dumps(series), selected=selected,
+        payload=payload, selected=selected,
     )
+
+
+def _points_with_gaps(
+    points, resolution: str, *, downsampled: bool = False
+) -> list[list[float | None]]:
+    """Insert explicit nulls where absence is knowable (UI-13).
+
+    uPlot otherwise joins the surrounding values and visually claims a
+    measurement through suspend/missing buckets. Raw cadence is inferred from
+    observed deltas; fixed rollup tiers use their normative bucket width.
+    """
+    pairs = [[p.ts, p.value] for p in points]
+    # Once LTTB intentionally removes observations, cadence gaps in the result
+    # no longer prove missing collection. Adding nulls there would turn normal
+    # downsampling into a false outage (TS-11).
+    if downsampled:
+        return pairs
+    if len(points) < 3:
+        return pairs
+    if resolution == "5m":
+        step = 300
+    elif resolution == "1h":
+        step = 3600
+    else:
+        deltas = [
+            b.ts - a.ts for a, b in zip(points, points[1:], strict=False) if b.ts > a.ts
+        ]
+        step = min(deltas, default=0)
+    if step <= 0:
+        return pairs
+    out: list[list[float | None]] = [pairs[0]]
+    for previous, current in zip(points, points[1:], strict=False):
+        if current.ts - previous.ts > step * 1.5:
+            out.append([previous.ts + step, None])
+        out.append([current.ts, current.value])
+    return out
+
+
+def _metric_metadata(paths: Paths, monitor: str, metric: str) -> tuple[str, list[dict]]:
+    """Resolve units conservatively and find declared interpretations.
+
+    Raw units are source contracts. Derived units only exist when a profile
+    explicitly declares them; guessing from names would violate UI-13.
+    """
+    defs, _errors = loader.load_dir(
+        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+    )
+    mdef = next((item for item in defs if item.name == monitor), None)
+    unit = "value"
+    matching = []
+    if mdef:
+        decl = SOURCE_DECLS.get(mdef.source)
+        if decl:
+            raw = next((item for item in decl.metrics if item.name == metric), None)
+            if raw:
+                unit = raw.unit
+        for profile in mdef.trends:
+            panel = None
+            if metric == profile.value_metric:
+                panel, unit = "value", profile.value_unit
+            elif metric == profile.rate_metric:
+                panel, unit = "rate", profile.rate_unit
+            elif metric == profile.confidence_metric:
+                panel, unit = "confidence", "fraction"
+            elif metric == profile.remaining_metric:
+                panel = "remaining"
+            if panel:
+                matching.append({"id": profile.id, "title": profile.title, "panel": panel})
+    return unit, matching
+
+
+def _series_payload(
+    paths: Paths, q: Query, result, monitor: str, entity: str, metric: str,
+    statistic: str, start: float, end: float,
+) -> dict:
+    """Build the shared Metrics chart/data contract (UI-13/TS-11)."""
+    unit, matching = _metric_metadata(paths, monitor, metric)
+    incidents = [dict(row) for row in q._conn.execute(
+        "SELECT id,state,severity,opened_ts,last_change_ts,cleared_ts,grp "
+        "FROM incidents WHERE monitor=? AND entity_id=? "
+        "AND (cleared_ts IS NULL OR cleared_ts>=?) AND opened_ts<=? ORDER BY opened_ts",
+        (monitor, entity, round(start), round(end)),
+    )]
+    values = [point.value for point in result.points]
+    summary = {
+        "current": values[-1] if values else None,
+        "change": values[-1] - values[0] if len(values) >= 2 else None,
+        "minimum": min(values) if values else None,
+        "maximum": max(values) if values else None,
+        "trend": ("rising" if len(values) >= 2 and values[-1] > values[0]
+                  else "falling" if len(values) >= 2 and values[-1] < values[0]
+                  else "steady" if len(values) >= 2 else "unavailable"),
+    }
+    return {
+        "monitor": monitor, "entity": entity, "metric": metric, "unit": unit,
+        "statistic": statistic, "resolution": result.resolution,
+        "range": {"start": start, "end": end},
+        "panel": {
+            "points": _points_with_gaps(
+                result.points, result.resolution, downsampled=result.downsampled
+            ),
+            "lower": _points_with_gaps(
+                result.lower or [], result.resolution, downsampled=result.downsampled
+            ),
+            "upper": _points_with_gaps(
+                result.upper or [], result.resolution, downsampled=result.downsampled
+            ),
+        },
+        "incidents": incidents, "summary": summary,
+        "matching_trends": matching,
+    }
+
+
+async def series_api(request: Request):
+    """Return one selected series for non-template consumers (TS-11)."""
+    p = request.query_params
+    monitor, entity, metric = p.get("monitor"), p.get("entity"), p.get("metric")
+    statistic = p.get("statistic", "avg")
+    if not monitor or not entity or not metric:
+        return Response("monitor, entity, and metric are required", status_code=400)
+    if statistic not in {"avg", "min", "max", "last"}:
+        return Response("Statistic must be avg, min, max, or last", status_code=400)
+    range_text = p.get("range", "24h")
+    try:
+        seconds = parse_duration(range_text)
+    except ExprError:
+        return Response("Invalid range", status_code=400)
+    if not 900 <= seconds <= 400 * 86400:
+        return Response("Range must be between 15m and 400d", status_code=400)
+    now = request.app.state.clock.now()
+    with _query(request) as q:
+        if q is None:
+            return Response("Database not found", status_code=404)
+        rows = q.series(
+            monitor, metric, now=now, start=now-seconds, end=now,
+            entity_id=entity, max_points=2000, statistic=statistic,
+            include_envelope=True,
+        )
+        if not rows:
+            return Response("Series not found", status_code=404)
+        payload = _series_payload(
+            request.app.state.paths, q, rows[0], monitor, entity, metric,
+            statistic, now-seconds, now,
+        )
+    return JSONResponse(payload)
 
 
 def _trend_request(request: Request) -> tuple[str | None, float, float, str] | Response:
@@ -384,7 +531,7 @@ def create_app(paths: Paths | None = None, clock=None, port: int = 8420) -> Star
         Route("/incidents/{id:int}/ack", ack, methods=["POST"]),
         Route("/metrics", metrics), Route("/events", events),
         Route("/trends", trends), Route("/trends/{monitor:str}/{profile:str}", trends),
-        Route("/api/trend", trend_api),
+        Route("/api/trend", trend_api), Route("/api/series", series_api),
         Route("/disks", disks_redirect), Route("/disks/{entity:path}", disks_redirect),
         Route("/api/disk-trend", disk_trend_api),
         Route("/monitors", monitors),
