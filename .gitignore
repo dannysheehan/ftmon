@@ -6,6 +6,8 @@ __pycache__/
 dist/
 *.egg-info/
 .coverage
+# Local AI-agent session state (tool permission grants), not project content.
+.claude/
 # The original GPLv2 Perl project is published on SourceForge. Keep any local
 # reference checkout out of this MIT-licensed v2 repository.
 ftmon-legacy/
