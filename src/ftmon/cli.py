@@ -32,8 +32,12 @@ tick_seconds = 5
 collect_cmdline = true
 
 [quiet_hours]
-# Suppress notifications outside working hours (optional trading calendar)
+# NO-03: hold warning-and-below notifications overnight, delivered as one
+# digest when quiet hours end. error and critical always come through.
+# Incidents still open/clear during quiet hours - only delivery is held.
 enabled = false
+start = "22:00"   # local time, HH:MM
+end = "08:00"     # may cross midnight (as here)
 
 [web]
 # Dashboard port (http only; use reverse proxy for TLS)
@@ -310,6 +314,27 @@ def cmd_ack(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_baseline(args: argparse.Namespace) -> int:
+    """CA-06: `ftmon baseline reset <monitor> [entity]` clears learned
+    baselines so they relearn from scratch (they return unknown while
+    relearning — affected rules go quiet, they don't misfire)."""
+    paths = get_paths()
+    if not paths.db_file.exists():
+        print("no data - is the daemon running? (ftmon daemon)", file=sys.stderr)
+        return 1
+    from ftmon.store.db import connect
+    from ftmon.store.retention import reset_baselines
+
+    conn = connect(paths.db_file)
+    try:
+        n = reset_baselines(conn, args.monitor, args.entity)
+    finally:
+        conn.close()
+    scope = f"{args.monitor}/{args.entity}" if args.entity else args.monitor
+    print(f"reset {n} baseline(s) for {scope} (relearning takes ~24h of data)")
+    return 0
+
+
 def cmd_not_implemented(cmd_name: str) -> int:
     """Stub: print not-implemented message and return 2."""
     def handler(args: argparse.Namespace) -> int:
@@ -377,6 +402,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=["system", "controlled"],
         default="system",
         help="controlled = test-harness clock via FTMON_CLOCK_SOCK (TS-05)",
+    )
+    daemon_parser.add_argument(
+        "--fixtures",
+        metavar="SCENARIO",
+        help="replay a named scenario or JSONL file instead of live sampling (TS-04)",
     )
 
     # mcp
@@ -453,12 +483,15 @@ def main(argv: list[str] | None = None) -> int:
     # baseline
     baseline_parser = subparsers.add_parser(
         "baseline",
-        help="Baseline management"
+        help="Baseline management (reset learned baselines, CA-06)"
     )
     baseline_parser.add_argument(
         "action", choices=["reset"],
         help="Action to take"
     )
+    baseline_parser.add_argument("monitor", help="Monitor name")
+    baseline_parser.add_argument("entity", nargs="?", default=None,
+                                 help="Entity id (all entities if omitted)")
 
     # doctor
     doctor_parser = subparsers.add_parser(
@@ -528,9 +561,7 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     elif args.command == "baseline":
-        print("baseline: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        return cmd_baseline(args)
     elif args.command == "doctor":
         print("doctor: not implemented yet (arrives in a later milestone)",
               file=sys.stderr)

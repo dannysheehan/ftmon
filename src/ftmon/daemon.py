@@ -19,13 +19,14 @@ from dataclasses import dataclass, field
 
 from ftmon import definitions
 from ftmon.clock import Clock, ControlledClock, SystemClock
+from ftmon.config import AppConfig, load_config
 from ftmon.definitions.loader import MonitorDef
 from ftmon.engine import incidents as inc
 from ftmon.engine.effects import EffectExecutor
 from ftmon.engine.pipeline import EvalOutcome, Pipeline
 from ftmon.engine.rings import RingStore
 from ftmon.engine.scheduler import DueTable, Scheduler
-from ftmon.model import GroupState, IncidentCore, RungState
+from ftmon.model import EventRecord, GroupState, IncidentCore, RungState
 from ftmon.notify import FileNotifier
 from ftmon.notify.base import Notifier
 from ftmon.paths import Paths, get_paths
@@ -35,9 +36,11 @@ from ftmon.sources.process import ProcessSampler
 from ftmon.sources.system import SystemSampler
 from ftmon.store import db as store_db
 from ftmon.store.outbox import Outbox
+from ftmon.store.retention import BaselineLookup, Retention
 from ftmon.store.writer import TickWriter
 
 _RESCAN_EVERY_S = 30.0  # PM-04
+_RETENTION_EVERY_S = 60.0  # DM-04: incremental; a minute cadence keeps passes tiny
 
 IncidentKey = tuple[str, str, str]  # (monitor, entity_id, group)
 
@@ -52,10 +55,15 @@ class DaemonCore:
     clock: Clock
     monitors: dict[str, MonitorDef] = field(default_factory=dict)
     notifiers: list[Notifier] | None = None
+    config: AppConfig | None = None  # None = load from paths.config_file
     stop: bool = False
 
     def __post_init__(self) -> None:
         self.stats = SelfStats()
+        if self.config is None:
+            self.config, config_warnings = load_config(self.paths.config_file)
+            for w in config_warnings:
+                print(f"config warning: {w}", file=sys.stderr)
         self.conn = store_db.connect(self.paths.db_file)
         store_db.migrate(self.conn)
         self.writer = TickWriter(self.conn, on_reject=lambda _n: self.stats.count(
@@ -67,7 +75,14 @@ class DaemonCore:
             "system": SystemSampler(self.clock),
             "self": SelfSampler(self.stats, self.paths.db_file),
         }
-        self.pipeline = Pipeline(self.samplers, self.rings, self.stats.count)
+        # Rollups/retention/baselines (DM-04/05, CA-05) run in-daemon; the
+        # lookup is handed to the pipeline so baseline() in rules reads the
+        # learned values, invalidated whenever a retention pass writes.
+        self.retention = Retention(self.conn)
+        self.baselines = BaselineLookup(self.conn)
+        self._last_retention = -_RETENTION_EVERY_S
+        self.pipeline = Pipeline(self.samplers, self.rings, self.stats.count,
+                                 baseline_lookup=self.baselines)
         self.due = DueTable()
         # Incident machinery (M2): pure engine + executor + outbox delivery.
         # The file notifier is unconditional (NO-02: it is the audit trail);
@@ -77,6 +92,7 @@ class DaemonCore:
             self.conn,
             self.notifiers if self.notifiers is not None
             else [FileNotifier(self.paths.notifications_file)],
+            quiet=self.config.quiet,  # NO-03: delivery-side only
         )
         self._istates: dict[IncidentKey, GroupState] = {}
         self._group_rungs: dict[tuple[str, str], tuple[inc.RungConfig, ...]] = {}
@@ -261,7 +277,24 @@ class DaemonCore:
         self.writer.commit_tick()
         # NO-04: delivery strictly after the transition committed.
         self.outbox.flush(wall)
+        if mono - self._last_retention >= _RETENTION_EVERY_S:
+            self._last_retention = mono
+            self._run_retention(wall)
         self.stats.cycle_s = self.clock.monotonic() - started
+
+    def _run_retention(self, wall: float) -> None:
+        """Rollups + pruning + baselines (DM-04/05, CA-05), its own bounded
+        transaction after the tick commit. DM-05 degradation steps become
+        self-events; the events buffer flushes with the next tick's commit."""
+        notes = self.retention.run(wall)
+        if self.retention.baselines_updated:
+            self.baselines.invalidate()
+        for note in notes:
+            self.stats.count("db_degradations")
+            self.writer.add_event(EventRecord(
+                ts=wall, ingest_ts=wall, source="self", provider="ftmon.retention",
+                event_id=None, severity=1, message=note,
+            ))
 
     def _step_incidents(self, outcomes: list[EvalOutcome], wall: float) -> None:
         grouped: dict[IncidentKey, dict[str, inc.RungEval]] = {}
@@ -329,13 +362,23 @@ def run(args) -> int:
         notifiers=[FileNotifier(paths.notifications_file), DesktopNotifier()],
     )
 
+    if getattr(args, "fixtures", None):
+        # TS-04/TS-05: replace live samplers with scenario replay. In-place
+        # update — the pipeline holds a reference to this same dict.
+        from ftmon.sources import fixtures
+
+        scn = fixtures.scenario(args.fixtures)
+        core.samplers.update(fixtures.fixture_samplers(scn))
+        print(f"fixtures: {args.fixtures} ({', '.join(sorted(scn.sources()))})",
+              file=sys.stderr)
+
     def _stop(_sig, _frame):
         core.stop = True
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    tick_s = 5.0
+    tick_s = core.config.tick_seconds if core.config else 5.0
     print(f"ftmon daemon started ({len(core.monitors)} monitors)", file=sys.stderr)
     core.run_loop(tick_s)
     print("ftmon daemon stopped", file=sys.stderr)

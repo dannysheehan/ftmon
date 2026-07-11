@@ -92,13 +92,14 @@ the daemon is `ftmon daemon`; everything else (CLI, web UI, MCP) reads the
 same database and works even when the daemon is stopped — you just see
 stale data with a clear "last checked N minutes ago".
 
-## 3. Daily use — CLI *(status/query live now; more with M2)*
+## 3. Daily use — CLI
 
 ```sh
 ftmon status            # one screen; exit code 0/1/2 = clear/warnings/errors
 ftmon check             # validate definitions (run after editing)
 ftmon incidents         # open/acked problems (--all includes cleared)
 ftmon ack 42            # stop re-notifying, keep watching
+ftmon baseline reset leak         # forget learned "normal" (e.g. after an upgrade)
 ftmon incident 42       # full story of one incident        (soon)
 ftmon top rss --range 3h  # what was eating memory          (soon)
 ftmon events --min-severity error                          # (M3)
@@ -127,6 +128,15 @@ edits within 30 seconds, no restart. Three knobs cover most needs:
   encoders). Exempt entities are still recorded — only alerting stops —
   so you can still ask about them later.
 
+Baselines learn automatically (~24 h of data before they speak). If your
+machine's "normal" genuinely changed — new job, big software upgrade —
+`ftmon baseline reset <monitor>` starts the learning over; affected rules
+go quiet while relearning rather than firing against the old normal.
+
+FTMON keeps raw minute-level history for 48 h, 5-minute summaries for a
+month, and hourly summaries for about a year, pruning automatically to stay
+inside the 200 MB budget. Incident history is never pruned.
+
 ## 5. The web UI *(arrives with M5)*
 
 `ftmon web` serves a local page at `http://127.0.0.1:8420`: status
@@ -154,10 +164,22 @@ version: copy the nearest built-in, rename it, edit, `ftmon check`.
 
 Notifications are desktop-native and deliberately short; depth lives in
 `ftmon incident <id>` and the web UI. An audit trail of every notification
-is kept at `~/.local/state/ftmon/notifications.jsonl`. Quiet hours
-(`config.toml`) hold warning-level noise overnight and deliver a morning
-digest; errors always come through. After a crash FTMON may repeat at most
-one notification — it will never silently lose one.
+is kept at `~/.local/state/ftmon/notifications.jsonl`.
+
+Quiet hours are set in `config.toml`:
+
+```toml
+[quiet_hours]
+enabled = true
+start = "22:00"   # local time; the window may cross midnight
+end = "08:00"
+```
+
+During quiet hours, warning-and-below notifications are held and delivered
+as **one digest** when the window ends; error and critical always come
+through immediately. Incidents still open, escalate, and clear during quiet
+hours — only the popups wait. After a crash FTMON may repeat at most one
+notification — it will never silently lose one.
 
 ## 9. Privacy
 

@@ -296,13 +296,12 @@ class TestNotImplemented:
         assert "not implemented yet" in captured.err or \
                "not implemented yet" in captured.out
 
-    def test_baseline_stub_with_action(self, capsys):
-        """[CL-01] baseline reset stub."""
-        rc = main(["baseline", "reset"])
-        assert rc == 2
-        captured = capsys.readouterr()
-        assert "not implemented yet" in captured.err or \
-               "not implemented yet" in captured.out
+    def test_baseline_reset_no_db(self, tmp_path, monkeypatch, capsys):
+        """[CA-06] baseline reset without a database reports and exits 1."""
+        setup_env(tmp_path, monkeypatch)
+        rc = main(["baseline", "reset", "leak"])
+        assert rc == 1
+        assert "no data" in capsys.readouterr().err
 
     def test_incident_stub_requires_id(self, capsys):
         """[CL-01] incident subcommand exists in help."""

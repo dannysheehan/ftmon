@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ftmon.definitions.loader import MonitorDef
 from ftmon.engine.context import EntityCtx
@@ -54,11 +54,13 @@ class Pipeline:
         rings: RingStore,
         counter: Callable[[str], None],
         gone_grace_s: float = 300.0,
+        baseline_lookup: Callable[[str, str, str], float | None] | None = None,
     ):
         self._samplers = samplers
         self._rings = rings
         self._counter = counter
         self._gone_grace_s = gone_grace_s
+        self._baseline_lookup = baseline_lookup
         self._state: dict[str, _MonitorState] = {}
         # Self-events buffer: the daemon drains this after each tick and hands
         # the records to the writer - the pipeline must not depend on
@@ -138,7 +140,7 @@ class Pipeline:
         return set(self._state.get(monitor, _MonitorState()).promoted)
 
     def _ctx(self, mdef: MonitorDef, entity_id: str, attrs: Mapping, now: float) -> EntityCtx:
-        return EntityCtx(
+        ctx = EntityCtx(
             rings=self._rings,
             monitor=mdef.name,
             entity_id=entity_id,
@@ -146,6 +148,9 @@ class Pipeline:
             params=mdef.parameters,
             wall=now,
         )
+        if self._baseline_lookup is not None:  # CA-05 arrives with the store (M2)
+            ctx = replace(ctx, baseline_lookup=self._baseline_lookup)
+        return ctx
 
     def _persist(
         self,
