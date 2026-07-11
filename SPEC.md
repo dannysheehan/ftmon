@@ -1,6 +1,6 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.8** — v0.8 separates the original GPLv2 project from this MIT repository. All §19 open questions are resolved.
+Status: **DRAFT v0.9** — v0.9 specifies single-server operation, remote notification channels, and a safe public demonstration mode. All §19 open questions are resolved.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -8,9 +8,12 @@ Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement ID
 
 ## 1. Purpose
 
-FTMON v2 is a lightweight, local, single-host systems monitor for desktops and workstations. It:
+FTMON v2 is a lightweight, local, single-host systems monitor for desktops,
+workstations, and individually managed servers. It:
 
-- detects memory leaks, CPU hogs, disks filling, and log/event-log entries of interest, and raises desktop notifications;
+- detects memory leaks, CPU hogs, disks filling, service failures, and
+  log/event-log entries of interest, then delivers notifications through
+  locally selected channels;
 - records metric history so questions about past behavior can be answered;
 - lets users (and, with approval, AI) define new monitors declaratively, including formula-based derived metrics;
 - exposes everything to AI assistants through a local MCP server;
@@ -21,10 +24,16 @@ It is the successor to the legacy Perl FTMON (2001–2003), published separately
 ### 1.1 Non-goals (v1)
 
 - **NG-01** Multi-host / fleet monitoring, remote agents, or any network listener other than the localhost web UI.
-- **NG-02** Email, SMS, or webhook notification channels (desktop notifications only; the architecture must not preclude adding channels later).
-- **NG-03** Being a Nagios/Zabbix/Prometheus replacement. If a feature is only needed for server fleets, it is out of scope.
+- **NG-02** **[RETIRED v0.9]** Desktop-only notifications. Replaced by the
+  bounded channel set in NO-05; direct SMS and a general notification-platform
+  plugin ecosystem remain out of scope.
+- **NG-03** Being a Nagios/Zabbix/Prometheus replacement. FTMON monitors one
+  host per installation; fleet inventory, cross-host queries, service
+  discovery, and a central collector are out of scope.
 - **NG-04** Windows and macOS *implementations* (interfaces and schema must support them; see §4). Linux ships first.
-- **NG-05** Authentication/multi-user support in the web UI (localhost, single user).
+- **NG-05** Authentication/multi-user support in the operational web UI. It
+  remains loopback-only and single-user; the public demo exception is
+  synthetic and read-only (UI-15), not a remotely manageable FTMON instance.
 - **NG-06** Per-process network connection attribution (deferred; needs elevated rights on some systems).
 - **NG-07** Baseline seasonality (day-of-week / time-of-day patterns) — deliberately absent in v1; the baseline is a single smoothed level (CA-05).
 - **NG-08** Secret-pattern redaction of command lines / log messages (privacy posture is SE-04: local single-user data, restrictive file modes, truncation, collection toggle).
@@ -108,6 +117,15 @@ These were decided during specification and are not open for re-litigation by im
 - **PM-05** MCP transport is **stdio only** in v1. The web UI binds **127.0.0.1** only, default port 8420, configurable. No other sockets are opened.
 - **PM-06** Definition-file coordination rules, binding on every process that writes to the config tree: (a) all writes are atomic — write to a temp file in the same directory, fsync, `rename()`; (b) directories 0700, files 0600 at creation; (c) symlinked definition files are rejected at load with a config_error; (d) approval (`drafts/x.toml` → `monitors/x.toml`) re-validates then renames atomically, and fails if the target exists; (e) concurrent writers are resolved last-write-wins — acceptable for a single-user tool — but every load path re-validates, so a torn outcome is at worst a config_error, never a partial load.
 - **PM-07** On each successful load, the daemon persists the monitor's normalized definition, content hash, and load timestamp in the DB. This is the substrate for change detection (PM-04), `get_monitor` history, and MD-06 — not a fallback config store (see PM-04).
+- **PM-08** `ftmon init --profile desktop|server` writes explicit initial
+  settings; the profile is scaffolding, not a permanent hidden behavior switch.
+  `desktop` enables the file and desktop channels. `server` enables the file
+  channel only, disables desktop delivery, and documents remote-channel setup.
+  Existing configuration is never rewritten unless the user supplies `--force`.
+- **PM-09** The supported server deployment runs the daemon as a dedicated
+  unprivileged account or the administrator's ordinary account. It MUST NOT run
+  as root. The normal web process remains on loopback; remote operational access
+  is through an SSH tunnel unless a future authenticated mode is specified.
 
 ### 4.3 Filesystem layout (Linux)
 
@@ -166,7 +184,16 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 
 - **DM-11** `state` ∈ {`open`, `acked`, `cleared`}. Identity is **(monitor, entity, group)** per IN-03. `clear_reason` ∈ {`recovered`, `entity_gone`, `superseded`, `quiet_period`}. Incidents are never deleted by retention; they are the system's long-term memory.
 - **DM-12** `history` records every state/severity transition, every notification sent, and every action run, with timestamps — sufficient for `explain_incident` (§11) to reconstruct the full story (subject to the DM-13 cap).
-- **DM-14** Notifications flow through a durable **outbox**: rows `(id, incident_id, kind, rendered_body, created_ts, delivered_ts|null, stale: bool)` written in the same transaction as the incident transition that caused them (see NO-04).
+- **DM-14** Notifications flow through a durable **outbox**: the immutable
+  rendered notification is written in the same transaction as the incident
+  transition that caused it (see NO-04).
+- **DM-18** Fan-out is represented by one durable delivery row per
+  `(notification, configured_channel)`, carrying `state`, `attempt_count`,
+  `next_attempt_ts`, `delivered_ts`, and a bounded redacted `last_error`.
+  Notification creation and the complete initial delivery set are atomic.
+  Success or permanent failure in one channel cannot mark another channel
+  delivered, and configuration changes do not retroactively add channels to an
+  already-created notification.
 
 ---
 
@@ -389,9 +416,48 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 ### 9.2 Notification contract
 
 - **NO-01** A notification carries: severity glyph + monitor + entity, the rendered rule `message`, and (where the platform allows) a "details" hint pointing at `ftmon incident <id>` / the web UI URL. Body ≤ 200 chars; truncation is deliberate — depth lives in the UI/CLI.
-- **NO-02** The notifier is an adapter interface (PL-01) with two v1 implementations: `desktop` (notify-send) and `file` (append JSON-lines; used by tests and available as an audit log, default on: `~/.local/state/ftmon/notifications.jsonl`).
+- **NO-02** The notifier is an adapter interface (PL-01). Its foundational
+  implementations are `desktop` (`notify-send`) and mandatory `file` (append
+  JSON-lines at `~/.local/state/ftmon/notifications.jsonl`, also used by tests);
+  the bounded remote implementations are specified by NO-05.
 - **NO-03** Global quiet hours (`config.toml`, default off): during quiet hours, `warning`-and-below notifications are held and delivered as one digest at quiet-hours end; `error`+ always notify. Incidents open/clear regardless — quiet hours affect delivery only. Global-only in v1 (per-monitor overrides deferred).
-- **NO-04** **Delivery guarantee — at-least-once, honestly.** The outbox row (DM-14) is committed in the same transaction as the incident transition; delivery then happens; `delivered_ts` is set after. A crash between delivery and the `delivered_ts` update can duplicate **at most the single in-flight notification** — TS-05's kill-9 test asserts exactly this bound (≤ 1 duplicate), not exactly-once. On restart, undelivered rows older than 10 m are marked `stale` and dropped, **except** incident-opening notifications of severity `error`+ which are delivered with a "(delayed)" prefix. No committed incident transition ever silently loses its notification.
+- **NO-04** **Delivery guarantee — at-least-once, honestly.** The notification
+  and its DM-18 channel deliveries are committed with the incident transition;
+  each delivery is marked delivered only after its adapter returns success. A
+  crash after send but before that update can duplicate at most the one
+  in-flight delivery per process; exactly-once is not promised. Retry and
+  terminal-failure policy is NO-07. No committed incident transition silently
+  loses its notification or local audit record.
+- **NO-05** Supported delivery channels are `file`, `desktop`, `ntfy`,
+  `webhook`, and `smtp`. File remains the mandatory local audit channel.
+  ntfy uses its HTTP publish API; webhook sends FTMON's documented JSON shape;
+  SMTP uses authenticated message submission. Messenger-specific adapters are
+  deferred until a generic webhook cannot represent a required capability.
+- **NO-06** Each optional channel has `enabled` and `min_severity` settings. Delivery is
+  fan-out, not fallback: every enabled and severity-eligible channel gets an
+  independent DM-18 row. Quiet-hours decisions happen before fan-out, so all
+  remote channels receive the same digest semantics as desktop delivery.
+- **NO-07** A failed remote delivery retries independently after
+  `30 s, 2 m, 10 m, 1 h, 6 h`, repeating at 6 h for no longer than 24 h.
+  Timeouts, connection failures, HTTP 408/429/5xx, and SMTP 4xx are retryable;
+  other HTTP 4xx and SMTP 5xx are permanent. `Retry-After` may lengthen but
+  never shorten the next delay. At exhaustion the delivery becomes `failed`,
+  a self-event is recorded, and file audit delivery remains unaffected.
+- **NO-08** Remote requests have a 10 s total timeout, bounded response/error
+  bodies, default platform TLS verification, no redirects from HTTPS to HTTP,
+  and no proxying of untrusted incident content into headers or URLs. Webhook
+  payloads include schema version, incident ID, kind, severity, title, body,
+  monitor, entity, and timestamp; receivers must tolerate additive fields.
+- **NO-09** ntfy credentials use a bearer token read through SE-05; topics are
+  configuration, not secrets, but documentation recommends an authenticated
+  non-guessable topic. Public ntfy service users are warned that notification
+  content leaves the host and may be retained by that service. SMTP requires
+  STARTTLS or implicit TLS unless the host is loopback.
+- **NO-10** Channel configuration is validated at startup and reload. An
+  invalid channel is disabled with a visible config error while monitoring and
+  other delivery channels continue. `ftmon doctor` reports channel readiness
+  without sending a test message or exposing credentials; an explicit future
+  `--send-test` operation is outside this milestone.
 
 ---
 
@@ -450,6 +516,18 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
 - **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. It additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric.
 - **UI-14** Every dashboard monitor tile MUST show one accessible health state derived from current configuration, daemon freshness, and live open/acked incidents. Fixed precedence is `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`. States use color plus icon and visible text: grey `? unknown`/`● disabled`, red `✖ error`, yellow `▲ warning`, green `✓ clear`. Acknowledgment does not reduce severity or turn a tile green. Affected tiles show live incident count and link to incidents filtered by monitor; color never flashes or animates.
+- **UI-15** `ftmon web --demo` is a separate public-demonstration mode. It
+  opens only a generated, deterministic synthetic database read-only; registers
+  GET/HEAD routes only (all POSTs and write helpers are absent, not merely hidden);
+  accepts one explicitly configured public hostname; and displays a persistent
+  "synthetic demonstration data" banner. It MUST contain no real telemetry,
+  configuration, credentials, actions, MCP endpoint, or operational daemon.
+  The ordinary web mode and its loopback/Host/Origin rules are unchanged.
+- **UI-16** The demo dataset exercises clear/warning/error/disabled states,
+  open and recovered incidents, disk and process-growth trends, chart gaps, and
+  stale-daemon presentation. It is regenerated from a versioned seeded scenario
+  at deployment/startup, is never mutated by visitors, and may be replaced on a
+  schedule without schema migration or preserving visitor state.
 
 ## 13. Resource budget (self-enforced)
 
@@ -463,8 +541,21 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 - **SE-01** Attack surface by construction: no listening sockets except web UI on loopback (hardened per UI-08); MCP on stdio; definitions are data validated against MD-01; expressions cannot reach the interpreter (EX-01..07); actions are pre-existing user-created executables only (AC-03); the daemon runs as the user, never root; anything needing elevation is skipped per PL-03.
 - **SE-02** Event messages and process cmdlines are untrusted strings: every sink (web UI templates, notifications, CLI, MCP JSON) escapes appropriately; the web UI sets a restrictive CSP (`default-src 'self'`).
-- **SE-03** The legacy CipherSaber password feature is **not** carried forward. v1 stores no secrets. (SNMP/remote checks, if ever added, will use the OS keyring — recorded here so implementers don't improvise.)
+- **SE-03** The legacy CipherSaber password feature is **not** carried forward.
+  FTMON's configuration and database store no secret values; remote-channel
+  credentials remain external references under SE-05. SNMP/remote checks, if
+  ever added, require a separately specified secret mechanism.
 - **SE-04** Privacy posture: process command lines are collected by default, truncated to 256 chars, storable off via `collect_cmdline = false` in `config.toml` (then only the executable basename is stored). Event messages truncate at 2 KB (DM-13). The DB, daemon log, and notification audit file are mode 0600 in 0700 directories (PM-06/FS). MCP and the web UI see the same data (local, single-user trust model); no redaction machinery in v1 (NG-08).
+- **SE-05** Remote-channel secrets are indirect references to environment
+  variables or service-account-readable credential files, never literal
+  tokens/passwords in `config.toml`, CLI arguments, URLs, database rows, logs,
+  errors, `doctor`, MCP, or web output. Missing references fail that channel
+  closed. Error redaction removes credential values and URL user-info.
+- **SE-06** A reverse proxy is the public TLS and rate-limiting boundary for
+  demo mode. The backend still enforces the exact configured Host, existing CSP
+  and output escaping, a maximum request-target length, and read-only routing.
+  Proxy headers grant no authority. Demo mode is not an approved pattern for
+  exposing an operational FTMON database.
 
 ---
 
@@ -499,11 +590,12 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - Validator: a corpus of invalid TOML definitions each asserting the specific error message (MD-01, MD-03, MD-04, MD-08 cycle detection); all eight built-ins pass (MD-07).
 - Event pipeline: per-source severity mapping tables (DM-08) with captured real samples as fixtures; msg_hash normalization vectors (§7.7.3); cursor resume/replay (DM-15); storm collapse (DM-10); queue overflow (SA-08).
 - Retention/rollup: rollup math golden tests; degradation order (DM-05); attrs/history caps (DM-03/DM-13).
-- Outbox: NO-04 stale-drop and delayed-delivery rules.
+- Outbox: NO-04 crash window plus DM-18/NO-07 independent channel retry and
+  terminal-failure rules.
 
 ### 16.4 Tier-1 e2e (CI, deterministic)
 
-- **TS-05** Harness: launch the real `ftmon daemon` binary with `--clock=controlled` (FakeClock stepped over a control socket/file), `--fixtures <scenario>`, temp XDG dirs, `file` notifier. Assertions run against the DB, `notifications.jsonl`, and CLI/MCP/web responses. Scenario cases: each built-in monitor's happy-path fire-and-clear; ladder escalate → downgrade → clear; episode lifecycle; backoff timing; ack; quiet hours digest; config hot-reload incl. invalid file (PM-04); draft → approve flow incl. approval race (PM-06); budget invariants under `proc-churn-300` (RB-03); suspend/resume gap (SA-07); daemon kill -9 mid-cycle → restart → **at most one duplicate notification** (NO-04), no lost committed notifications, cursor-correct event resume (DM-15), no DB corruption (WAL).
+- **TS-05** Harness: launch the real `ftmon daemon` binary with `--clock=controlled` (FakeClock stepped over a control socket/file), `--fixtures <scenario>`, temp XDG dirs, `file` notifier. Assertions run against the DB, `notifications.jsonl`, and CLI/MCP/web responses. Scenario cases: each built-in monitor's happy-path fire-and-clear; ladder escalate → downgrade → clear; episode lifecycle; backoff timing; ack; quiet hours digest; config hot-reload incl. invalid file (PM-04); draft → approve flow incl. approval race (PM-06); budget invariants under `proc-churn-300` (RB-03); suspend/resume gap (SA-07); daemon kill -9 mid-delivery → restart → **at most one duplicate per in-flight channel delivery** (NO-04), no lost committed notifications, cursor-correct event resume (DM-15), no DB corruption (WAL).
 - **TS-06** MCP is tested end-to-end by driving `ftmon mcp` over stdio with recorded tool-call sequences (including a scripted "AI authors a monitor with two validation errors then a correct one" flow exercising MC-03/MC-04, and a resource fetch per MC-05).
 - **TS-07** Web UI: HTTP-level tests for every page and POST (UI-03) against a fixture-populated DB; HTML assertions on data presence and escaping (SE-02); UI-08 hardening tests (bad Host → 400, missing/foreign Origin on POST → rejected); UI-09 checks that severity markup carries text labels.
 
@@ -517,6 +609,16 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **TS-10** Generic trend tests MUST cover profile schema and cross-reference errors, optional-panel `null` semantics, disk compatibility, leak value/rate/confidence history, profile-aware thresholds and incident groups, contextual links, `/disks` redirect preservation, and one real-daemon-to-HTTP leak journey. Tests assert data and accessibility contracts, not chart pixels.
 - **TS-11** Metrics visualization tests MUST cover the `/api/series` contract, catalog selectors, all rollup statistics, aligned min/max envelopes, missing-data gaps, incident filtering, unit discovery/fallback, the 2 000-point cap, hostile labels, accessible summary, matching-Trend links, and absence of invented panels. Browser-library behavior remains tested at the HTTP/data boundary rather than by pixel snapshots.
 - **TS-12** Dashboard tile tests MUST cover clear, warning, error/critical, acknowledged, disabled, stale/no-data, and configuration-error states; precedence conflicts; incident counts and filtered links; escaping; icon+text accessibility; and absence of flashing/animation dependence.
+- **TS-13** Notification tests cover configuration validation, severity fan-out,
+  quiet-hours digests, independent channel success/failure, exact retry classes
+  and schedule, restart recovery, the kill-after-send duplicate bound per
+  channel, secret/error redaction, TLS/timeout policy, ntfy request shape,
+  webhook schema, and SMTP 4xx/5xx behavior using local fakes only.
+- **TS-14** Demo tests build the seeded database twice for logically equivalent
+  results, exercise every UI-16 state, enumerate the route table to prove no
+  writes are registered, reject localhost/foreign Hosts in public demo
+  configuration, reject attempts to open a real writable DB, and crawl all
+  pages without external asset requests or sensitive fixture strings.
 
 ## 17. Documentation deliverables (v1)
 
@@ -525,6 +627,11 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **DO-03** Man-page-style `--help` for every CLI subcommand.
 - **DO-04** `docs/manual.md`: the user manual — installation, concepts (monitors, rules, incidents, baselines, episodes), daily use (CLI, web UI, notifications), tuning thresholds, writing definitions (pointer to DO-01), AI/MCP setup, troubleshooting (`ftmon doctor`, config errors, budget breaches). Grows one chapter per milestone; a milestone's user-visible feature is not done until its manual chapter exists.
 - **DO-05** Code documentation follows `CONTRIBUTING.md`: module/function docstrings record rationale and cite requirement IDs; comments explain *why* (constraints, trade-offs), never mechanics; test docstrings carry bracketed requirement tags (feeds TS-01).
+- **DO-06** Documentation includes a single-server installation and hardening
+  guide, channel-specific privacy/credential/retry behavior, SSH-tunneled web
+  access, and a reproducible `demo.ftmon.org` deployment guide with DNS, reverse
+  proxy TLS, synthetic reset, rate limits, updates, backups-not-required, and
+  an explicit warning never to substitute a real operational database.
 
 ---
 
@@ -566,10 +673,14 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M7.1** | Generic trend profiles (MD-10, CA-10, UI-12, TS-10) | reusable growth investigation |
 | **M7.2** | Shared Metrics/Trends chart foundation (UI-13, TS-11) | consistent single-series diagnostics |
 | **M7.3** | Accessible legacy-style dashboard health tiles (UI-14, TS-12) | at-a-glance operational status |
+| **M8** | Server profile, per-channel outbox, ntfy/webhook/SMTP, server service/docs (PM-08/09, DM-18, NO-05..10, SE-05, TS-13, DO-06) | lightweight single-server monitor |
+| **M8.1** | Synthetic read-only public demo mode and deployment (UI-15/16, SE-06, TS-14, DO-06) | safe `demo.ftmon.org` experience |
 
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.9 (2026-07-11)** — extends the single-host scope from desktops to individually managed servers without adding fleet management. Notification fan-out gains independent durable channel state for file, desktop, ntfy, generic webhook, and SMTP delivery, with explicit retry, TLS, privacy, and credential rules. A separate synthetic, GET-only demo mode permits `demo.ftmon.org` without exposing an operational database or weakening the loopback-only production UI.
 
 **v0.8 (2026-07-11)** — removes the original Perl source from the v2 repository and points to its authoritative SourceForge project instead. This makes provenance and the MIT/GPLv2 licensing boundary unambiguous without losing the historical reference.
 

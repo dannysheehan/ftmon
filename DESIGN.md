@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.6**. Companion to `SPEC.md` v0.8 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
+Status: **DRAFT v0.7**. Companion to `SPEC.md` v0.9 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
 
 Design-phase artifacts:
 
@@ -49,10 +49,14 @@ PROJECTS/ftmon/                  # monorepo root (git)
 │   │   ├── query.py             # DM-06 tier-transparent reads (shared by CLI/MCP/web)
 │   │   ├── retention.py         # DM-04/05 rollups, prune, vacuum
 │   │   └── outbox.py            # NO-04
-│   ├── notify/base.py desktop.py file.py
+│   ├── notify/                   # adapters + per-channel delivery state
+│   │   ├── base.py desktop.py file.py ntfy.py webhook.py smtp.py
+│   │   └── dispatch.py           # retry/classification, no incident policy
 │   ├── daemon.py                # composition root; owns the only bulk-write connection
 │   ├── mcp_server.py            # §13
-│   ├── web/                     # §14: app.py, routes.py, templates/, static/vendor/
+│   ├── web/                     # §14: operational + isolated demo factories
+│   ├── demo.py                  # seeded synthetic DB builder (UI-15/16)
+│   ├── systemd/                 # user unit + hardened server system unit
 │   ├── selfmon.py               # RB-02 self metrics collection
 │   └── cli.py                   # §15 argparse tree, every subcommand
 ├── tests/                       # §16; mirrors src layout + e2e/ + scenarios/
@@ -81,6 +85,10 @@ Layering rule (enforced by a lint test): `expr` imports only stdlib; `model` imp
 Dev: pytest, pytest-timeout, hypothesis, ruff. Vendored static (MIT/BSD, checked in under `web/static/vendor/`): htmx (~14 kB), uPlot (~50 kB) — chosen as the smallest chart library that renders 2 000-point series fast and lets us attach the UI-09 text alternatives ourselves.
 
 Stdlib bias everywhere else: `argparse` (CLI), `sqlite3`, `tomllib`, `hashlib`, `json`.
+Remote notification delivery also stays stdlib-only: `urllib.request` + `ssl`
+for bounded HTTPS calls and `smtplib` + `email.message` for SMTP. Avoiding a
+general notification framework keeps the supported security and retry surface
+small; every adapter is contract-tested against local fakes (NO-05, TS-13).
 
 ---
 
@@ -99,15 +107,92 @@ ftmon daemon ──► Scheduler(clock)
 ftmon mcp / web / CLI ──► store.query (read) + small-write helpers (ack/approve/draft)
 ```
 
-The daemon is synchronous and single-threaded except: each `EventSource` owns one reader `subprocess` + one stdlib `threading.Thread` that only moves lines from the pipe into a `collections.deque(maxlen=10_000)` (SA-08). No other threads. All parsing/normalization happens on the main thread at drain time, keeping determinism (fixtures bypass the thread entirely).
+The daemon's sampling and incident pipeline is synchronous and single-threaded.
+Each `EventSource` owns one reader subprocess/thread that only moves lines into
+a bounded deque (SA-08). M8 adds one notification-dispatch thread with its own
+SQLite connection; it claims durable delivery rows and performs potentially
+slow network I/O wholly outside sampling transactions. Tests replace both
+threaded boundaries with synchronous fakes, preserving deterministic control.
 
 Confirm/clear counters (IN-01) are in-memory only; a daemon restart loses in-progress confirmation and re-accumulates (documented, acceptable — incidents and backoff state survive via DB per IN-02/DM-14).
+
+### 2.1 Single-server deployment (PM-08/09)
+
+`ftmon init --profile server` and the packaged `ftmon-server.service` target a
+dedicated `ftmon` account with a real, non-login home/state directory. The unit
+uses `User=ftmon`, `Group=ftmon`, `NoNewPrivileges=true`, `PrivateTmp=true`,
+`ProtectSystem=strict`, `ProtectHome=read-only`, and explicit `ReadWritePaths`
+for FTMON's config/data/state directories. `ProtectProc=invisible` is deliberately
+not set: hiding other users' `/proc` entries would make process monitoring lie.
+The account gains no supplementary groups by default and the service never uses
+ambient capabilities. Administrators who need journal coverage grant the
+narrow platform group/read ACL themselves and accept that visibility trade-off.
+
+The operational dashboard still listens on `127.0.0.1:8420`. The documented
+remote path is `ssh -L 8420:127.0.0.1:8420 host`; a reverse proxy does not make
+the unauthenticated operational UI safe. Desktop user units remain the default
+for workstations and are not replaced by the server unit.
 
 ---
 
 ## 3. Filesystem & configuration (FS-01, PM-06)
 
-`paths.py` exposes a frozen `Paths` dataclass built once from `platformdirs` + `$FTMON_*` env overrides (tests use temp dirs via env). `config.toml` keys (complete v1 set): `[daemon] tick_seconds=5, gone_grace="5m"`, `[privacy] collect_cmdline=true`, `[quiet_hours] enabled=false, start="22:30", end="07:30"`, `[web] port=8420`, `[retention]` overrides, `[notify] desktop=true`.
+`paths.py` exposes a frozen `Paths` dataclass built once from `platformdirs` + `$FTMON_*` env overrides (tests use temp dirs via env). M8 extends the explicit
+`config.toml` shape as follows (PM-08, NO-05..10, SE-05):
+
+```toml
+[daemon]
+tick_seconds = 5
+gone_grace = "5m"
+
+[privacy]
+collect_cmdline = true
+
+[quiet_hours]
+enabled = false
+start = "22:30"
+end = "07:30"
+
+[web]
+port = 8420
+
+[notify.desktop]
+enabled = true
+min_severity = "info"
+
+[notify.ntfy]
+enabled = false
+min_severity = "warning"
+base_url = "https://ntfy.sh"
+topic = "ftmon-hostname"
+token_env = "FTMON_NTFY_TOKEN" # or token_file, exactly one when enabled
+
+[notify.webhook]
+enabled = false
+min_severity = "warning"
+url_env = "FTMON_WEBHOOK_URL"  # or url_file; URL often embeds a secret
+
+[notify.smtp]
+enabled = false
+min_severity = "warning"
+host = "smtp.example.net"
+port = 587
+tls = "starttls"               # starttls | implicit
+username = "ftmon@example.net"
+password_env = "FTMON_SMTP_PASSWORD" # or password_file
+from = "ftmon@example.net"
+to = ["operator@example.net"]
+```
+
+The file audit channel is mandatory and therefore has no enable switch. An
+`*_file` contains only the secret, is opened without following symlinks, must be
+owned by the service account and not group/world-readable, and has surrounding
+ASCII whitespace stripped. Environment and file forms are mutually exclusive.
+Literal `token`, `password`, or webhook `url` keys are rejected rather than
+deprecated, because silently accepting them would defeat SE-05. The generated
+desktop profile writes desktop enabled; the server profile writes it disabled.
+Profile effects are visible text in the generated file and disappear as a
+runtime concept after initialization.
 
 Atomic write helper `paths.atomic_write(path, bytes)` (tmp + fsync + rename, 0600) is the only function that writes into the config tree (PM-06a/b); loader rejects symlinks (PM-06c).
 
@@ -135,7 +220,8 @@ class TriBool(Enum): TRUE; FALSE; UNKNOWN          # expr/tribool.py, re-exporte
 
 @dataclass(frozen=True) class Notification:        # NO-01
     incident_id: int; kind: Literal["open","escalate","renotify","recover","digest"]
-    severity: int; title: str; body: str; created_ts: float
+    severity: int; monitor: str; entity_id: str
+    title: str; body: str; created_ts: float
 
 # Incident engine I/O (§10.4)
 @dataclass(frozen=True) class RungState:   confirmed: bool; confirm_count: int; clear_count: int
@@ -303,9 +389,19 @@ CREATE INDEX inc_state ON incidents(state, last_change_ts);
 CREATE TABLE incident_history(incident_id INT, seq INT, ts INT, kind TEXT, detail TEXT,
   PRIMARY KEY(incident_id, seq)) WITHOUT ROWID;              -- DM-12/13 (cap enforced in code)
 
-CREATE TABLE outbox(    id INTEGER PRIMARY KEY, incident_id INT, kind TEXT, body TEXT,
-  created_ts INT, delivered_ts INT, stale INT DEFAULT 0);    -- DM-14/NO-04
-CREATE INDEX outbox_undelivered ON outbox(created_ts) WHERE delivered_ts IS NULL;
+CREATE TABLE notifications(
+  id INTEGER PRIMARY KEY, incident_id INT NOT NULL, kind TEXT NOT NULL,
+  severity INT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+  monitor TEXT NOT NULL, entity_id TEXT NOT NULL, created_ts INT NOT NULL);
+                                                               -- DM-14/NO-01
+CREATE TABLE notification_deliveries(
+  notification_id INT NOT NULL REFERENCES notifications(id),
+  channel TEXT NOT NULL, state TEXT NOT NULL,
+  attempt_count INT NOT NULL DEFAULT 0, next_attempt_ts INT,
+  delivered_ts INT, last_error TEXT CHECK(length(last_error) <= 512),
+  PRIMARY KEY(notification_id, channel)) WITHOUT ROWID;         -- DM-18/NO-04..10
+CREATE INDEX delivery_due ON notification_deliveries(next_attempt_ts)
+  WHERE state = 'pending';
 
 CREATE TABLE baselines( series_id INTEGER PRIMARY KEY, value REAL, updates INT,
   updated_bucket INT) WITHOUT ROWID;                         -- CA-05
@@ -314,7 +410,19 @@ CREATE TABLE monitor_loads(monitor TEXT, loaded_ts INT, hash TEXT, normalized TE
   PRIMARY KEY(monitor, loaded_ts)) WITHOUT ROWID;            -- PM-07 (keep last 20/monitor)
 ```
 
-Write path: `writer.py` accumulates the tick's samples/events/incident rows and commits **one** transaction at step 4 of the tick (PM-03). Outbox rows for incident transitions are part of that same transaction (NO-04); delivery and `delivered_ts` update happen after commit.
+Migration `0002_notification_deliveries.sql` creates the two new tables, copies
+each legacy `outbox` row into `notifications`, and creates a `file` delivery:
+legacy delivered rows become `delivered`; undelivered rows become `pending`
+with `next_attempt_ts=created_ts`; legacy stale rows become terminal `failed`
+with the fixed redacted reason `legacy stale delivery`. It then drops the old
+table. Remote deliveries are intentionally not backfilled because DM-18 freezes
+the channel set when the notification is created. The normal VC-01 backup makes
+this destructive table replacement recoverable.
+
+Write path: `writer.py` accumulates the tick's samples/events/incident rows and
+commits **one** transaction at step 4 (PM-03). Notifications and their frozen
+initial delivery rows are part of that transaction (NO-04/DM-18); the dispatcher
+claims and updates delivery state afterward through its own short transactions.
 
 ---
 
@@ -367,7 +475,7 @@ The process source keeps its own all-process short window (15 samples) in `rings
 
 ### 10.4 Incident engine (IN-01..08) — pure
 
-`step_group` implements the SPEC §9.1 diagram exactly; `GroupConfig` carries per-rung `severity, confirm, clear, message-template-id, action, notify_recovery` + backoff table `(300, 900, 3600, 21600)` (IN-02). Backoff/renotify decisions derive from `IncidentCore.last_notify_ts/backoff_tier` — the caller rebuilds `IncidentCore` from DB at startup, which is how restarts keep the schedule (IN-02). `step_episode` shares `IncidentCore` and differs only per IN-08 (cooldown gate, `clear_after` timer via `now − last_seen`). Effects are executed by `effects.py`: `NotifyEffect` → outbox insert (in-txn) then post-commit delivery; `ActionEffect` → AC-02 subprocess with env, recorded to history.
+`step_group` implements the SPEC §9.1 diagram exactly; `GroupConfig` carries per-rung `severity, confirm, clear, message-template-id, action, notify_recovery` + backoff table `(300, 900, 3600, 21600)` (IN-02). Backoff/renotify decisions derive from `IncidentCore.last_notify_ts/backoff_tier` — the caller rebuilds `IncidentCore` from DB at startup, which is how restarts keep the schedule (IN-02). `step_episode` shares `IncidentCore` and differs only per IN-08 (cooldown gate, `clear_after` timer via `now − last_seen`). Effects are executed by `effects.py`: `NotifyEffect` creates the immutable notification and its eligible delivery rows in the incident transaction, then the dispatcher attempts due rows post-commit; `ActionEffect` → AC-02 subprocess with env, recorded to history.
 
 ### 10.5 Baselines & retention slices
 
@@ -376,6 +484,53 @@ The process source keeps its own all-process short window (15 samples) in `rings
 ### 10.6 Self source (RB-02)
 
 Metrics: `cpu_pct, rss_bytes, db_bytes, cycle_s, sampler_s{per-source attr}, tick_overruns, event_queue_depth, events_dropped, events_unstored, ring_mem_bytes, source_activity_age_s, eval_unknown_total, samples_rejected`. Fed from a `SelfStats` struct the daemon updates in place; sampled like any source.
+
+### 10.7 Notification fan-out and retry (DM-18, NO-04..10)
+
+`Notifier.deliver(notification) -> DeliveryResult` returns success or raises a
+typed `RetryableDelivery` / `PermanentDelivery`; adapters never update SQLite.
+`dispatch.py` runs one worker thread with its own SQLite connection. It claims
+one due delivery oldest-first in a short transaction by changing `pending` to
+`sending`, performs the adapter call without a transaction, then commits the
+outcome and claims the next row. A condition wake-up after incident commit avoids
+polling latency; a bounded one-second poll is the lost-wakeup fallback. At
+startup every `sending` row returns to `pending`, which is the explicit crash
+window behind NO-04's possible duplicate. The mandatory file adapter is ordered
+first by channel priority and is represented by a delivery row, keeping audit
+behavior on the same durable path.
+
+The retry delay table is `(30, 120, 600, 3600, 21600)` seconds, indexed by the
+completed attempt count and capped by `created_ts + 86400`. HTTP classification
+is fixed by NO-07; a valid integer or HTTP-date `Retry-After` is clamped to
+`[now + scheduled_delay, created_ts + 86400]`. Adapter error text is normalized
+to a fixed category plus status code and capped at 512 characters before it
+reaches SQLite. Response bodies, exception representations, credential values,
+and complete URLs are never persisted.
+
+File-delivery failure is the exception to the remote 24-hour cap: it retries at
+the 6-hour ceiling until storage recovers because the audit copy is mandatory.
+Desktop readiness is validated before rows are created; a runtime `notify-send`
+timeout is retryable and other non-zero exits are permanent. These rules avoid
+an absent desktop session creating an endless queue on a server.
+
+The ntfy adapter POSTs the body to `{base_url}/{urlquoted_topic}` with title,
+priority (`info=2, notice=3, warning=4, error|critical=5`), tags
+(`ftmon`, kind, severity name), and `Authorization: Bearer …` headers; monitor
+data never enters the URL. The generic webhook POSTs `application/json` schema
+`ftmon.notify.v1`.
+SMTP constructs a plain-text `EmailMessage`, performs TLS before authentication,
+and classifies standard SMTP response families. Adapters share one hardened
+HTTP opener that rejects HTTPS-to-HTTP redirect and caps response reads at 8 KiB.
+The contract follows ntfy's documented
+[publish/token API](https://docs.ntfy.sh/publish/); operator documentation links
+its [retention/privacy behavior](https://docs.ntfy.sh/privacy/) so choosing the
+public service is an informed data-egress decision rather than a silent default.
+
+`ftmon doctor` resolves secret references and validates non-secret structure but
+reports only `ready`, `disabled`, or a stable error code. Delivery counters
+(`pending`, `failed`, age of oldest pending, failures by channel) join the self
+source and `/self` page; this makes a broken notification path observable
+without recursively notifying about notifier failure.
 
 ---
 
@@ -419,11 +574,56 @@ Starlette app; Jinja2 (autoescape); htmx for partial refresh (dashboard/incident
 
 Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics` explorer (state in query string, UI-02) · `GET /events` · `GET /monitors[/{name}]`, `POST /monitors/{name}/(enable|disable)`, `POST /drafts/{name}/(approve|delete)` · `GET /self` · `GET /partials/(tiles|incidents|health)` · `GET /api/series`. Templates: `base.html` + one per page + partials; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts get a `<figcaption>` text alternative (current value + trend sentence from `slope`). The locally packaged FTMON mark supplies the header image, PNG/ICO favicons, and touch icon without weakening UI-01's offline guarantee. Its header image is decorative beside a real-text wordmark so branding cannot obscure the home link's accessible name or become unreadable when images fail.
 
+### 14.1 Public synthetic demo (UI-15/16, SE-06)
+
+Demo mode is a separate application factory, `create_demo_app`, rather than a
+boolean checked inside mutating handlers. It imports `Query` but not
+`SmallWrites`, definitions writers, actions, daemon, or MCP. Its route list is
+an allowlist of the normal GET/HEAD page, partial, static, and series handlers;
+Starlette therefore returns 404/405 for every mutation path. A response banner
+and `<meta name="robots" content="noindex,nofollow">` distinguish synthetic
+content and keep parameterized explorer URLs out of search indexes.
+
+`ftmon demo build --output PATH` replays the packaged, versioned
+`scenarios/demo-v1.jsonl` with a fixed clock and seed into a new temporary DB,
+runs retention/rollups, verifies UI-16 coverage, fsyncs, then atomically renames
+the completed file. The demo web process opens it with SQLite URI
+`mode=ro&immutable=1`; it refuses the normal XDG database path, a non-regular
+file, group/world-writable input, or a database missing the `demo_dataset=1`
+meta marker and expected scenario version. No visitor state is stored.
+
+The CLI is explicit:
+
+```sh
+ftmon web --demo --demo-db /var/lib/ftmon-demo/demo.db \
+  --demo-host demo.ftmon.org --port 8420
+```
+
+It still binds `127.0.0.1`. Demo middleware accepts exactly
+`Host: demo.ftmon.org` (optional `:443` after normalization), ignores forwarded
+Host/Origin authority, caps request targets at 4 KiB, and emits the normal CSP,
+nosniff, and referrer headers. Startup fails if `--demo-host` is absent, is an
+IP/localhost name, or contains a wildcard.
+
+The reference deployment uses a dedicated `ftmon-demo` account, a systemd
+oneshot database builder before the read-only web service, and Caddy bound to
+80/443 for automatic HTTPS and reverse proxying to loopback. The hosting layer
+must additionally cap request rates/concurrency; the backend remains bounded by
+the 2,000-point query limit and immutable DB. A daily timer rebuilds then
+restarts the service, although correctness never depends on visitor-state reset.
+The demo has no operational daemon, notification credentials, writable actions,
+MCP server, or backup job.
+
+Caddy is chosen for the reference deployment because a hostname enables
+[automatic public HTTPS](https://caddyserver.com/docs/quick-starts/reverse-proxy)
+without a separate certificate-renewal mechanism; it supplies transport, not
+application trust, which remains enforced by the demo Host and read-only rules.
+
 ---
 
 ## 15. CLI (`cli.py`, CL-01..05)
 
-argparse tree; every subcommand is a function taking `(Paths, Query|…, argparse.Namespace)` so tests call them directly. Mapping: `daemon→daemon.run`, `mcp→mcp_server.run`, `web→web.run`, `init→definitions.install_builtins`, `check→definitions.check_cli` (CL-02), `status/top/incidents/incident/events/query/monitors→store.query` renderers (each with `--json`, CL-03; `status` exit codes per CL-04), `ack/monitor approve|enable|disable→SmallWrites/definitions`, `baseline reset→store`, `doctor→store.doctor` (CL-05: quick_check/--deep, WAL checkpoint, sizes, cursor ages, orphans, `--backup` via `sqlite3.Connection.backup`).
+argparse tree; every subcommand is a function taking `(Paths, Query|…, argparse.Namespace)` so tests call them directly. Mapping: `daemon→daemon.run`, `mcp→mcp_server.run`, `web→web.run|web.run_demo`, `demo build→demo.build`, `init --profile→definitions.install_builtins + explicit config scaffold`, `check→definitions.check_cli` (CL-02), `status/top/incidents/incident/events/query/monitors→store.query` renderers (each with `--json`, CL-03; `status` exit codes per CL-04), `ack/monitor approve|enable|disable→SmallWrites/definitions`, `baseline reset→store`, `doctor→store.doctor` (CL-05: quick_check/--deep, WAL checkpoint, sizes, cursor and delivery ages, channel readiness, orphans, `--backup` via `sqlite3.Connection.backup`).
 
 ### 15.1 Generic historical trends (M7.1, MD-10/CA-10/UI-12)
 
@@ -496,6 +696,19 @@ uPlot remains D4's renderer: its small vendorable footprint, temporal scales, cu
 
 Jinja autoescape + CSP (SE-02); notification bodies strip control chars; CLI output escapes via `repr`-safe rendering for untrusted strings. `attrs` JSON stored with `ensure_ascii=False` but rendered escaped. Action runner: `subprocess.run(env=minimal, timeout=30, close_fds=True, cwd=state_dir)`, never a shell (AC-02). File modes via `os.open(..., 0o600)` in `atomic_write`; dirs `0o700` at init (SE-04/PM-06).
 
+Remote adapter constructors receive resolved secrets through a `SecretValue`
+wrapper whose `repr`/`str` is always `<redacted>`; only the adapter's private
+header/auth call can reveal bytes. `SecretRef.resolve()` rejects symlinks,
+unsafe ownership/mode, NUL/newline in header credentials, and missing/empty
+values. HTTP diagnostics retain only scheme + hostname + status category, never
+path/query/user-info. Webhook JSON and email bodies use the already bounded
+NO-01 rendered fields, not raw events or process attributes (SE-05).
+
+Demo and operational web factories share rendering but not authority-bearing
+dependencies or route construction. This structural split is why a future
+template or navigation change cannot accidentally expose a POST in public mode;
+TS-14 inspects the actual route methods and app state, not just returned HTML.
+
 ---
 
 ## 18. Design decisions log
@@ -507,7 +720,7 @@ Jinja autoescape + CSP (SE-02); notification bodies strip control chars; CLI out
 | D3 | Confirm counters in-memory only | restart cost = one confirmation delay; avoids chatty persistent counter writes |
 | D4 | starlette+jinja2+htmx+uPlot | UI-06 no-SPA mandate; all vendorable; smallest competent stack |
 | D5 | argparse over click | zero-dep, weak-model-friendly, stable help text (DO-03) |
-| D6 | Reader thread + deque only | keeps daemon single-threaded logically; fixtures bypass thread → determinism |
+| D6 | Narrow I/O threads; synchronous fakes | event readers and M8 delivery worker cannot block sampling; fixtures bypass both boundaries for determinism |
 | D7 | LTTB downsampling in query layer | one implementation serves UI-05 and MCP |
 | D8 | Store-filter for events (SPEC v0.3) | capacity worksheet §9; full journal storage impossible in 200 MB |
 | D9 | Hourly-rollup durable/ephemeral split (SPEC v0.3) | §9; process churn dominates otherwise |
@@ -518,6 +731,10 @@ Jinja autoescape + CSP (SE-02); notification bodies strip control chars; CLI out
 | D14 | Shared uPlot adapter, distinct page semantics | one historical rendering truth while preventing arbitrary metrics from acquiring invented trend meaning (UI-13) |
 | D15 | Tile state composed in Python with fixed precedence | prevents templates/colors from becoming hidden health policy; preserves ack and stale semantics (UI-14) |
 | D16 | New local mark plus real-text wordmark | preserves a hint of the legacy lavender identity without carrying forward a low-resolution asset; packaged variants keep the UI offline, while text retains accessibility and graceful failure |
+| D17 | Explicit init profiles, not runtime personality | server-friendly defaults are inspectable configuration and cannot create hidden behavior after installation |
+| D18 | Immutable notification plus per-channel deliveries | one channel's success cannot conceal another's failure; freezes fan-out at the incident transaction boundary |
+| D19 | Small first-party channel set | ntfy, JSON webhook, and SMTP cover the single-server use case without inheriting a large plugin/dependency and credential surface |
+| D20 | Separate read-only demo app and marked synthetic DB | route omission and immutable storage are stronger public-safety boundaries than hiding controls in templates |
 
 ---
 
@@ -533,5 +750,12 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
 - **M7.1**: WP20 trend-profile schema/loader + generic query · WP21 Trends explorer, leak reference profile, contextual links + Tier-1 contract tests.
 - **M7.2**: WP22 generic series API + shared chart adapter · WP23 Metrics uPlot view, incident markers, summaries, Trend links + tests.
 - **M7.3**: WP24 dashboard tile view model + monitor-filtered incidents · WP25 accessible state CSS/template + HTTP tests.
+- **M8**: WP26 config profiles + secret references + outbox migration · WP27
+  dispatcher and ntfy/webhook/SMTP adapters + deterministic failure tests · WP28
+  hardened server unit, doctor status, server/channel documentation + real-system
+  smoke tests.
+- **M8.1**: WP29 versioned demo scenario + immutable builder · WP30 separate
+  GET-only app factory/CLI and security tests · WP31 Caddy/systemd/timer deployment
+  documentation and `demo.ftmon.org` release checklist.
 
 Each WP names its FROZEN interfaces from §4–5; an implementing model receives: SPEC excerpt, this document's relevant sections, the WP's test files, and the interface stubs — nothing else is in scope for it.
