@@ -1,6 +1,6 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.4** — v0.4 specifies honest historical disk-trend visualization as the post-v1 M7 milestone. All §19 open questions are resolved.
+Status: **DRAFT v0.5** — v0.5 generalizes M7's disk visualization into declarative monitor trend profiles. All §19 open questions are resolved.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -247,6 +247,8 @@ Available in all expressions. `w` is a duration string (`"90s"`, `"10m"`, `"3h"`
 - **CA-08** When a **discovered** entity (process, mount) stops appearing in snapshots, its metrics simply stop (rules go `None` via CA-02). After `gone_grace` (default 5 m) the entity is marked gone (`gone_ts` in DM-03): its confirmation counters reset and any open incident for it clears with `clear_reason = entity_gone` and a recovery notification whose message says so (a leaking process that exits is a resolved leak). **Watchlist** entities (service units, expected listeners) never disappear: they are synthetic, always present, with a `present` (0/1) metric — absence is their alerting signal, not their removal.
 - **CA-09** The disk monitor persists a signed `fill_rate_bph` derived from the 70-minute least-squares slope of `used_bytes`. A projected-full time is displayable only when the rate is positive, `filling >= filling_frac`, and the slope window has sufficient coverage; otherwise consumers MUST report that no reliable projection is available. This gate prevents flat, shrinking, sparse, or irregular history from producing a mathematically finite but operationally misleading date.
 
+- **CA-10** Generic trend rates MUST reference persisted raw or derived metrics; the trend layer never differentiates display points. Value and rate panels are required; confidence and projection panels are optional. Projection requires a declared remaining metric, positive rate, and—when declared—a passing confidence threshold. An absent panel is `null`, not synthetic or empty data, so clients distinguish “not meaningful” from “temporarily no observations.”
+
 ### 7.7 Built-in monitors (seven user monitors + `self`)
 
 v1 ships seven user-facing monitors plus the always-installed **`self`** monitor (§13, RB-02) — `self` is tunable but not deletable. Each ships as a commented TOML file (FS-02); defaults below are starting points reviewable in the file, but the *shape* (parameters, metrics, rule structure) is normative. `OPEN-1`: default numbers need owner review — to be exercised against recorded fixture data and a short real-system observation period before v1.0.
@@ -358,6 +360,8 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 
 ---
 
+- **MD-10** Sampler monitor definitions MAY declare validated `[[trend]]` profiles. Each profile has a unique `id`, `kind = "growth"|"capacity"`, title, value/rate metric and units, optional confidence metric + threshold parameter, optional value/rate threshold-parameter lists, and optional incident group. Capacity additionally requires a remaining metric. Every referenced metric and parameter MUST exist in that definition. Presentation behavior is declared, never inferred from metric names.
+
 ## 9. Incident lifecycle and notifications
 
 ### 9.1 State machine
@@ -443,6 +447,8 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 ---
 
+- **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
+
 ## 13. Resource budget (self-enforced)
 
 - **RB-01** Daemon steady-state: ≤ 1 % of one CPU averaged over 10 m; RSS ≤ 100 MB; DB ≤ 200 MB (DM-05). Web UI and MCP processes: RSS ≤ 80 MB each. Feasibility is demonstrated, not asserted: DM-16's capacity worksheet.
@@ -506,6 +512,8 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 ---
 
+- **TS-10** Generic trend tests MUST cover profile schema and cross-reference errors, optional-panel `null` semantics, disk compatibility, leak value/rate/confidence history, profile-aware thresholds and incident groups, contextual links, `/disks` redirect preservation, and one real-daemon-to-HTTP leak journey. Tests assert data and accessibility contracts, not chart pixels.
+
 ## 17. Documentation deliverables (v1)
 
 - **DO-01** `docs/definitions.md`: complete monitor-definition reference (schema, every function with examples, the EX-06 truth table, cookbook: "watch this log pattern", "alert when X grows"). Written to be pasted into an AI context and exposed as the MCP resource (MC-05) — the primary consumer is `define_monitor` authors, human or model.
@@ -551,10 +559,13 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M5** | Web UI (UI-*) | human dashboard |
 | **M6** | Actions (AC-*), `doctor` (CL-05), tier-2 suite, docs (DO-*), packaging polish | v1.0 |
 | **M7** | Historical disk trends (DM-17, CA-09, UI-10/11, TS-09) | honest capacity forecasting |
+| **M7.1** | Generic trend profiles (MD-10, CA-10, UI-12, TS-10) | reusable growth investigation |
 
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.5 (2026-07-11)** — generalizes M7 through declarative `[[trend]]` profiles, with disk capacity and process RSS growth as reference implementations. Panels are optional by meaning rather than fabricated from whatever metrics happen to exist. One Trends explorer and contextual links replace monitor-specific chart implementations; `/disks` remains compatible.
 
 **v0.4 (2026-07-11)** — adds M7 historical disk-trend visualization. The query contract exposes rollup statistics and extrema; signed fill rate is persisted before downsampling; projections are suppressed unless positive, sufficiently covered, and corroborated by monotonic filling confidence. This deliberately follows v1/M6 so richer analytics cannot delay the operational release.
 

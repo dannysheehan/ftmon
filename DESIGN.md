@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.2**. Companion to `SPEC.md` v0.4 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
+Status: **DRAFT v0.3**. Companion to `SPEC.md` v0.5 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
 
 Design-phase artifacts:
 
@@ -420,7 +420,19 @@ Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics
 
 argparse tree; every subcommand is a function taking `(Paths, Query|…, argparse.Namespace)` so tests call them directly. Mapping: `daemon→daemon.run`, `mcp→mcp_server.run`, `web→web.run`, `init→definitions.install_builtins`, `check→definitions.check_cli` (CL-02), `status/top/incidents/incident/events/query/monitors→store.query` renderers (each with `--json`, CL-03; `status` exit codes per CL-04), `ack/monitor approve|enable|disable→SmallWrites/definitions`, `baseline reset→store`, `doctor→store.doctor` (CL-05: quick_check/--deep, WAL checkpoint, sizes, cursor ages, orphans, `--backup` via `sqlite3.Connection.backup`).
 
-### 15.1 Historical disk trends (M7, DM-17/CA-09/UI-10/11)
+### 15.1 Generic historical trends (M7.1, MD-10/CA-10/UI-12)
+
+`MonitorDef.trends` is a tuple of frozen `TrendProfile` values validated by the loader. A profile is presentation metadata over persisted series, never an executable expression and never a reason to collect more data. Frozen fields: `id, kind, title, value_metric, value_unit, rate_metric, rate_unit, confidence_metric, confidence_threshold_param, remaining_metric, value_threshold_params, rate_threshold_params, incident_group`.
+
+The generic view uses up to four synchronized panels: required value and signed-rate panels, optional confidence on a fixed 0..1 scale, and optional qualified time remaining. `null` means the concept is not meaningful for the profile; an existing panel with empty points means data has not arrived. Separate panels preserve distinct units and failure modes while synchronized cursors retain temporal correlation.
+
+`Query.trend(monitor, entity, profile, …)` returns explicit units, resolution, coverage, declared thresholds and group-filtered incident markers. Projection uses persisted rate + remaining + optional confidence and never differentiates display points or fills absent buckets. `Query.disk_trend` remains a v0.x compatibility adapter.
+
+Routes: `GET /trends[/{monitor}/{profile}]?entity=…&range=…` and `GET /api/trend?monitor=…&profile=…&entity=…&range=…`. `/disks` redirects to `/trends/disk/space_growth`. Dashboard, monitor and incident links all target this same explorer rather than creating alternate render/query paths.
+
+Reference profiles prove both shapes: disk `space_growth` supplies all four panels; leak `rss_growth` supplies value/rate/confidence and explicit `projection: null`. A process has no single honest capacity ceiling because host memory, swap, cgroups and the OOM killer differ, so FTMON refuses to invent one.
+
+#### M7 disk reference profile
 
 The disk detail view uses three synchronized uPlot panels rather than one overloaded dual-axis chart:
 
@@ -480,6 +492,8 @@ Jinja autoescape + CSP (SE-02); notification bodies strip control chars; CLI out
 | D9 | Hourly-rollup durable/ephemeral split (SPEC v0.3) | §9; process churn dominates otherwise |
 | D10 | Persist signed fill rate; qualify projections at presentation | derivatives of downsampled history and clamped sentinel forecasts are misleading (DM-17/CA-09) |
 | D11 | Three synchronized disk panels | preserves distinct units/scales while keeping temporal correlation (UI-10) |
+| D12 | Declarative trend profiles, not name inference | names cannot establish units, limits, confidence meaning, or honest projection semantics (MD-10) |
+| D13 | One explorer plus contextual links | supports discovery and incident investigation without duplicate query/render paths (UI-12) |
 
 ---
 
@@ -492,5 +506,6 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
 - **M3**: WP13 journald+event pipeline · WP14 events/service/net builtins + unit/net sources.
 - **M4**: WP15 MCP server. **M5**: WP16 web UI. **M6**: WP17 actions+doctor+tier-2+docs.
 - **M7**: WP18 historical query envelopes + signed disk rate · WP19 uPlot disk views/API + Tier-1 visualization contract tests.
+- **M7.1**: WP20 trend-profile schema/loader + generic query · WP21 Trends explorer, leak reference profile, contextual links + Tier-1 contract tests.
 
 Each WP names its FROZEN interfaces from §4–5; an implementing model receives: SPEC excerpt, this document's relevant sections, the WP's test files, and the interface stubs — nothing else is in scope for it.

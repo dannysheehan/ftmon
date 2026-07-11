@@ -55,6 +55,7 @@ Section reference:
 | `exempt` | no | top-level array of boolean expressions; a TRUE exempts the entity from *rules only* — it is still recorded |
 | `[promotion]` | no | process source only: `expr` marking entities worth persisting beyond the top-N |
 | `[[rule]]` | yes (≥1) | see below |
+| `[[trend]]` | no | validated presentation profile joining persisted value/rate metrics; see below |
 
 Rule keys — sampler sources (`process`, `disk`, `system`, `unit`, `net`,
 `self`):
@@ -80,6 +81,33 @@ Rule keys — the `events` source (episode rules, different lifecycle):
 | `confirm_count` | 1 | events needed within `confirm_window` before opening |
 | `confirm_window` | none | window for `confirm_count` |
 | `notify_recovery` | **false** | episodes close silently by default — "the log went quiet" is not news |
+
+### Trend profiles
+
+`[[trend]]` is optional and sampler-only. It declares how already-persisted
+metrics belong together in the Trends UI; it does not evaluate expressions or
+cause additional collection. Presentation is explicit because names alone
+cannot establish units, thresholds, confidence, or whether projection is
+meaningful.
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `id` | yes | unique profile id (`[a-z0-9-]{1,32}`) |
+| `kind` | yes | `growth` or `capacity` |
+| `title` | yes | human label, at most 80 characters |
+| `value_metric`, `value_unit` | yes | primary persisted metric and display unit |
+| `rate_metric`, `rate_unit` | yes | signed persisted rate and its unit |
+| `confidence_metric` | no | persisted fraction from 0 to 1 |
+| `confidence_threshold_param` | with confidence | parameter qualifying confidence |
+| `remaining_metric` | capacity only | remaining quantity in the rate's base unit |
+| `value_threshold_params` | no | parameters drawn on the value panel |
+| `rate_threshold_params` | no | parameters drawn on the rate panel |
+| `incident_group` | no | only overlay incidents from this rule group |
+
+Growth profiles normally omit projection. Capacity profiles require a remaining
+metric and may qualify projection through confidence. Every metric and parameter
+reference is checked by `ftmon check`. Units are labels, not conversion rules,
+so a derived metric must already use the declared unit.
 
 ## 2. The expression language
 

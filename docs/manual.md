@@ -180,19 +180,22 @@ alerts when my VPN drops" works without pasting docs.
 `ftmon monitor enable <name>` / `disable <name>` flip a monitor's
 `enabled` line in place — comments and formatting in your file survive.
 
-### Historical disk trends
+### Historical trends
 
-The **Disk trends** page separates capacity, signed growth rate/confidence,
-and qualified time remaining into synchronized charts. This avoids mixing
-percent, bytes/hour, and hours on one misleading axis. Long ranges use stored
-5-minute or hourly rollups with min/max envelopes, while missing observations
-remain visible gaps.
+The **Trends** page explores declared growth profiles by monitor, entity, and
+range. Value, signed rate, optional confidence, and optional projection appear
+as separate synchronized panels because their units and meanings differ. Long
+ranges use stored 5-minute or hourly rollups with min/max envelopes; missing
+observations remain visible gaps. The complete selection stays in the URL for
+bookmarking and links from dashboards or incidents open the same explorer.
 
-A projected-full date appears only when the 70-minute rate is positive and
-the disk grew consistently enough to pass its configured filling confidence.
-Flat, shrinking, sparse, or irregular history says why no reliable projection
-is available instead of showing an enormous artificial number. The selected
-filesystem and range stay in the URL so a view can be bookmarked or shared.
+The leak profile shows process RSS, MiB/hour growth, and growth consistency. It
+does not forecast when memory will be “full”: host RAM, swap, cgroup limits, and
+the OOM killer do not provide one honest process capacity. The disk profile can
+project because total space and remaining bytes are known, but only while its
+signed rate is positive and confidence passes the configured threshold. Flat,
+shrinking, sparse, or irregular history explains why projection is unavailable
+instead of displaying an enormous artificial number.
 
 ## 7. Writing your own monitors
 
