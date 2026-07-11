@@ -413,7 +413,7 @@ Errors: `{code, message, hint}` (MC-04) with codes `invalid_params, validation_f
 
 Starlette app; Jinja2 (autoescape); htmx for partial refresh (dashboard/incidents poll `/partials/*` every 5 s, UI-04); uPlot for charts fed by `/api/series` (JSON from `Query`, ≤ 2 000 pts). Middleware enforces UI-08: Host allowlist else 400; POST requires matching Origin; headers `Content-Security-Policy: default-src 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
 
-Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics` explorer (state in query string, UI-02) · `GET /events` · `GET /monitors[/{name}]`, `POST /monitors/{name}/(enable|disable)`, `POST /drafts/{name}/(approve|delete)` · `GET /self` · `GET /partials/(tiles|incidents|health)` · `GET /api/series`. Templates: `base.html` + one per page + partials; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts get a `<figcaption>` text alternative (current value + trend sentence from `slope`).
+Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics` explorer (state in query string, UI-02) · `GET /events` · `GET /monitors[/{name}]`, `POST /monitors/{name}/(enable|disable)`, `POST /drafts/{name}/(approve|delete)` · `GET /self` · `GET /partials/(tiles|incidents|health)` · `GET /api/series`. Templates: `base.html` + one per page + partials; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts get a `<figcaption>` text alternative (current value + trend sentence from `slope`). The locally packaged FTMON mark supplies the header image, PNG/ICO favicons, and touch icon without weakening UI-01's offline guarantee. Its header image is decorative beside a real-text wordmark so branding cannot obscure the home link's accessible name or become unreadable when images fail.
 
 ---
 
@@ -513,6 +513,7 @@ Jinja autoescape + CSP (SE-02); notification bodies strip control chars; CLI out
 | D13 | One explorer plus contextual links | supports discovery and incident investigation without duplicate query/render paths (UI-12) |
 | D14 | Shared uPlot adapter, distinct page semantics | one historical rendering truth while preventing arbitrary metrics from acquiring invented trend meaning (UI-13) |
 | D15 | Tile state composed in Python with fixed precedence | prevents templates/colors from becoming hidden health policy; preserves ack and stale semantics (UI-14) |
+| D16 | New local mark plus real-text wordmark | preserves a hint of the legacy lavender identity without carrying forward a low-resolution asset; packaged variants keep the UI offline, while text retains accessibility and graceful failure |
 
 ---
 

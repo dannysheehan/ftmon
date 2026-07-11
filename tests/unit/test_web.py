@@ -47,6 +47,28 @@ def test_ui_pages_security_and_escaping_ts_07_ui_02_ui_08_se_02(tmp_path):
     assert client.get("/", headers={"host": "attacker.example"}).status_code == 400
 
 
+def test_offline_branding_has_accessible_wordmark_and_packaged_icons_ui_01_ui_09(
+    tmp_path,
+):
+    """[UI-01][UI-09] Branding stays local and never replaces the link name."""
+    client, _paths = _client(tmp_path)
+    headers = {"host": "localhost:8420"}
+    page = client.get("/", headers=headers)
+    assert 'class="brand" href="/"' in page.text
+    assert 'brand/ftmon-mark.png' in page.text
+    assert 'alt="" width="44" height="44"><span>FTMON</span>' in page.text
+    assert 'brand/favicon.ico' in page.text
+    assert 'brand/favicon-64.png' in page.text
+    assert 'brand/apple-touch-icon.png' in page.text
+    for path, content_type in (
+        ("/static/brand/ftmon-mark.png", "image/png"),
+        ("/static/brand/favicon.ico", "image/vnd.microsoft.icon"),
+    ):
+        response = client.get(path, headers=headers)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+
+
 def test_dashboard_tiles_restore_accessible_legacy_health_states_ui_14_ts_12(tmp_path):
     """[UI-14][TS-12] Clear/warn/error/disabled/config states include icon+text."""
     client, paths = _client(tmp_path)
