@@ -138,7 +138,11 @@ class McpApi:
     def get_status(self) -> dict:
         now = self._clock.now()
         q = self._query()
-        defs, errors = loader.load_dir(self._paths.monitors_dir)
+        defs, errors = loader.load_dir(
+            self._paths.monitors_dir,
+            actions_dir=self._paths.actions_dir,
+            require_actions=True,
+        )
         monitors = [{"name": d.name, "source": d.source, "enabled": d.enabled}
                     for d in defs]
         monitors += [{"name": p.stem, "state": "config_error", "error": str(e)[:200]}
@@ -366,7 +370,11 @@ class McpApi:
         if row is None:
             return _err("not_found", f"no incident #{id}",
                         "list_incidents shows what exists")
-        defs, _errors = loader.load_dir(self._paths.monitors_dir)
+        defs, _errors = loader.load_dir(
+            self._paths.monitors_dir,
+            actions_dir=self._paths.actions_dir,
+            require_actions=True,
+        )
         rule_text = None
         params: dict = {}
         for d in defs:
@@ -410,7 +418,11 @@ class McpApi:
     def list_monitors(self) -> dict:
         now = self._clock.now()
         out = []
-        defs, errors = loader.load_dir(self._paths.monitors_dir)
+        defs, errors = loader.load_dir(
+            self._paths.monitors_dir,
+            actions_dir=self._paths.actions_dir,
+            require_actions=True,
+        )
         for d in defs:
             out.append({"name": d.name, "state": "enabled" if d.enabled
                         else "disabled", "source": d.source,

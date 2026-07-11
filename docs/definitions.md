@@ -63,12 +63,12 @@ Rule keys — sampler sources (`process`, `disk`, `system`, `unit`, `net`,
 | --- | --- | --- |
 | `id` | required | `[a-z][a-z0-9_]*`, unique in the monitor |
 | `when` | required | boolean expression (section 2) |
-| `severity` | required | `info`..`critical` (severity of the incident it opens) |
+| `severity` | required | `notice`, `warning`, `error`, or `critical` |
 | `confirm_cycles` | 3 | consecutive TRUE evaluations before the incident opens — the main noise defense |
 | `clear_cycles` | 3 | consecutive FALSE evaluations before it clears |
 | `group` | rule id | rules sharing a `group` form a severity *ladder*: one incident that escalates/downgrades instead of stacking |
 | `message` | required | template, ≤200 chars; `{any_metric}`, `{any_param}`, `{entity}`, `{monitor}`, `{severity}`; `:.0f`-style format specs allowed; missing values render as `n/a` |
-| `action` | none | script name under `~/.config/ftmon/actions/` (runs on open; arrives M6) |
+| `action` | none | executable bare filename under `~/.config/ftmon/actions/`; runs only when the incident opens, at most once/10m |
 | `notify_recovery` | true | send the one recovery notification on clear |
 
 Rule keys — the `events` source (episode rules, different lifecycle):

@@ -5,21 +5,38 @@ Everything here lands in the tick's single transaction via TickWriter;
 notification *delivery* is not here at all — effects only enqueue outbox
 rows (NO-04), and the daemon flushes the outbox after commit.
 
-Actions (ActionEffect) are accepted but deferred to M6 (AC-*): recorded in
-incident history as `action_skipped` so the trail shows what would have run.
+Actions are queued with their committed incident id and drained by the daemon
+after commit. Running a subprocess inside the tick transaction would violate
+PM-03 and let a 30-second timeout block every reader and writer.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from ftmon.engine.incidents import GroupConfig
-from ftmon.model import ActionEffect, Effect, GroupState, NotifyEffect, RecordEffect
+from ftmon.model import ActionEffect, Effect, GroupState, NotifyEffect, RecordEffect, severity_name
+
+
+@dataclass(frozen=True)
+class PendingAction:
+    """Post-commit action request carrying only the AC-02 allowlisted context."""
+
+    incident_id: int
+    action: str
+    env: dict[str, str]
 
 
 class EffectExecutor:
     def __init__(self, writer):  # store.writer.TickWriter (untyped: layering)
         self._writer = writer
+        self._pending_actions: list[PendingAction] = []
+
+    def drain_actions(self) -> tuple[PendingAction, ...]:
+        """Return and clear action requests after their incident commit."""
+        pending = tuple(self._pending_actions)
+        self._pending_actions.clear()
+        return pending
 
     def apply(
         self, cfg: GroupConfig, state: GroupState, effects: tuple[Effect, ...], now: float
@@ -49,10 +66,18 @@ class EffectExecutor:
                     core.incident_id, now, "notified", {"kind": n.kind}
                 )
             elif isinstance(effect, ActionEffect):
-                self._writer.add_incident_history(
-                    core.incident_id, now, "action_skipped",
-                    {"action": effect.action, "reason": "actions arrive in M6"},
-                )
+                env = {
+                    "FTMON_MONITOR": cfg.monitor,
+                    "FTMON_RULE": core.owning_rule,
+                    "FTMON_ENTITY": cfg.entity_id,
+                    "FTMON_SEVERITY": severity_name(core.severity),
+                    "FTMON_MESSAGE": effect.env.get("FTMON_MESSAGE", ""),
+                    "FTMON_INCIDENT_ID": str(core.incident_id),
+                    "FTMON_VALUE": effect.env.get("FTMON_VALUE", "true"),
+                }
+                self._pending_actions.append(PendingAction(
+                    core.incident_id, effect.action, env
+                ))
 
         self._writer.upsert_incident(
             core.incident_id,

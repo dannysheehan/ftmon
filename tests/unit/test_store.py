@@ -28,9 +28,9 @@ def test_migrate_idempotent_and_pragmas(tmp_path):
     v1 = db.migrate(conn)
     v2 = db.migrate(conn)
 
-    assert v1 == 1
-    assert v2 == 1
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert v1 == 2
+    assert v2 == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     # 2 == incremental (0 == none, 1 == full, 2 == incremental)
     assert conn.execute("PRAGMA auto_vacuum").fetchone()[0] == 2
@@ -57,6 +57,7 @@ def test_migrate_table_shape(tmp_path):
         "baselines",
         "cursors",
         "monitor_loads",
+        "action_runs",
     }
     assert expected <= tables
 

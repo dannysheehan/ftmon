@@ -211,7 +211,13 @@ def _open(
         _notify(core, cfg, "open", body, now),
     ]
     if owner.action:
-        effects.append(ActionEffect(owner.action, {}))  # AC-02: on open only
+        # A rule condition is boolean by the time it reaches this boundary,
+        # so AC-02's generic FTMON_VALUE has no more honest scalar than true.
+        # The rendered rule message carries the useful evaluated context.
+        effects.append(ActionEffect(owner.action, {
+            "FTMON_MESSAGE": body,
+            "FTMON_VALUE": "true",
+        }))  # AC-02: on open only
     return core, effects
 
 

@@ -22,6 +22,7 @@ from ftmon.clock import Clock, ControlledClock, SystemClock
 from ftmon.config import AppConfig, load_config
 from ftmon.definitions.loader import MonitorDef
 from ftmon.engine import incidents as inc
+from ftmon.engine.actions import ActionRunner
 from ftmon.engine.effects import EffectExecutor
 from ftmon.engine.events import EventEngine
 from ftmon.engine.pipeline import EvalOutcome, Pipeline
@@ -98,6 +99,7 @@ class DaemonCore:
         # The file notifier is unconditional (NO-02: it is the audit trail);
         # production run() appends the desktop channel.
         self.executor = EffectExecutor(self.writer)
+        self.actions = ActionRunner(self.conn, self.paths)
         self.outbox = Outbox(
             self.conn,
             self.notifiers if self.notifiers is not None
@@ -138,7 +140,11 @@ class DaemonCore:
     def _load_definitions(self, initial: bool = False) -> None:
         """PM-04: apply adds/changes/removes; an invalid file keeps the
         currently loaded version (or stays unloaded after restart)."""
-        defs, errors = definitions.load_dir(self.paths.monitors_dir)
+        defs, errors = definitions.load_dir(
+            self.paths.monitors_dir,
+            actions_dir=self.paths.actions_dir,
+            require_actions=True,
+        )
         now = self.clock.now()
         for path, err in errors:
             # Surfaced as a self-event so status/CLI can report it; the
@@ -337,6 +343,9 @@ class DaemonCore:
         self.rings.evict_if_over(self._is_protected, self.stats.count)
         self.writer.set_meta("last_tick_ts", repr(wall))
         self.writer.commit_tick()
+        # AC-02 actions are post-commit so their 30-second timeout cannot
+        # extend the daemon's single tick transaction (PM-03).
+        self.actions.run_pending(self.executor.drain_actions(), wall)
         # NO-04: delivery strictly after the transition committed.
         self.outbox.flush(wall)
         if mono - self._last_retention >= _RETENTION_EVERY_S:

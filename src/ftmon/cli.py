@@ -177,7 +177,8 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     if args.path:
         try:
-            loader.load_file(Path(args.path))
+            loader.load_file(Path(args.path), actions_dir=paths.actions_dir,
+                             require_actions=True)
         except Exception as e:
             render(Path(args.path), e)
     else:
@@ -186,7 +187,11 @@ def cmd_check(args: argparse.Namespace) -> int:
         for d in (paths.monitors_dir, paths.drafts_dir):
             if not d.exists():
                 continue
-            _defs, file_errors = loader.load_dir(d)
+            _defs, file_errors = loader.load_dir(
+                d,
+                actions_dir=paths.actions_dir,
+                require_actions=d == paths.monitors_dir,
+            )
             for file, ve in file_errors:
                 render(file, ve)
 
@@ -424,7 +429,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         tomllib.loads(paths.config_file.read_text())
     except (OSError, tomllib.TOMLDecodeError) as exc:
         config_errors.append(f"config.toml: {exc}")
-    _defs, definition_errors = loader.load_dir(paths.monitors_dir)
+    _defs, definition_errors = loader.load_dir(
+        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+    )
     config_errors.extend(f"{path}: {error}" for path, error in definition_errors)
     conn = connect(paths.db_file)
     try:

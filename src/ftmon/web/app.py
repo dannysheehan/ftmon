@@ -78,7 +78,10 @@ def _status(request: Request, q: Query | None) -> dict:
 
 
 async def dashboard(request: Request):
-    defs, errors = loader.load_dir(request.app.state.paths.monitors_dir)
+    paths = request.app.state.paths
+    defs, errors = loader.load_dir(
+        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+    )
     with _query(request) as q:
         status = _status(request, q)
         incidents = [] if q is None else q.incidents(state=None)
@@ -161,7 +164,9 @@ async def events(request: Request):
 
 async def monitors(request: Request):
     paths = request.app.state.paths
-    defs, errors = loader.load_dir(paths.monitors_dir)
+    defs, errors = loader.load_dir(
+        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+    )
     drafts = []
     for path in sorted(paths.drafts_dir.glob("*.toml")) if paths.drafts_dir.exists() else []:
         try:
@@ -201,7 +206,9 @@ async def self_page(request: Request):
             "WHERE se.monitor='self' AND s.ts="
             "(SELECT MAX(x.ts) FROM samples x WHERE x.series_id=se.id)"
         ).fetchall()
-    _defs, errors = loader.load_dir(paths.monitors_dir)
+    _defs, errors = loader.load_dir(
+        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+    )
     return _render("self.html", request, title="Self", status=status,
                    metrics=metrics_rows, config_errors=errors, log_tail=log_tail)
 

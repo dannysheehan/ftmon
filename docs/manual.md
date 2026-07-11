@@ -67,7 +67,7 @@ FTMON itself misbehaves.
 
 ---
 
-## 2. Installation *(final packaging arrives with M6; works from source now)*
+## 2. Installation
 
 ```sh
 git clone <repo> && cd ftmon
@@ -87,8 +87,8 @@ Directories FTMON uses (Linux):
 | `~/.local/share/ftmon/ftmon.db` | metric/event/incident history (SQLite) |
 | `~/.local/state/ftmon/` | daemon log + notification audit trail (JSONL) |
 
-Running as a service *(systemd unit ships with M6)*:
-the daemon is `ftmon daemon`; everything else (CLI, web UI, MCP) reads the
+Running as a service is covered in `docs/install.md`; the packaged systemd
+user unit runs `ftmon daemon`. Everything else (CLI, web UI, MCP) reads the
 same database and works even when the daemon is stopped — you just see
 stale data with a clear "last checked N minutes ago".
 
@@ -103,7 +103,7 @@ ftmon baseline reset leak         # forget learned "normal" (e.g. after an upgra
 ftmon events --min-severity error   # stored journal events (--provider, --hours)
 ftmon incident 42       # full story of one incident        (soon)
 ftmon top rss --range 3h  # what was eating memory          (soon)
-ftmon doctor            # database health, backup           (M6)
+ftmon doctor            # database integrity, WAL, orphans and config
 ```
 
 Desktop notifications are live: an incident opens after its confirmation
@@ -207,6 +207,16 @@ as **one digest** when the window ends; error and critical always come
 through immediately. Incidents still open, escalate, and clear during quiet
 hours — only the popups wait. After a crash FTMON may repeat at most one
 notification — it will never silently lose one.
+
+### Actions
+
+A rule may name one executable in `~/.config/ftmon/actions/`. You create and
+review that file yourself; FTMON deliberately never writes or chmods anything
+there. An action runs only on the incident's initial open—not escalation,
+renotify, downgrade, or recovery—and at most once per action every ten minutes.
+It receives only a minimal PATH and the documented `FTMON_*` context, has no
+shell or arguments, and is killed after 30 seconds. Its capped output, exit
+status, timeout, or rate-limit suppression is retained in incident history.
 
 ## 9. Privacy
 

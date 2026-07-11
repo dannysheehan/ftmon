@@ -1,0 +1,18 @@
+[Unit]
+Description=FTMON local systems monitor
+Documentation=https://github.com/dsheehan/ftmon
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ftmon daemon
+Restart=on-failure
+RestartSec=5s
+
+# FTMON is intentionally a per-user service. These settings reduce ambient
+# authority without blocking psutil, journald, or desktop notification access.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

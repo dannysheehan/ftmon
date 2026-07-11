@@ -1,4 +1,4 @@
-"""M6 database diagnostics tests (CL-05, VC-03)."""
+"""M6 database diagnostics tests [CL-05][VC-03]."""
 
 import sqlite3
 

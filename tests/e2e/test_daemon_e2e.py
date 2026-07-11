@@ -195,3 +195,28 @@ def test_sigterm_stops_cleanly(harness):
         pass
     assert h.proc.wait(timeout=15) == 0
     assert "daemon stopped" in h.log.read_text()
+
+
+def test_action_runs_through_real_daemon_once_e2e_ac_02(tmp_path):
+    """[AC-02][TS-05] A real daemon commits the incident before running its action."""
+    action_def = LEAKDEF.replace(
+        'message = "{entity} leaking"',
+        'message = "{entity} leaking"\naction = "capture"',
+    )
+    h = DaemonHarness(tmp_path, {"leak": action_def}, "firefox-leak-2mb-min")
+    script = h.paths.actions_dir / "capture"
+    script.write_text("#!/bin/sh\nprintf '%s' \"$FTMON_INCIDENT_ID\" > action-ran\n")
+    script.chmod(0o700)  # the test supplies the user-owned executable (AC-03)
+    try:
+        h.start()
+        marker = h.paths.state_dir / "action-ran"
+        h.step_until(marker.exists, max_steps=250)
+        conn = _db(h)
+        incident_id = conn.execute("SELECT id FROM incidents").fetchone()[0]
+        assert marker.read_text() == str(incident_id)
+        row = conn.execute(
+            "SELECT kind,detail FROM incident_history WHERE kind='action_run'"
+        ).fetchone()
+        assert row is not None and '"exit_code": 0' in row["detail"]
+    finally:
+        h.stop()

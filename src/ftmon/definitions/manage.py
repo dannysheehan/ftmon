@@ -36,9 +36,15 @@ class ManageError(Exception):
         return f"{self.code}: {self.message}"
 
 
-def _validate_text(toml_text: str) -> loader.MonitorDef:
+def _validate_text(
+    toml_text: str, *, paths: Paths | None = None, require_actions: bool = False
+) -> loader.MonitorDef:
     try:
-        return loader.load_text(toml_text)
+        return loader.load_text(
+            toml_text,
+            actions_dir=paths.actions_dir if paths is not None else None,
+            require_actions=require_actions,
+        )
     except loader.ValidationError as e:
         raise ManageError(
             code="validation_failed",
@@ -80,7 +86,7 @@ def approve_draft(paths: Paths, name: str) -> Path:
             hint="ftmon monitors lists drafts; define_monitor creates them",
         )
     reject_symlink(draft)  # PM-06c
-    _validate_text(draft.read_text())
+    _validate_text(draft.read_text(), paths=paths, require_actions=True)
     target = paths.monitors_dir / f"{name}.toml"
     if target.exists():
         raise ManageError(
@@ -134,6 +140,6 @@ def set_enabled(paths: Paths, name: str, enabled: bool) -> Path:
             message=f"{target} has no `enabled = true|false` line to edit",
             hint="add `enabled = true` under [monitor] and retry",
         )
-    _validate_text(new_text)  # never write a file the daemon would reject
+    _validate_text(new_text, paths=paths, require_actions=True)
     atomic_write(target, new_text.encode())
     return target

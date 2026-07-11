@@ -791,7 +791,19 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
 # --------------------------------------------------------------------------
 
 
-def load_text(text: str, filename: str = "<text>") -> MonitorDef:
+def load_text(
+    text: str,
+    filename: str = "<text>",
+    *,
+    actions_dir: Path | None = None,
+    require_actions: bool = False,
+) -> MonitorDef:
+    """Parse and validate one definition.
+
+    Draft validation deliberately leaves ``require_actions`` false because
+    AC-03 permits authoring before the user creates a script. Active loads and
+    approval pass the actions directory and enforce AC-01.
+    """
     try:
         parsed = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
@@ -802,21 +814,56 @@ def load_text(text: str, filename: str = "<text>") -> MonitorDef:
         tagged = [dict(e, message=f"{filename}: {e['message']}") for e in errors]
         raise ValidationError(tagged)
     assert monitor_def is not None
+    if require_actions:
+        action_errors = _action_errors(monitor_def, actions_dir, filename)
+        if action_errors:
+            raise ValidationError(action_errors)
     return monitor_def
 
 
-def load_file(path: Path) -> MonitorDef:
+def _action_errors(mdef: MonitorDef, actions_dir: Path | None, filename: str) -> list[dict]:
+    """Validate action files without changing them (AC-01/AC-03)."""
+    import os
+
+    errors = []
+    for index, rule in enumerate(mdef.rules):
+        if not rule.action:
+            continue
+        target = (actions_dir / rule.action) if actions_dir is not None else None
+        unavailable = (
+            target is None
+            or not target.is_file()
+            or target.is_symlink()
+            or not os.access(target, os.X_OK)
+        )
+        if unavailable:
+            errors.append(_err(
+                f"rule[{index}].action", "action_unavailable",
+                f"{filename}: action {rule.action!r} must be an existing executable regular "
+                "file in the actions directory",
+                "create and chmod the script yourself; FTMON never modifies actions/",
+            ))
+    return errors
+
+
+def load_file(
+    path: Path, *, actions_dir: Path | None = None, require_actions: bool = False
+) -> MonitorDef:
     reject_symlink(path)  # PM-06c
     text = path.read_text(encoding="utf-8")
-    return load_text(text, filename=str(path))
+    return load_text(text, filename=str(path), actions_dir=actions_dir,
+                     require_actions=require_actions)
 
 
-def load_dir(monitors_dir: Path) -> tuple[list[MonitorDef], list[tuple[Path, ValidationError]]]:
+def load_dir(
+    monitors_dir: Path, *, actions_dir: Path | None = None, require_actions: bool = False
+) -> tuple[list[MonitorDef], list[tuple[Path, ValidationError]]]:
     defs: list[MonitorDef] = []
     errors: list[tuple[Path, ValidationError]] = []
     for path in sorted(monitors_dir.glob("*.toml")):
         try:
-            defs.append(load_file(path))
+            defs.append(load_file(path, actions_dir=actions_dir,
+                                  require_actions=require_actions))
         except ValidationError as e:
             errors.append((path, e))
         except OSError as e:
