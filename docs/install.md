@@ -325,6 +325,9 @@ configuration validation exercises the same path the service will use:
 
 ```sh
 sudo install -d -o caddy -g caddy -m 0750 /var/log/caddy
+sudo touch /var/log/caddy/ftmon-demo-access.log
+sudo chown caddy:caddy /var/log/caddy/ftmon-demo-access.log
+sudo chmod 0640 /var/log/caddy/ftmon-demo-access.log
 ```
 
 The supplied configuration uses the rate-limit module pinned in its header.
@@ -340,14 +343,16 @@ xcaddy build v2.11.4 --output /tmp/caddy-ftmon-demo \
 sudo install -o root -g root -m 0755 /tmp/caddy-ftmon-demo \
   /usr/local/bin/caddy-ftmon-demo
 sudo install -m 0644 src/ftmon/deploy/Caddyfile.demo /etc/caddy/Caddyfile
-sudo /usr/local/bin/caddy-ftmon-demo validate --config /etc/caddy/Caddyfile
+sudo -u caddy -H /usr/local/bin/caddy-ftmon-demo validate \
+  --config /etc/caddy/Caddyfile
 sudo systemctl edit caddy
 ```
 
 Do not continue if the build or module check fails. The explicit `/tmp` output
 path avoids accidentally installing a stale `caddy` file from another working
-directory—the service override is added only after the expected binary and
-configuration both validate.
+directory. Validation runs as the service account so it catches filesystem
+access problems without leaving root-owned runtime files; the service override
+is added only after the expected binary and configuration both validate.
 
 Use an override so distribution package upgrades cannot silently replace the
 pinned custom binary:
