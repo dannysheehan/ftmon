@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.9** — v0.9 specifies single-server operation, remote notification channels, and a safe public demonstration mode. All §19 open questions are resolved.
+Status: **DRAFT v0.10** — v0.10 specifies administrator-registered external
+checks, including a bounded Nagios-compatible adapter whose declared
+performance data becomes ordinary FTMON history and Trends. All §19 open
+questions are resolved.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -16,6 +19,9 @@ workstations, and individually managed servers. It:
   locally selected channels;
 - records metric history so questions about past behavior can be answered;
 - lets users (and, with approval, AI) define new monitors declaratively, including formula-based derived metrics;
+- lets administrators register local external checks so existing scripts and
+  separately installed Nagios-compatible plugins can feed the same history,
+  incident, notification, and Trend machinery;
 - exposes everything to AI assistants through a local MCP server;
 - is fully usable **without** AI through a CLI and a local web UI.
 
@@ -37,6 +43,10 @@ It is the successor to the legacy Perl FTMON (2001–2003), published separately
 - **NG-06** Per-process network connection attribution (deferred; needs elevated rights on some systems).
 - **NG-07** Baseline seasonality (day-of-week / time-of-day patterns) — deliberately absent in v1; the baseline is a single smoothed level (CA-05).
 - **NG-08** Secret-pattern redaction of command lines / log messages (privacy posture is SE-04: local single-user data, restrictive file modes, truncation, collection toggle).
+- **NG-09** Loading third-party Python modules into the daemon, discovering
+  plugins automatically, vendoring Nagios plugins, NRPE, or becoming a general
+  remote/fleet check orchestrator. M9 executes only explicit local commands
+  registered by the administrator (EC-01).
 
 ---
 
@@ -58,6 +68,8 @@ It is the successor to the legacy Perl FTMON (2001–2003), published separately
 | **episode** | The event-rule flavor of an incident: keyed by matching events, cleared by a quiet period rather than false evaluations (IN-08). |
 | **baseline** | A learned "normal" value for a metric/entity (§7.4) usable in rule expressions. |
 | **draft** | A monitor definition written by MCP `define_monitor`, stored inactive until approved. |
+| **external check** | An administrator-registered local executable invocation sampled by FTMON under a hard deadline. It may implement FTMON's JSON protocol or the Nagios plugin convention. |
+| **performance data** | Numeric label/value output from an external check. Only definition-declared mappings become FTMON metrics; undeclared labels are ignored. |
 
 ---
 
@@ -70,7 +82,9 @@ These were decided during specification and are not open for re-litigation by im
 - License: this repository is **MIT**. The separate original SourceForge project is GPLv2.
 - Storage: **SQLite** (WAL mode, `auto_vacuum=INCREMENTAL`). No external database, no RRDtool.
 - Process model: daemon + CLI + MCP server + web UI are **separate processes** sharing the SQLite database and (for definitions) the config directory under the coordination rules of PM-06/PM-07. Web UI is a fully separate service from the daemon.
-- Monitor definitions: **TOML** with expression strings in a **restricted Python-AST subset** (§8). Definitions are data, never executable code.
+- Monitor definitions: **TOML** with expression strings in a **restricted
+  Python-AST subset** (§8). Definitions are data, never executable code; M9
+  definitions may reference but never create an administrator check alias.
 - AI authority: **draft + approval** (§8.3, §11). Actions are **pre-existing allowlisted scripts only** (§10).
 - Incident model: **ladder groups** (IN-03): one incident per (monitor, entity, group); severity ladders share a group.
 - Incident behavior: consecutive-cycle confirmation, **escalate + backoff** renotification, recovery notification (§9).
@@ -92,6 +106,7 @@ These were decided during specification and are not open for re-litigation by im
 | Event source | journald (`journalctl -o json` subprocess) | `win32evtlog.EvtSubscribe` (pywin32) | `log stream --style ndjson` subprocess |
 | Event cursor (DM-15) | journald cursor string | `EvtBookmark` XML | last-seen timestamp |
 | Notification | `notify-send` (fallback: D-Bus) | toast (`windows-toasts`) | `osascript display notification` |
+| External checks | local executable; Nagios + FTMON JSON | FTMON JSON planned | FTMON JSON planned |
 | Service wrapper | systemd user unit | Task Scheduler (logon) | launchd LaunchAgent |
 | Config/data paths | XDG dirs | `%APPDATA%` / `%LOCALAPPDATA%` | `~/Library/Application Support` |
 
@@ -99,7 +114,12 @@ These were decided during specification and are not open for re-litigation by im
 - **PL-02** The canonical schemas (§5) MUST NOT assume any platform's shape. In particular `event_id` is an **optional string** (Windows has numeric IDs, journald has identifiers, macOS has none).
 - **PL-03** Permission failures during sampling (e.g. psutil `AccessDenied`) MUST degrade gracefully: skip the entity, count it in self-metrics (§13), never crash or spam the log (log once per entity per daemon lifetime at DEBUG).
 - **PL-04** v1 ships and is tested on Linux only, but the fake/fixture implementations of `Sampler` and `EventSource` (§16) count as second implementations, keeping the seams honest.
-- **PL-05** Every `Sampler` and `EventSource` statically declares its schema: entity kind, metric names/units, attr names/types. Validation (MD-01) resolves expression names against these declarations; the declarations are also the documentation source for DO-01.
+- **PL-05** Every `Sampler` and `EventSource` declares its schema: entity kind,
+  metric names/units, attr names/types. Built-in declarations are static. The
+  `external` source composes its fixed fields with the definition's validated
+  EC-04 performance-data mappings; no runtime output can add a name to the
+  expression namespace. Validation (MD-01) resolves expressions against the
+  resulting declaration, which is also the documentation source for DO-01.
 
 ### 4.2 Processes
 
@@ -132,6 +152,7 @@ These were decided during specification and are not open for re-litigation by im
 
 ```
 ~/.config/ftmon/config.toml            # global settings
+~/.config/ftmon/checks.toml            # desktop/user external-check authority
 ~/.config/ftmon/monitors/*.toml        # enabled monitor definitions
 ~/.config/ftmon/monitors/drafts/*.toml # AI-authored, awaiting approval
 ~/.config/ftmon/actions/*              # allowlisted action scripts (user-created)
@@ -143,6 +164,14 @@ $XDG_RUNTIME_DIR/ftmon/daemon.lock     # instance lock
 
 - **FS-01** Paths MUST be resolved through one module using `platformdirs`; nothing else constructs these paths.
 - **FS-02** First run MUST create all directories (0700), write a commented default `config.toml`, and install the built-in monitor definitions (§7.6) as real, user-editable TOML files (not hidden defaults). `ftmon init --force` re-installs built-ins without touching user files.
+- **FS-03** `Paths.check_registry_file` resolves from
+  `FTMON_CHECK_REGISTRY` when set, otherwise
+  `config_dir/checks.toml`. `init` may create a commented empty user registry
+  but never creates `/etc/ftmon/checks.toml`. MCP, web, monitor approval and
+  draft tooling MUST treat the registry as read-only. Hardened server
+  documentation creates `/etc/ftmon` and `checks.toml` root-owned, mode
+  0755/0640 respectively, readable by group `ftmon`, and the service unit
+  exposes the path without granting it write access.
 
 ---
 
@@ -212,11 +241,20 @@ sources due? → each needed source runs ONCE → immutable snapshot (single ts)
 ```
 
   A source shared by several monitors (e.g. the process source feeding `leak`, `hog`, `service`) is enumerated once per tick; all consumers see identical values and timestamps.
+  For `external`, the sharing key is the registered check alias rather than the
+  broad source name, so different commands never collapse into one snapshot
+  while several definitions can reuse one execution (EC-08).
 
 ### 6.2 Scheduling
 
 - **SA-01** The scheduler ticks every 5 s on the **monotonic** clock. Each monitor declares `interval` (default `"60s"`, min `"15s"`); it runs on the first tick at/after its due time. A monitor whose cycle overruns its interval is skipped (not queued) for the missed slot, with a self-metric counting overruns.
-- **SA-02** Samplers run sequentially in the daemon (no thread pool in v1). Timeout semantics are honest about Python's limits: **subprocess-backed** sources (journalctl, systemctl, log) get hard deadlines enforced by kill; **in-process** samplers (psutil loops) check a cooperative deadline between entities (default budget 10 s); a truly stuck native call cannot be killed and is instead *detected* — the cycle-overrun self-metric and the `self` monitor's watchdog rule (RB-02) surface it.
+- **SA-02** Samplers run sequentially in the daemon (no thread pool in v1).
+  Timeout semantics are honest about Python's limits: **subprocess-backed**
+  sources (`journalctl`, `systemctl`, and M9 external checks) get hard deadlines
+  enforced by process-group kill; **in-process** samplers (psutil loops) check a
+  cooperative deadline between entities (default budget 10 s); a truly stuck
+  native call cannot be killed and is instead *detected* — the cycle-overrun
+  self-metric and the `self` monitor's watchdog rule (RB-02) surface it.
 - **SA-07** Clock discipline: scheduling and elapsed-time math use the monotonic clock; sample/event timestamps use wall UTC. After suspend/resume or any monotonic gap > 2× base tick, missed cycles are **skipped without catch-up** and a `clock_gap` self-event records the gap. Backoff arithmetic (IN-02) uses wall timestamps but treats negative elapsed time (wall clock stepped back) as zero and recomputes from now. Window functions simply see a gap in samples; CA-02's `None` semantics make rules silent rather than wrong across gaps.
 
 ### 6.3 Sources
@@ -225,6 +263,184 @@ sources due? → each needed source runs ONCE → immutable snapshot (single ts)
 - **SA-08** The event queue is bounded at 10 000 entries; on overflow the oldest are dropped and an `event_overflow` self-event records the count. Malformed lines are skipped and counted (self-metric), never fatal. Reader stall detection: `event_source_last_activity_age` is a self-metric; the `self` monitor warns when it exceeds 10 m while the reader process is alive.
 - **SA-04** Built-in samplers v1: `process` (per-process cpu%, rss, and — where available without elevated rights — open fds, threads, io counters), `disk` (per-mount total/used/free bytes, inodes where supported), `system` (load1/5/15, cpu% total, mem available/used, swap, PSI where present), `net` (per-listen-socket presence, per-proto/state connection counts; **no per-process attribution in v1**, NG-06), `unit` (systemd unit active-state + NRestarts via `systemctl show`).
 - **SA-05** The `process` source implements **track-all + promote**: every process is sampled into a bounded in-memory window (last 15 of its samples) each tick it's due; long-term persistence happens only for entities that are (a) on a monitor's watchlist, (b) in the top-N (default 15) by cpu or rss that cycle, or (c) **promoted** by a trend heuristic (§7.6.1). Promotion/demotion transitions are recorded as self-events. This keeps DM-05/DM-16 achievable with hundreds of processes.
+
+### 6.4 Administrator-registered external checks
+
+External checks extend what one FTMON installation can observe without loading
+third-party code into the daemon or requiring FTMON to reproduce a large probe
+catalog. They are a local execution seam, not a fleet agent protocol. A check
+may inspect the host or an explicitly named service/endpoint, but FTMON still
+has no discovery, remote agent, central collector, or cross-host view (NG-03/09).
+
+The administrator registers execution authority in a separate `checks.toml`;
+monitor definitions can only refer to an existing alias. Desktop/user installs
+default to the private FTMON config directory. The hardened server unit fixes
+`FTMON_CHECK_REGISTRY=/etc/ftmon/checks.toml`, outside every service-writable
+path, where the file and parent directory are root-owned:
+
+```toml
+[check.website_https]
+argv = [
+  "/usr/lib/nagios/plugins/check_http",
+  "-H", "example.org",
+  "-S", "-C", "14", "-t", "8",
+]
+protocol = "nagios"
+timeout = "9s"
+```
+
+The monitor definition declares identity and every performance value it is
+prepared to accept:
+
+```toml
+[monitor]
+name = "website"
+description = "Public website availability and TLS"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "website_https"
+entity = "https://example.org"
+
+[[source_options.perfdata]]
+label = "time"
+metric = "response_time_s"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+scale = 1.0
+
+[parameters]
+latency_growth_sph = { value = 0.2, doc = "Response-time growth per hour" }
+growth_confidence_min = { value = 0.8, doc = "Required rising fraction" }
+
+[[derived]]
+name = "response_time_rate_sph"
+expr = 'slope(response_time_s, "2h") * 3600'
+
+[[derived]]
+name = "response_time_growth_confidence"
+expr = 'monot(response_time_s, "2h")'
+
+[[rule]]
+id = "latency-degrading"
+group = "latency-growth"
+when = "response_time_rate_sph > latency_growth_sph and response_time_growth_confidence >= growth_confidence_min"
+severity = "warning"
+confirm_cycles = 3
+message = "HTTPS response time is steadily increasing"
+
+[[rule]]
+id = "plugin-critical"
+group = "availability"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[trend]]
+id = "response-time"
+kind = "growth"
+title = "HTTPS response-time trend"
+value_metric = "response_time_s"
+value_unit = "seconds"
+rate_metric = "response_time_rate_sph"
+rate_unit = "seconds/hour"
+confidence_metric = "response_time_growth_confidence"
+confidence_threshold_param = "growth_confidence_min"
+rate_threshold_params = ["latency_growth_sph"]
+```
+
+- **EC-01** Check execution authority exists only in the administrator-edited
+  `[check.<alias>]` table of the separate registry selected by `Paths`. The
+  desktop/user default is `config_dir/checks.toml`; hardened server packaging
+  MUST set an absolute `/etc/ftmon/checks.toml` through a root-owned service
+  environment and MUST NOT make that path writable by the service. Each entry
+  has a unique definition-name alias, an explicit non-empty `argv` array whose
+  first element is an absolute executable path, `protocol =
+  "ftmon-json"|"nagios"`, and a timeout from 1–30 s (default 10 s). Monitor
+  TOML, drafts, MCP, and the web UI can reference an alias but MUST NOT create,
+  edit, or supply executable paths or arguments. Missing/invalid aliases are
+  configuration errors and never execute. The registry itself must be a
+  regular non-symlink file owned by the current user or root, not writable by
+  group/other; every parent from the selected trust root must reject
+  group/other writes.
+- **EC-02** The runner invokes `argv` directly—never through a shell—with no
+  stdin, a minimal fixed `PATH`, no inherited environment, closed file
+  descriptors, a private process group, a state-directory working directory,
+  and capped stdout/stderr. The daemon MUST run unprivileged. Timeout kills the
+  complete process group and returns an unknown check result; subprocess work
+  occurs outside every SQLite transaction.
+- **EC-03** Nagios mode maps exit codes `0/1/2/3` to OK/warning/critical/unknown.
+  Signals, timeout, launch failure, and all other exit codes map to unknown and
+  increment a categorized self-metric. The first stdout line, stripped of
+  controls and capped at 2 KiB, becomes `plugin_message`; stderr is never a
+  metric, notification body, or persisted incident attribute. The first
+  line's text after `|` is parsed using the Nagios performance-data shape
+  `'label'=value[UOM];warn;crit;min;max`; plugin thresholds remain the plugin's
+  concern and do not silently create FTMON rules.
+- **EC-04** Each `[[source_options.perfdata]]` mapping declares the source
+  `label`, destination `metric`, expected `plugin_uom`, display/storage `unit`,
+  `kind = "gauge"|"counter"`, and an optional finite numeric `scale` (default
+  1). Metric names are unique and enter the validator's NameEnv before derived
+  expressions, rules, and Trends compile. Only mapped finite values with the
+  expected UOM are persisted. Missing labels produce an absent metric;
+  undeclared labels are ignored; duplicate labels, malformed numbers, UOM
+  mismatch, NaN, or infinity reject that mapped value and increment a
+  self-metric without discarding the valid check state.
+- **EC-05** Every run produces one synthetic entity with stable `entity_id =
+  source_options.entity`, fixed metrics `plugin_state` (0–3), `plugin_ok`
+  (0/1), and `duration_s`, fixed attr `plugin_message`, plus valid mapped
+  metrics. These are ordinary persisted series: they are queryable through
+  CLI/MCP/Metrics, usable by parameters, derived expressions, baselines and
+  confirmation rules, and eligible for explicit `[[trend]]` profiles. FTMON
+  MUST NOT infer a Trend, unit, threshold, or semantic meaning from a Nagios
+  label.
+- **EC-06** Exit 1/2/3 is valid monitoring evidence, not a daemon fault. FTMON
+  rules decide how plugin state confirms, escalates, clears, and notifies.
+  Execution failure also yields state 3 so a definition may distinguish
+  “unknown” from OK; a missing sample caused by the global source budget stays
+  `None` and cannot falsely clear an incident (CA-02). Reloading a changed
+  registry is atomic; invalid new registry content leaves the last valid
+  registry active and emits one redacted configuration self-event.
+- **EC-07** Registry arguments are configuration, not a secret transport.
+  Tokens, passwords, URL user-info, and private keys MUST NOT appear in argv,
+  monitor definitions, output, database rows, diagnostics, or MCP/web views.
+  Plugins needing credentials use an administrator-created, service-readable
+  configuration/credential file supported by that plugin; FTMON passes no
+  secret environment values in M9. `doctor` reports only alias readiness and
+  stable error categories, never argv or plugin output.
+- **EC-08** Due aliases execute sequentially under the existing per-tick source
+  deadline with round-robin fairness. One alias referenced by multiple due
+  monitors runs once and its immutable raw result is projected through each
+  definition's mappings. Work left when the source budget expires is skipped,
+  counted, and considered first on the next eligible tick; it is not queued for
+  catch-up. Registry and definition counts are bounded (64 aliases, 32
+  arguments/alias, 32 mappings/definition; each argument ≤ 512 bytes; combined
+  argv ≤ 8 KiB) so configuration cannot defeat RB-01.
+- **EC-09** FTMON supports the documented execution/output convention, not
+  every Nagios plugin, NRPE, or Nagios configuration feature. Plugins and user
+  scripts are installed and licensed separately and are never vendored into
+  the MIT repository. Compatibility documentation MUST call out plugins that
+  require privilege, inherited environment, unsupported multiline perfdata,
+  or secret command-line arguments. FTMON-native JSON checks are preferred
+  when richer typed output is needed.
+- **EC-10** `protocol = "ftmon-json"` accepts one UTF-8 JSON object surrounded
+  only by ASCII whitespace, with total stdout capped at 64 KiB:
+  `{"schema":1,"state":0,"message":"...","metrics":{"label":
+  {"value":1.5,"uom":"s"}}}`. Known top-level keys are `schema`, `state`,
+  `message`, and `metrics`; unknown keys or schema versions fail the run as
+  state 3. `state` is integer 0–3, message is a string capped like EC-03, and
+  metrics is a map of at most 64 labels to `{value: finite number, uom:
+  string}`. EC-04 mappings remain authoritative for names, units, kinds, and
+  scaling; JSON output cannot declare or override FTMON schema. Extra
+  non-whitespace stdout, malformed UTF-8/JSON, nesting, arrays,
+  booleans-as-numbers, or oversized output make the run unknown rather than
+  partially trusted.
 
 ---
 
@@ -348,7 +564,7 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 # clear_after = "30m"            # episode (event) rules only
 ```
 
-- **MD-01** The full schema (all keys, types, bounds, which keys are required/forbidden per `source` kind — including `source_options` shapes for `service` and `net`) is defined once as a versioned JSON-Schema-equivalent in code; `ftmon check`, `define_monitor`, and daemon loading all use the *same* validator. Error messages MUST name the file, key, and reason.
+- **MD-01** The full schema (all keys, types, bounds, which keys are required/forbidden per `source` kind — including `source_options` shapes for `service`, `net`, and `external`) is defined once as a versioned JSON-Schema-equivalent in code; `ftmon check`, `define_monitor`, and daemon loading all use the *same* validator. Error messages MUST name the file, key, and reason.
 - **MD-02** `message` is a Python `str.format`-style template; only entity attrs, parameters, and metric names are available; formatting errors at validation time, not fire time.
 - **MD-03** Unknown keys are validation errors (protects against silent typos in AI-authored drafts).
 - **MD-04** A definition referencing a sampler, metric, attr, or function that doesn't exist (per PL-05 declarations) fails validation with a suggestion (closest name).
@@ -389,6 +605,14 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 ---
 
 - **MD-10** Sampler monitor definitions MAY declare validated `[[trend]]` profiles. Each profile has a unique `id`, `kind = "growth"|"capacity"`, title, value/rate metric and units, optional confidence metric + threshold parameter, optional value/rate threshold-parameter lists, and optional incident group. Capacity additionally requires a remaining metric. Every referenced metric and parameter MUST exist in that definition. Presentation behavior is declared, never inferred from metric names.
+- **MD-11** `source = "external"` requires `source_options.check`,
+  `source_options.entity`, and zero or more `[[source_options.perfdata]]`
+  mappings exactly as bounded by EC-04/08. The check alias must exist in the
+  currently valid registry during daemon load; `ftmon check <definition>` may
+  validate syntax without a live registry but reports the unresolved alias as
+  a distinct readiness warning, while approval/enabling requires resolution.
+  Mapping changes are ordinary schema changes under MD-06: removed metrics stop
+  sampling and age out; they are never silently renamed or reinterpreted.
 
 ## 9. Incident lifecycle and notifications
 
@@ -557,6 +781,16 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   and output escaping, a maximum request-target length, and read-only routing.
   Proxy headers grant no authority. Demo mode is not an approved pattern for
   exposing an operational FTMON database.
+- **SE-07** External checks are an explicit local code-execution trust boundary.
+  Registration is administrator-only, execution follows EC-02, and check
+  output is untrusted at every renderer/sink. FTMON MUST reject a symlink,
+  non-regular/non-executable target, a target writable by group/other, or an
+  executable located under FTMON data/state/runtime directories. A target may
+  be owned by the service user (desktop/user-authored check) or root (hardened
+  server/system plugin); documentation recommends root-owned checks on servers.
+  The runner repeats target identity/type/mode validation immediately before
+  every launch so registry-time validation is not a TOCTOU promise. Approval
+  of a monitor cannot grant more authority than a pre-existing alias.
 
 ---
 
@@ -620,6 +854,17 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   writes are registered, reject localhost/foreign Hosts in public demo
   configuration, reject attempts to open a real writable DB, and crawl all
   pages without external asset requests or sensitive fixture strings.
+- **TS-15** External-check tests use local fake executables only and cover exact
+  argv/no-shell/minimal-env behavior, registry authority and reload failure,
+  path/ownership/mode rejection, exit codes 0–3 and out-of-range mapping,
+  process-group timeout, output/control/size caps, Nagios quoting and first-line
+  perfdata, JSON schema strictness, missing/unknown/duplicate/malformed/UOM
+  values, scaling and counter kinds, declared-name validation, shared-alias
+  single execution, source-budget fairness, unknown-versus-missing semantics,
+  self-metrics, doctor redaction, and one controlled-clock journey from mapped
+  plugin metric through derived growth/confidence to incident, Metrics, Trend,
+  CLI and MCP. No CI test contacts a network service or requires Nagios to be
+  installed.
 
 ## 17. Documentation deliverables (v1)
 
@@ -633,6 +878,14 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   access, and a reproducible `demo.ftmon.org` deployment guide with DNS, reverse
   proxy TLS, synthetic reset, rate limits, updates, backups-not-required, and
   an explicit warning never to substitute a real operational database.
+- **DO-07** Documentation includes the external-check trust model, registry and
+  definition references, an FTMON JSON check authoring guide, Nagios reuse and
+  licensing caveats, credential-file guidance, troubleshooting for unknown and
+  missing results, and worked HTTP/TLS examples whose declared performance data
+  appears in Metrics and Trends. Product-facing documentation explains the
+  value accurately: reuse a mature check ecosystem while FTMON adds bounded
+  local history, confirmation, incidents, notifications and trend analysis;
+  it MUST label the capability planned until M9 ships.
 
 ---
 
@@ -676,10 +929,20 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M7.3** | Accessible legacy-style dashboard health tiles (UI-14, TS-12) | at-a-glance operational status |
 | **M8** | Server profile, per-channel outbox, ntfy/webhook/SMTP, server service/docs (PM-08/09, DM-18, NO-05..10, SE-05, TS-13, DO-06) | lightweight single-server monitor |
 | **M8.1** | Synthetic read-only public demo mode and deployment (UI-15/16, SE-06, TS-14, DO-06) | safe `demo.ftmon.org` experience |
+| **M9** | Administrator check registry, external subprocess source, FTMON JSON and Nagios adapters, declared perfdata history/Trends (EC-*, MD-11, SE-07, TS-15, DO-07) | bring-your-own checks without a monitoring stack |
 
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.10 (2026-07-11)** — specifies M9's bounded external-check seam. An
+administrator registers exact local argv once; declarative monitors may reuse
+that authority but cannot create it. FTMON-native JSON and Nagios-compatible
+exit/output adapters turn only explicitly mapped performance labels into typed
+metrics, after which existing history, formulas, baselines, incidents, Metrics,
+Trends, notifications and MCP work unchanged. This deliberately reuses the
+large check ecosystem without importing third-party code, vendoring GPL
+plugins, adopting NRPE, or becoming a fleet monitor.
 
 **v0.9 (2026-07-11)** — extends the single-host scope from desktops to individually managed servers without adding fleet management. Notification fan-out gains independent durable channel state for file, desktop, ntfy, generic webhook, and SMTP delivery, with explicit retry, TLS, privacy, and credential rules. A separate synthetic, GET-only demo mode permits `demo.ftmon.org` without exposing an operational database or weakening the loopback-only production UI.
 

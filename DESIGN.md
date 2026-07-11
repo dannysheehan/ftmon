@@ -1,6 +1,9 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.7**. Companion to `SPEC.md` v0.9 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
+Status: **DRAFT v0.8**. Companion to `SPEC.md` v0.10 — every design element
+cites the requirement(s) it satisfies. Where this document says FROZEN,
+implementers MUST NOT alter names, signatures, or semantics; changes go through
+this document first.
 
 Design-phase artifacts:
 
@@ -34,7 +37,12 @@ PROJECTS/ftmon/                  # monorepo root (git)
 │   │   ├── base.py              # Sampler/EventSource protocols + SourceDecl (PL-05)
 │   │   ├── process.py disk.py system.py net.py unit.py selfsrc.py
 │   │   ├── journald.py          # linux EventSource
+│   │   ├── external.py          # EC-*: bounded subprocess sampler/projection
 │   │   └── fixtures.py          # TS-04 scenario-driven fakes (ship in prod pkg: PL-04)
+│   ├── checks/
+│   │   ├── registry.py          # administrator argv authority + reload (EC-01/06)
+│   │   ├── runner.py            # no-shell process-group deadline (EC-02)
+│   │   └── nagios.py jsoncheck.py # strict output adapters (EC-03/04/10)
 │   ├── engine/
 │   │   ├── scheduler.py         # SA-01 tick loop
 │   │   ├── pipeline.py          # SA-06 source→snapshot→project→derive→rules
@@ -64,9 +72,10 @@ PROJECTS/ftmon/                  # monorepo root (git)
 └── docs/definitions.md install.md manual.md
 ```
 
-The original GPLv2 Perl tree is intentionally external at
-<https://sourceforge.net/projects/ftmon/>. Keeping it out of this repository
-makes the MIT licensing boundary obvious to users, packagers, and automated
+The original GPLv2 Perl tree remains at
+<https://sourceforge.net/projects/ftmon/>. Reused Nagios/Monitoring plugins are
+also separately installed external programs. Keeping both out of the MIT
+package makes the licensing boundary obvious to users, packagers, and automated
 license scanners while retaining an authoritative historical reference.
 
 Layering rule (enforced by a lint test): `expr` imports only stdlib; `model` imports stdlib (+`expr.tribool`); `sources`, `store`, `engine` import `model`/`expr` but never each other except `engine → sources.base`; `daemon`/`mcp_server`/`web`/`cli` are the only modules that may import across the board. No module imports `daemon`.
@@ -127,6 +136,10 @@ not set: hiding other users' `/proc` entries would make process monitoring lie.
 The account gains no supplementary groups by default and the service never uses
 ambient capabilities. Administrators who need journal coverage grant the
 narrow platform group/read ACL themselves and accept that visibility trade-off.
+M9 adds `Environment=FTMON_CHECK_REGISTRY=/etc/ftmon/checks.toml`; the unit
+does not add `/etc/ftmon` to `ReadWritePaths`. Packaging and real-system tests
+assert both facts because application-level “MCP cannot edit this file” is not
+a sufficient command-execution boundary on a server (FS-03, EC-01, SE-07).
 
 The operational dashboard still listens on `127.0.0.1:8420`. The documented
 remote path is `ssh -L 8420:127.0.0.1:8420 host`; a reverse proxy does not make
@@ -182,6 +195,7 @@ username = "ftmon@example.net"
 password_env = "FTMON_SMTP_PASSWORD" # or password_file
 from = "ftmon@example.net"
 to = ["operator@example.net"]
+
 ```
 
 The file audit channel is mandatory and therefore has no enable switch. An
@@ -193,6 +207,37 @@ deprecated, because silently accepting them would defeat SE-05. The generated
 desktop profile writes desktop enabled; the server profile writes it disabled.
 Profile effects are visible text in the generated file and disappear as a
 runtime concept after initialization.
+
+M9 adds `Paths.check_registry_file`. It defaults to private
+`config_dir/checks.toml` for the desktop/single-user trust model. The hardened
+server unit sets `FTMON_CHECK_REGISTRY=/etc/ftmon/checks.toml`; that root-owned
+file and its parent remain outside `ReadWritePaths`, so compromising the daemon
+cannot grant a new command while monitor/draft management remains writable.
+The separate file contains:
+
+```toml
+[check.website_https]
+argv = ["/usr/lib/nagios/plugins/check_http", "-H", "example.org", "-S"]
+protocol = "nagios"
+timeout = "10s"
+```
+
+`checks.registry.load(path)` first lstat/checks the registry and its parent
+chain per EC-01, then validates the whole `[check]` table before
+publishing an immutable `CheckRegistry`. Registry aliases use the monitor-name
+syntax; `argv` is 1–32 strings (combined UTF-8 ≤ 8 KiB), its first element is an
+absolute path, and timeout is 1–30 s. Validation opens the executable with
+`lstat`, rejects symlinks/non-regular/non-executable or group/world-writable
+files and paths under data/state/runtime, and records only a stable readiness
+category. The registry object, not raw TOML, is passed to `ExternalSampler`.
+Config reload swaps the complete object only after validation; failure retains
+the previous object (EC-01/06/08, SE-07).
+
+There is deliberately no environment table. A generic secret-to-environment
+feature would make process output, diagnostics and third-party behavior part of
+FTMON's secret boundary. A plugin that needs credentials receives the path to
+its own administrator-managed protected file as a non-secret argv value; its
+format, ownership and lifecycle remain that plugin's responsibility (EC-07).
 
 Atomic write helper `paths.atomic_write(path, bytes)` (tmp + fsync + rename, 0600) is the only function that writes into the config tree (PM-06a/b); loader rejects symlinks (PM-06c).
 
@@ -251,6 +296,12 @@ class Sampler(Protocol):                            # PL-01
     def sample(self, now: float, deadline_mono: float, options: Mapping) -> Snapshot: ...
     # now = wall ts to stamp on the Snapshot (samplers never read clocks, TS-03);
     # deadline is cooperative for in-process samplers, hard (kill) for subprocess ones (SA-02)
+
+class DynamicSampler(Protocol):                     # EC-04/05 amendment to PL-05
+    def declaration(self, options: Mapping) -> SourceDecl: ...
+    def sample(self, now: float, deadline_mono: float, options: Mapping) -> Snapshot: ...
+    # external is the sole dynamic implementation; declaration() is composed
+    # from fixed plugin_* fields plus validated mappings before expressions compile
 
 class EventSource(Protocol):                        # PL-01, DM-15
     decl: ClassVar[SourceDecl]
@@ -325,6 +376,9 @@ class SmallWrites:
 | `monitor.source` | name of a registered source, or "events" | all |
 | `source_options.watchlist` | array of tables: `{unit=…}` \| `{process=regex}` \| `{listen="tcp:22"}` + optional `during`, `expected=bool` | service, net |
 | `source_options.top_n` | int 5..50 (default 15, SA-05) | process |
+| `source_options.check` | registered alias | external |
+| `source_options.entity` | stable non-empty string ≤ 256 | external |
+| `source_options.perfdata[]` | `{label, metric, plugin_uom, unit, kind, scale?}`; ≤32, unique labels/metrics | external |
 | `parameters.*` | `{value: num, doc: str}` | all |
 | `promotion.expr` | expression (bool) — SA-05(c) heuristic | process |
 | `derived[].name/expr` | metric name / expression | sampler sources |
@@ -345,7 +399,13 @@ class SmallWrites:
 
 Event-rule namespace: `severity, provider, event_id, message, source` + parameters (§7.7.3). Loader pipeline: `tomllib` → schema table check (unknown key = error with dotted path, MD-03) → NameEnv build from `SourceDecl` (PL-05) → compile every expression/template (MD-04 suggestions via `difflib.get_close_matches`) → topo-sort derived (MD-08) → aggregate windows (CA-04) → `MonitorDef` (frozen) + normalized TOML (tomli-w, sorted keys) + SHA-256 hash (PM-04/07).
 
-Registered sources v1: `process, disk, system, net, unit, self, events`. The `self` source is registered like any other (RB-02) — its `SourceDecl` lists the §10.6 metrics.
+Registered sources through M9: `process, disk, system, net, unit, self, events,
+external`. The `self` source is registered like any other (RB-02). `external`
+is the only `DynamicSampler`: `schema.external_decl(mappings)` starts with
+`plugin_state, plugin_ok, duration_s` and `plugin_message`, appends mapped
+`MetricDecl`s, then builds the NameEnv used by derived/rule/trend validation.
+The runtime adapter receives that same frozen mapping tuple, preventing loader
+and sampler schema drift (PL-05, MD-11, EC-04/05).
 
 ---
 
@@ -483,7 +543,12 @@ The process source keeps its own all-process short window (15 samples) in `rings
 
 ### 10.6 Self source (RB-02)
 
-Metrics: `cpu_pct, rss_bytes, db_bytes, cycle_s, sampler_s{per-source attr}, tick_overruns, event_queue_depth, events_dropped, events_unstored, ring_mem_bytes, source_activity_age_s, eval_unknown_total, samples_rejected`. Fed from a `SelfStats` struct the daemon updates in place; sampled like any source.
+Metrics: `cpu_pct, rss_bytes, db_bytes, cycle_s, sampler_s{per-source attr},
+tick_overruns, event_queue_depth, events_dropped, events_unstored,
+ring_mem_bytes, source_activity_age_s, eval_unknown_total, samples_rejected,
+external_checks_skipped, external_check_failures{category attr},
+external_perfdata_rejected{category attr}`. Fed from a `SelfStats` struct the
+daemon updates in place; sampled like any source.
 
 ### 10.7 Notification fan-out and retry (DM-18, NO-04..10)
 
@@ -539,6 +604,82 @@ worker at an attempt boundary, then changes the writer's policy for future
 notifications. Existing delivery rows are never added retroactively. A malformed
 or removed file retains the last known-good snapshot; a valid but individually
 invalid channel fails closed while the other channels reload (NO-10).
+
+### 10.8 External check execution and projection (EC-*, MD-11, SE-07)
+
+The cache key for ordinary sources remains the source name. For `external`, it
+is `(source, check_alias)`: all due monitors referencing one alias receive the
+same immutable `RawCheckResult`, while each monitor projects only its declared
+performance mappings. This preserves SA-06's run-once guarantee without making
+one definition's schema authoritative for another.
+
+```python
+@dataclass(frozen=True)
+class CheckSpec:
+    alias: str
+    argv: tuple[str, ...]
+    protocol: Literal["nagios", "ftmon-json"]
+    timeout_s: float
+
+@dataclass(frozen=True)
+class RawCheckResult:
+    state: int                 # 0 OK, 1 warning, 2 critical, 3 unknown
+    message: str               # control-free, <= 2 KiB
+    duration_s: float
+    values: Mapping[str, tuple[float, str]]  # raw label -> (value, UOM)
+    failure: str | None        # fixed category, never raw stderr/exception
+
+@dataclass(frozen=True)
+class PerfMapping:
+    label: str
+    metric: str
+    plugin_uom: str
+    unit: str
+    kind: Literal["gauge", "counter"]
+    scale: float
+```
+
+`CheckRunner.run(spec, deadline_mono)` uses `subprocess.Popen` rather than
+`subprocess.run` so timeout can send TERM then KILL to the new session/process
+group. It supplies `stdin=DEVNULL`, captured pipes, `start_new_session=True`,
+`close_fds=True`, `cwd=state_dir`, and exactly `PATH=os.defpath` plus fixed
+non-secret identity fields (`FTMON_CHECK_ALIAS`, `FTMON_CHECK_TIMEOUT`). A pair
+of bounded readers drains stdout/stderr to prevent pipe deadlock while retaining
+at most 64 KiB/8 KiB; adapter input over the protocol cap fails closed. Stderr
+is discarded after categorization. No DB transaction spans launch or wait.
+Immediately before `Popen`, the runner repeats executable `lstat`, resolved-path,
+owner and mode checks; a changed target returns categorized unknown instead of
+relying on the registry loader's earlier observation.
+
+`nagios.parse()` consumes only the first UTF-8 stdout line. It splits once on
+`|`, normalizes exit status, strips ASCII controls from the summary, and parses
+space-separated perfdata with a small scanner supporting Nagios single-quoted
+labels and backslash-free values. It never uses shell tokenization. Threshold,
+minimum and maximum fields are syntax-checked then discarded: exit status
+already represents the plugin threshold decision, while FTMON rules remain
+explicit. Duplicate raw labels are marked ambiguous and unavailable to every
+mapping of that label. `jsoncheck.parse()` strips surrounding ASCII whitespace,
+then applies EC-10 with `json.loads` plus
+exact type/key/depth/count checks; Python booleans are rejected before numeric
+coercion.
+
+Projection always emits `plugin_state`, `plugin_ok`, and `duration_s`. For each
+mapping it looks up one raw value, requires an exact UOM match, multiplies by
+finite `scale`, rejects non-finite output, and emits the mapped metric. Missing
+or rejected labels are omitted so expression lookup returns `None`. The
+human-readable message is an attr, not a metric. Existing pipeline, storage,
+query, Metrics and Trend code needs no external-check special case after this
+projection boundary (EC-04/05).
+
+The scheduler maintains a rotating alias cursor. It runs due aliases
+sequentially until the shared source deadline, caches successes and unknown
+results for the tick, and counts unstarted aliases as `external_checks_skipped`.
+The next tick begins after the last considered alias, preventing a slow first
+check from starving later checks. Timeout/launch/protocol failures increment
+categorized `external_check_failures`; Nagios state 3 does not. Registry reload
+shares the config rescan boundary used by notifications but swaps an all-valid
+`CheckRegistry` independently, so one malformed change cannot silently alter
+existing execution authority (EC-06/08).
 
 ---
 
@@ -681,7 +822,7 @@ uPlot remains D4's renderer: its small vendorable footprint, temporal scales, cu
 
 ---
 
-## 16. Test infrastructure design (TS-01..08)
+## 16. Test infrastructure design (TS-01..15)
 
 - **Traceability**: `tools/gen_reqindex.py` regexes SPEC.md for `**XX-nn**` → `tests/reqindex.json` (committed); IDs listed in `NON_TESTABLE = {NG-*, DO-*, …}` are exempt. `tests/test_traceability.py` scans all test docstrings for `[XX-nn]` markers and fails on uncovered IDs (TS-01).
 - **Scenario format** (TS-04), JSONL, one file per case in `tests/scenarios/`:
@@ -696,6 +837,14 @@ uPlot remains D4's renderer: its small vendorable footprint, temporal scales, cu
   `sources/fixtures.py` implements `Sampler`/`EventSource` over these files: a fixture snapshot is the merge of all records ≤ now for that source; `generate` uses a seeded RNG (seed in the file) for reproducibility.
 - **Tier-1 harness**: pytest fixture `daemon_proc(scenario, config)` → temp `$FTMON_*` dirs, spawns `ftmon daemon --clock controlled --fixtures <file>`, returns a `Ctl` object (`step(seconds)` drives the clock socket in 5 s ticks and waits for acks; `db()`, `notifications()`, `cli(*args)` helpers). Kill-9 test: `ctl.kill9(); ctl.restart(); assert dup_count ≤ 1` (NO-04/TS-05).
 - **Tier-2**: `@pytest.mark.realsystem`, driven by `tests/e2e_real/`; asserts via `notifications.jsonl` and `ftmon --json` outputs only (TS-08).
+- **External checks** (TS-15): parser/runner unit tests create temporary local
+  executables with fixed bytes, exit status, child-process and clock behavior;
+  no installed Nagios package or network is used. Tier-1 fixtures may provide a
+  `check` record containing raw protocol output and elapsed duration, but the
+  principal journey launches the real bounded runner under ControlledClock so
+  argv isolation, one-run alias sharing, mapped persistence and Trend exposure
+  are tested together. A packaging smoke may invoke an administrator-supplied
+  plugin only under `realsystem` and is never required for compatibility.
 - **Lint tests**: grep-tests for direct `time.time|datetime.now|time.monotonic` outside `clock.py` (TS-03) and for forbidden imports in `expr/` (EX-04) / layering (§1).
 
 ---
@@ -716,6 +865,16 @@ Demo and operational web factories share rendering but not authority-bearing
 dependencies or route construction. This structural split is why a future
 template or navigation change cannot accidentally expose a POST in public mode;
 TS-14 inspects the actual route methods and app state, not just returned HTML.
+
+External checks never reuse the action runner: actions are incident effects and
+external checks are evidence producers with different scheduling, output and
+failure semantics. They share only low-level rationale—no shell, hard timeout,
+minimal environment, output caps. Registry ownership is outside monitor drafts;
+`define_monitor` may emit `source = "external"` only with an existing alias and
+cannot inspect argv. Plugin output is untrusted display/template input. Nagios
+plugins execute as separate processes and are not linked, imported or
+distributed by FTMON; the MIT package contains only the adapter, while every
+plugin remains under its own license (EC-01/02/07/09, SE-07).
 
 ---
 
@@ -743,6 +902,9 @@ TS-14 inspects the actual route methods and app state, not just returned HTML.
 | D18 | Immutable notification plus per-channel deliveries | one channel's success cannot conceal another's failure; freezes fan-out at the incident transaction boundary |
 | D19 | Small first-party channel set | ntfy, JSON webhook, and SMTP cover the single-server use case without inheriting a large plugin/dependency and credential surface |
 | D20 | Separate read-only demo app and marked synthetic DB | route omission and immutable storage are stronger public-safety boundaries than hiding controls in templates |
+| D21 | Registered subprocess checks, not an in-process plugin API | reuses user scripts and the Nagios ecosystem while crashes, dependencies and licenses remain outside the daemon |
+| D22 | Explicit perfdata mappings before persistence | prevents output-driven schema growth/high cardinality and makes units, counter semantics, expressions and Trends honest |
+| D23 | Registry authority separate from monitor definitions | AI/user drafts can compose rules around an approved check but cannot introduce executable paths, argv or credentials |
 
 ---
 
@@ -765,5 +927,10 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
 - **M8.1**: WP29 versioned demo scenario + immutable builder · WP30 separate
   GET-only app factory/CLI and security tests · WP31 Caddy/systemd/timer deployment
   documentation and `demo.ftmon.org` release checklist.
+- **M9**: WP32 check registry + path/security/reload validation · WP33 bounded
+  runner + Nagios/FTMON-JSON parsers · WP34 dynamic perfdata declaration,
+  external sampler and scheduler fairness · WP35 controlled-clock
+  state/perfdata-to-Trend journey, doctor/CLI/MCP/web contracts and external
+  check authoring/reuse documentation.
 
 Each WP names its FROZEN interfaces from §4–5; an implementing model receives: SPEC excerpt, this document's relevant sections, the WP's test files, and the interface stubs — nothing else is in scope for it.

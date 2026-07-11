@@ -55,6 +55,22 @@ Internet while still making it useful on a remote headless host. A hardened
 systemd unit and complete single-server installation procedure are provided in
 the [installation guide](docs/install.md#dedicated-single-server-service).
 
+### Planned: bring your own checks
+
+FTMON's next planned milestone opens the collection boundary without turning
+the daemon into a general plugin host. Administrators will be able to register
+local scripts or separately installed Nagios-compatible plugins, then use
+ordinary declarative monitor definitions to add confirmation, incidents,
+notifications, history, baselines and Trends over their returned performance
+data.
+
+That means an existing HTTP, TLS-certificate, DNS, mail, database, UPS or sensor
+check can answer “is it broken now?”, while FTMON adds “has it been degrading?”
+and “what changed before the incident?” The executable remains outside FTMON;
+AI-authored definitions may reuse an approved alias but cannot introduce a
+command or credentials. See [Why FTMON?](docs/why-ftmon.md) and the planned M9
+contract in [SPEC.md](SPEC.md#64-administrator-registered-external-checks).
+
 ## Quick start
 
 FTMON requires Python 3.11 or newer and
@@ -106,6 +122,8 @@ Never expose an operational FTMON database as a demo.
   behavior, rationale, architecture, and requirement IDs.
 - [Contributing guide](CONTRIBUTING.md) — development and documentation
   standards.
+- [Why FTMON?](docs/why-ftmon.md) — product positioning, intended users, and
+  the value of planned external checks.
 
 ## Original FTMON
 
