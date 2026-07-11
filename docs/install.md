@@ -257,12 +257,13 @@ process memory growth; monitor and incident pages link into the same explorer.
 
 ## Publish the synthetic demo website
 
-This procedure is only for a public, read-only demonstration at
-`demo.ftmon.org`. **Never pass a real operational `ftmon.db`, its backup, or a
-copy of host configuration to demo mode.** The application rejects unmarked
-databases, but deployment separation is the primary safety control: use a
-dedicated machine or account with no access to an operational FTMON home
-(UI-15, SE-06, DO-06).
+The reference deployment is live at
+[demo.ftmon.org](https://demo.ftmon.org/). This procedure reproduces that
+public, read-only demonstration. **Never pass a real operational `ftmon.db`,
+its backup, or a copy of host configuration to demo mode.** The application
+rejects unmarked databases, but deployment separation is the primary safety
+control: use a dedicated machine or account with no access to an operational
+FTMON home (UI-15, SE-06, DO-06).
 
 ### 1. Prepare DNS and the host
 

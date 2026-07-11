@@ -295,13 +295,13 @@ user (0600).
 
 ### Public demonstration data
 
-`demo.ftmon.org` is designed to explain FTMON, not monitor its hosting server.
-Its persistent banner identifies a deterministic synthetic scenario containing
-example health states, incidents, gaps, and trends. It has no daemon, actions,
-notifications, credentials, configuration editor, MCP endpoint, or visitor
-writes. Never use a real operational database with `web --demo`; follow the
-separate deployment runbook in `docs/install.md` when publishing or updating
-the site.
+The live [demo.ftmon.org](https://demo.ftmon.org/) site is designed to explain
+FTMON, not monitor its hosting server. Its persistent banner identifies a
+deterministic synthetic scenario containing example health states, incidents,
+gaps, and trends. It has no daemon, actions, notifications, credentials,
+configuration editor, MCP endpoint, or visitor writes. Never use a real
+operational database with `web --demo`; follow the separate deployment runbook
+in `docs/install.md` when publishing or updating the site.
 
 ## 10. Troubleshooting
 

@@ -19,6 +19,11 @@ your machine.
 > **Development status:** FTMON v2 is pre-release software. Interfaces and data
 > formats may change before the first stable release.
 
+**Live demo:** Explore the read-only interface at
+[demo.ftmon.org](https://demo.ftmon.org/). It uses clearly labelled synthetic
+data and does not monitor the demo server or expose an operational FTMON
+installation.
+
 ## Why FTMON?
 
 - Runs locally as your user, without a monitoring server or cloud account.
@@ -62,9 +67,9 @@ follow the [installation guide](docs/install.md). The operational dashboard
 stays on loopback; reach it remotely with an SSH tunnel rather than exposing
 the unauthenticated UI through a public reverse proxy.
 
-The public `demo.ftmon.org` deployment is a different, GET-only application
-over deterministic synthetic data. Its reproducible DNS, Caddy, systemd,
-verification, update, and rollback runbook is in the
+The live [public demonstration](https://demo.ftmon.org/) is a different,
+GET-only application over deterministic synthetic data. Its reproducible DNS,
+Caddy, systemd, verification, update, and rollback runbook is in the
 [installation guide](docs/install.md#publish-the-synthetic-demo-website).
 Never expose an operational FTMON database as a demo.
 
