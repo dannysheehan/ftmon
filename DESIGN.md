@@ -37,11 +37,11 @@ PROJECTS/ftmon/                  # monorepo root (git)
 │   │   ├── base.py              # Sampler/EventSource protocols + SourceDecl (PL-05)
 │   │   ├── process.py disk.py system.py net.py unit.py selfsrc.py
 │   │   ├── journald.py          # linux EventSource
-│   │   ├── external.py          # EC-*: bounded subprocess sampler/projection
 │   │   └── fixtures.py          # TS-04 scenario-driven fakes (ship in prod pkg: PL-04)
 │   ├── checks/
 │   │   ├── registry.py          # administrator argv authority + reload (EC-01/06)
 │   │   ├── runner.py            # no-shell process-group deadline (EC-02)
+│   │   ├── sampler.py           # fair alias execution + declared projection (EC-04/08)
 │   │   └── nagios.py jsoncheck.py # strict output adapters (EC-03/04/10)
 │   ├── engine/
 │   │   ├── scheduler.py         # SA-01 tick loop
@@ -136,7 +136,7 @@ not set: hiding other users' `/proc` entries would make process monitoring lie.
 The account gains no supplementary groups by default and the service never uses
 ambient capabilities. Administrators who need journal coverage grant the
 narrow platform group/read ACL themselves and accept that visibility trade-off.
-M9 adds `Environment=FTMON_CHECK_REGISTRY=/etc/ftmon/checks.toml`; the unit
+M9 provides `Environment=FTMON_CHECK_REGISTRY=/etc/ftmon/checks.toml`; the unit
 does not add `/etc/ftmon` to `ReadWritePaths`. Packaging and real-system tests
 assert both facts because application-level “MCP cannot edit this file” is not
 a sufficient command-execution boundary on a server (FS-03, EC-01, SE-07).
@@ -208,7 +208,7 @@ desktop profile writes desktop enabled; the server profile writes it disabled.
 Profile effects are visible text in the generated file and disappear as a
 runtime concept after initialization.
 
-M9 adds `Paths.check_registry_file`. It defaults to private
+M9 provides `Paths.check_registry_file`. It defaults to private
 `config_dir/checks.toml` for the desktop/single-user trust model. The hardened
 server unit sets `FTMON_CHECK_REGISTRY=/etc/ftmon/checks.toml`; that root-owned
 file and its parent remain outside `ReadWritePaths`, so compromising the daemon

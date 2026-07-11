@@ -1,6 +1,7 @@
 """Release asset contracts for M6 packaging (DO-02, TS-08)."""
 
 from importlib.resources import files
+from pathlib import Path
 
 
 def test_systemd_user_unit_is_packaged_do_02():
@@ -77,6 +78,15 @@ def test_versioned_demo_scenario_is_packaged_ui_16():
     """[UI-16] Deployment builds never depend on a source checkout fixture."""
     scenario = files("ftmon.scenarios").joinpath("demo-v1.jsonl").read_text()
     assert '"scenario":"demo-v1"' in scenario.splitlines()[0]
+
+
+def test_external_plugins_remain_separately_installed_and_licensed_ec_09():
+    """[EC-09] Compatibility documentation must not turn into vendored plugins."""
+    root = Path(__file__).parents[2]
+    guide = (root / "docs/external-checks.md").read_text()
+
+    assert "installed and licensed separately" in " ".join(guide.split())
+    assert not (root / "src/ftmon/plugins").exists()
 
 
 def test_public_demo_units_separate_build_read_and_refresh_ui_15_do_06():

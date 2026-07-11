@@ -944,6 +944,13 @@ Trends, notifications and MCP work unchanged. This deliberately reuses the
 large check ecosystem without importing third-party code, vendoring GPL
 plugins, adopting NRPE, or becoming a fleet monitor.
 
+**M9 implementation note (2026-07-12)** — the protected registry, bounded
+runner, Nagios and strict FTMON JSON adapters, declared performance-data
+projection, atomic reload, daemon scheduling, self diagnostics and
+operator-facing documentation are implemented. Third-party plugins remain
+separately installed and licensed; monitor definitions still cannot grant
+execution authority.
+
 **v0.9 (2026-07-11)** — extends the single-host scope from desktops to individually managed servers without adding fleet management. Notification fan-out gains independent durable channel state for file, desktop, ntfy, generic webhook, and SMTP delivery, with explicit retry, TLS, privacy, and credential rules. A separate synthetic, GET-only demo mode permits `demo.ftmon.org` without exposing an operational database or weakening the loopback-only production UI.
 
 **v0.8 (2026-07-11)** — removes the original Perl source from the v2 repository and points to its authoritative SourceForge project instead. This makes provenance and the MIT/GPLv2 licensing boundary unambiguous without losing the historical reference.

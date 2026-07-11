@@ -84,6 +84,7 @@ Directories FTMON uses (Linux):
 | `~/.config/ftmon/monitors/*.toml` | your monitor definitions |
 | `~/.config/ftmon/monitors/drafts/` | definitions awaiting approval |
 | `~/.config/ftmon/actions/` | operator-created action scripts |
+| `~/.config/ftmon/checks.toml` | administrator-approved external commands |
 | `~/.local/share/ftmon/ftmon.db` | metric/event/incident history (SQLite) |
 | `~/.local/state/ftmon/` | daemon log + notification audit trail (JSONL) |
 
@@ -245,6 +246,12 @@ schema, every formula function with examples, and a cookbook ("alert when
 a log pattern appears", "alert when anything grows steadily"). The short
 version: copy the nearest built-in, rename it, edit, `ftmon check`.
 
+External checks let a separately installed Nagios plugin or your own small
+script feed the same history, rules and Trends. The administrator registers an
+exact argv in `checks.toml`; the monitor maps only the performance labels it is
+prepared to store. Start with [External checks](external-checks.md), including
+its privilege, credential and third-party licence guidance.
+
 ## 8. Notifications & quiet hours
 
 Notifications are deliberately short; depth lives in `ftmon incident <id>` and
@@ -318,6 +325,8 @@ in `docs/install.md` when publishing or updating the site.
 | --- | --- |
 | No data | Start `ftmon daemon`; check the service status. |
 | Monitor failed after an edit | Run `ftmon check`; inspect `ftmon status`. |
+| External check unavailable | Verify registry and executable with `doctor`. |
+| Plugin metric is absent | Compare the mapped label and UOM with plugin output. |
 | Too many notifications | Raise `confirm_cycles`, add an `exempt`, or ack. |
 | FTMON over budget | Open the Self page or inspect the incident. |
 | Database concerns | Run `ftmon doctor`; use its `--backup PATH` option. |

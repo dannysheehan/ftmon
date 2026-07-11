@@ -33,7 +33,9 @@ For development, use `uv sync` followed by `uv run ftmon ...`. `ftmon init`
 creates private directories, installs eight editable built-in definitions, and
 writes explicit desktop notification settings. For a headless host use
 `ftmon init --profile server`; it writes the same ordinary configuration with
-desktop popups disabled. Profiles only scaffold a new `config.toml`—they do not
+desktop popups disabled. Desktop/user initialization also creates an empty,
+private `checks.toml` registry for external checks. Profiles only scaffold a
+new `config.toml`—they do not
 become a hidden runtime mode. Running init again preserves existing settings;
 `--force` replaces built-in definitions only (PM-08).
 
@@ -133,6 +135,9 @@ sudo useradd --system --create-home --home-dir /var/lib/ftmon \
 sudo env UV_TOOL_DIR=/opt/ftmon UV_TOOL_BIN_DIR=/usr/local/bin \
   uv tool install .
 sudo -u ftmon -H /usr/local/bin/ftmon init --profile server
+sudo install -d -o root -g ftmon -m 0755 /etc/ftmon
+printf '[check]\n' | sudo install -o root -g ftmon -m 0640 /dev/stdin \
+  /etc/ftmon/checks.toml
 sudo install -m 0644 src/ftmon/systemd/ftmon-server.service \
   /etc/systemd/system/ftmon.service
 sudo systemctl daemon-reload
@@ -150,6 +155,10 @@ the process, and permits writes only below `/var/lib/ftmon`. These controls
 limit the impact of a bad definition or action; they do not turn user-authored
 actions into untrusted sandboxed code. A start is refused if server-profile
 `config.toml` is absent, preventing an apparently healthy empty deployment.
+The unit reads external-command authority from `/etc/ftmon/checks.toml`.
+Root owns that file while group `ftmon` has read-only access; it is outside the
+unit's writable paths so an editable monitor definition cannot grant a new
+command. See [External checks](external-checks.md) before adding an alias.
 
 The unit deliberately does not use `ProtectProc=invisible`. FTMON cannot
 truthfully report other users' processes if systemd hides them. Linux may
@@ -169,9 +178,11 @@ sudo systemctl restart ftmon.service
 ```
 
 Group membership exposes potentially sensitive messages from unrelated
-services. Do not add `ftmon` to `sudo`, `adm`, container-engine, or application
-groups as a shortcut. Prefer a targeted journal ACL where the platform permits
-one.
+services. Do not add `ftmon` broadly to `sudo`, `adm`, container-engine, or
+application groups as a shortcut. Prefer a targeted journal ACL where the
+platform permits one. A narrowly scoped `sudoers` rule for one root-owned,
+read-only external check is supported as an advanced exception; the exact
+wrapper and validation rules are in [External checks](external-checks.md).
 
 #### Credentials with systemd
 

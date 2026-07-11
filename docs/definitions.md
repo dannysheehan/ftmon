@@ -192,6 +192,38 @@ clear_after = "30m"
 message = "OOM killer fired: {message}"
 ```
 
+### External checks
+
+`source = "external"` references an administrator-approved alias rather than
+an executable path:
+
+```toml
+[source_options]
+check = "website_https"
+entity = "https://example.org"
+
+[[source_options.perfdata]]
+label = "time"
+metric = "response_time_s"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+scale = 1.0
+```
+
+`check` and `entity` are required. Up to 32 mappings may declare a unique
+plugin label and unique destination metric. `plugin_uom` must match exactly;
+`unit` and `kind = "gauge"|"counter"` become FTMON's schema, and optional
+finite `scale` defaults to 1. Fixed names are `plugin_state`, `plugin_ok`,
+`duration_s`, and string attribute `plugin_message`. Mapped metric names enter
+the expression environment before derived expressions, rules and Trends are
+validated (MD-11).
+
+The definition cannot contain argv or executable paths. Register the alias in
+the separate `checks.toml` authority described by
+[External checks](external-checks.md). Drafts may reference a future alias, but
+approval and active validation fail until an administrator creates it.
+
 ## 4. Cookbook
 
 ### Alert when a log pattern appears

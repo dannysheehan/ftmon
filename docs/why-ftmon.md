@@ -36,7 +36,7 @@ worse.
 
 ## Reuse checks instead of rebuilding a catalog
 
-The planned M9 external-check capability is deliberately compatible with small
+The external-check capability is deliberately compatible with small
 user-written executables and the established Nagios plugin convention. FTMON
 does not need to own implementations for every database, protocol, appliance or
 sensor. Operators can reuse a separately installed check while FTMON supplies
@@ -65,11 +65,11 @@ alerts, inspect the dashboard through an SSH tunnel, and ask an AI assistant to
 explain incidents through local stdio MCP. The operator chooses what leaves the
 machine; monitoring does not require a cloud account.
 
-## Current versus planned
+## Available today
 
 Single-host sampling, incidents, history, Trends, remote notifications, the
-hardened server profile and the synthetic public demo are implemented today.
-External checks and Nagios-compatible performance-data ingestion are specified
-for M9 but are not yet implemented. Keeping that distinction visible prevents a
-roadmap benefit from being mistaken for a shipped security or compatibility
-promise.
+hardened server profile, synthetic public demo, administrator-registered local
+checks, Nagios-compatible state/performance data and FTMON JSON checks are
+implemented today. Compatibility remains deliberately bounded: FTMON executes
+explicit local argv and does not discover plugins, vendor third-party code,
+implement NRPE or become a fleet monitor.
