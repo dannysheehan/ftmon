@@ -47,6 +47,68 @@ def test_ui_pages_security_and_escaping_ts_07_ui_02_ui_08_se_02(tmp_path):
     assert client.get("/", headers={"host": "attacker.example"}).status_code == 400
 
 
+def test_dashboard_tiles_restore_accessible_legacy_health_states_ui_14_ts_12(tmp_path):
+    """[UI-14][TS-12] Clear/warn/error/disabled/config states include icon+text."""
+    client, paths = _client(tmp_path)
+    builtins = Path(__file__).parents[2] / "src/ftmon/definitions/builtins"
+    for name in ("disk", "leak", "load", "hog", "service"):
+        text = (builtins / f"{name}.toml").read_text()
+        if name == "hog":
+            text = text.replace("enabled = true", "enabled = false")
+        (paths.monitors_dir / f"{name}.toml").write_text(text)
+    (paths.monitors_dir / "broken.toml").write_text("not valid toml = [")
+    conn = connect(paths.db_file)
+    for name in ("disk", "leak", "load", "hog"):
+        conn.execute(
+            "INSERT INTO monitor_loads(monitor,loaded_ts,hash,normalized) "
+            "VALUES(?,900,?,?)", (name, name, name)
+        )
+    conn.executemany(
+        "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+        "opened_ts,last_change_ts,notify_count,occurrences) "
+        "VALUES(?,?,?,? ,?,?,?,900,900,1,1)",
+        [
+            (2, "leak", "leak", "firefox:7:1", "acked", 2, "leak-warn"),
+            (3, "load", "pressure", "host", "open", 3, "pressure-error"),
+            (4, "hog", "hog", "cpu:1:1", "open", 4, "hog-error"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    page = client.get("/", headers={"host": "localhost:8420"}).text
+    assert 'data-monitor="disk" data-state="clear"' in page and "✓" in page
+    assert 'data-monitor="leak" data-state="warning"' in page and "▲" in page
+    assert 'data-monitor="load" data-state="error"' in page and "✖" in page
+    assert 'data-monitor="hog" data-state="disabled"' in page and "●" in page
+    assert 'data-monitor="service" data-state="unknown"' in page
+    assert 'data-monitor="broken" data-state="config-error"' in page
+    assert "/incidents?monitor=leak" in page and "1 live incident" in page
+    assert "flash" not in page.lower()
+
+    filtered = client.get(
+        "/incidents?monitor=leak", headers={"host": "localhost:8420"}
+    ).text
+    assert "firefox:7:1" in filtered and "pressure" not in filtered
+
+
+def test_dashboard_stale_precedence_never_claims_clear_ui_14_ts_12(tmp_path):
+    """[UI-14][TS-12] Stale evidence overrides clear, warning, and disabled states."""
+    client, paths = _client(tmp_path)
+    builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/disk.toml"
+    (paths.monitors_dir / "disk.toml").write_text(builtin.read_text())
+    conn = connect(paths.db_file)
+    conn.execute("UPDATE meta SET value='900' WHERE key='last_tick_ts'")
+    conn.execute(
+        "INSERT INTO monitor_loads(monitor,loaded_ts,hash,normalized) "
+        "VALUES('disk',900,'disk','disk')"
+    )
+    conn.commit()
+    conn.close()
+    page = client.get("/", headers={"host": "localhost:8420"}).text
+    assert 'data-monitor="disk" data-state="unknown"' in page
+    assert 'data-monitor="disk" data-state="clear"' not in page
+
+
 def test_ui_ack_requires_origin_and_reuses_small_writes_ui_03_ui_08(tmp_path):
     client, paths = _client(tmp_path)
     host = {"host": "localhost:8420"}

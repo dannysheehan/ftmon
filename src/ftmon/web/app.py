@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlencode
 
@@ -28,6 +29,21 @@ from ftmon.store.query import Query, SmallWrites
 _CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
 _jinja = Environment(loader=PackageLoader("ftmon.web", "templates"),
                      autoescape=select_autoescape(("html", "xml")))
+
+
+@dataclass(frozen=True)
+class MonitorTile:
+    """Fully composed tile state; Jinja must not reimplement UI-14 policy."""
+
+    name: str
+    description: str
+    enabled: bool
+    state: str
+    icon: str
+    label: str
+    incident_count: int
+    max_severity: int | None
+    trends: tuple
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
@@ -92,19 +108,69 @@ async def dashboard(request: Request):
         status = _status(request, q)
         incidents = [] if q is None else q.incidents(state=None)
         incidents = [r for r in incidents if r["state"] != "cleared"][:10]
+        tiles = _monitor_tiles(defs, errors, q, status)
     return _render("dashboard.html", request, title="Dashboard", status=status,
-                   monitors=defs, config_errors=errors, incidents=incidents,
-                   trend_profiles={d.name: d.trends for d in defs},
+                   tiles=tiles, config_errors=errors, incidents=incidents,
                    refresh_ms=5000)
+
+
+def _monitor_tiles(defs, errors, q: Query | None, status: dict) -> list[MonitorTile]:
+    """Apply fixed health precedence to evidence and live incidents (UI-14)."""
+    live_by_monitor: dict[str, list] = {}
+    if q is not None:
+        for row in q.incidents(state=None):
+            if row["state"] != "cleared":
+                live_by_monitor.setdefault(row["monitor"], []).append(row)
+
+    tiles = []
+    for mdef in defs:
+        live = live_by_monitor.get(mdef.name, [])
+        maximum = max((row["severity"] for row in live), default=None)
+        has_evidence = False
+        if q is not None:
+            has_evidence = q._conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM monitor_loads WHERE monitor=?) "
+                "OR EXISTS(SELECT 1 FROM series WHERE monitor=?)",
+                (mdef.name, mdef.name),
+            ).fetchone()[0] == 1
+            if mdef.source == "events" and not has_evidence:
+                has_evidence = q._conn.execute(
+                    "SELECT EXISTS(SELECT 1 FROM cursors)"
+                ).fetchone()[0] == 1
+
+        if status["daemon_stale"] or not has_evidence:
+            state, icon, label = "unknown", "?", "unknown"
+        elif not mdef.enabled:
+            state, icon, label = "disabled", "●", "disabled"
+        elif maximum is not None and maximum >= 3:
+            state, icon, label = "error", "✖", "error"
+        elif maximum is not None:
+            state, icon, label = "warning", "▲", "warning"
+        else:
+            state, icon, label = "clear", "✓", "clear"
+        tiles.append(MonitorTile(
+            mdef.name, mdef.description, mdef.enabled, state, icon, label,
+            len(live), maximum, mdef.trends,
+        ))
+
+    # Invalid files have no MonitorDef; omitting them would hide the highest
+    # precedence configuration state from the at-a-glance surface.
+    for path, error in errors:
+        tiles.append(MonitorTile(
+            path.stem, str(error)[:200], False, "config-error", "?",
+            "config error", 0, None, (),
+        ))
+    return sorted(tiles, key=lambda tile: tile.name)
 
 
 async def incidents(request: Request):
-    state = request.query_params.get("state")
+    state = request.query_params.get("state") or None
+    monitor = request.query_params.get("monitor")
     with _query(request) as q:
-        rows = [] if q is None else q.incidents(state=state)
+        rows = [] if q is None else q.incidents(state=state, monitor=monitor)
         status = _status(request, q)
     return _render("incidents.html", request, title="Incidents", rows=rows, status=status,
-                   refresh_ms=5000)
+                   selected_monitor=monitor, refresh_ms=5000)
 
 
 async def incident_detail(request: Request):
