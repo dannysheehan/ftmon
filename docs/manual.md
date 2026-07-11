@@ -197,6 +197,15 @@ signed rate is positive and confidence passes the configured threshold. Flat,
 shrinking, sparse, or irregular history explains why projection is unavailable
 instead of displaying an enormous artificial number.
 
+### Metrics explorer
+
+The **Metrics** page is the lower-level companion to Trends. Its cascading
+monitor, entity, and metric selectors list every series actually present in the
+database, including historical series no longer in the current definition. Use
+it to inspect one metric that has no curated profile, or follow an “Underlying
+series” link from a Trend panel. Range and rollup value (`avg`, `min`, `max`, or
+`last`) stay in the URL, so the exact diagnostic view can be bookmarked.
+
 ## 7. Writing your own monitors
 
 See the definitions reference (`docs/definitions.md`) — the complete TOML

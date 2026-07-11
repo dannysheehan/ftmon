@@ -78,6 +78,41 @@ def test_metrics_chart_has_text_alternative_ui_05_ui_09(tmp_path):
     assert "role=\"img\"" in page.text
 
 
+def test_metrics_explorer_uses_cascading_catalog_selectors_ui_02(tmp_path):
+    """[UI-02] Monitor/entity/metric choices come from persisted history."""
+    client, paths = _client(tmp_path)
+    conn = connect(paths.db_file)
+    rows = [
+        (1, "disk", "/home", "used_pct", 70.0),
+        (2, "disk", "/home", "free_bytes", 1000.0),
+        (3, "leak", "firefox:7:1", "rss_mb", 512.0),
+    ]
+    for sid, monitor, entity, metric, value in rows:
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) VALUES(?,?,?,?,1)",
+            (sid, monitor, entity, metric),
+        )
+        conn.execute("INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)",
+                     (sid, 1000, value))
+    conn.commit()
+    conn.close()
+    headers = {"host": "localhost:8420"}
+    page = client.get(
+        "/metrics?monitor=disk&entity=/home&metric=used_pct&range=6h&statistic=last",
+        headers=headers,
+    )
+    assert page.status_code == 200
+    assert '<select name="monitor"' in page.text
+    assert '<select name="entity"' in page.text
+    assert '<select name="metric"' in page.text
+    assert '<select name="range"' in page.text
+    assert '<select name="statistic"' in page.text
+    assert ">disk</option>" in page.text and ">leak</option>" in page.text
+    assert ">used_pct</option>" in page.text and ">free_bytes</option>" in page.text
+    assert "rss_mb" not in page.text  # another monitor's metric is not offered
+    assert "using last" in page.text
+
+
 def test_disk_trend_api_and_accessible_page_ui_10_ui_11_ts_09(tmp_path):
     """[UI-10][UI-11][TS-09] Shareable disk state exposes panels and honest text."""
     client, paths = _client(tmp_path)

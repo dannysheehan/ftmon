@@ -141,25 +141,54 @@ async def ack(request: Request):
 
 
 async def metrics(request: Request):
+    """Explore any persisted series with cascading, URL-backed choices (UI-02).
+
+    The database is the catalog: definitions can change while history remains,
+    so selectors must describe queryable series rather than only current TOML.
+    """
     p = request.query_params
     monitor, entity, metric = p.get("monitor"), p.get("entity"), p.get("metric")
+    statistic = p.get("statistic", "avg")
+    if statistic not in {"avg", "min", "max", "last"}:
+        return Response("Statistic must be avg, min, max, or last", status_code=400)
     try:
-        hours = min(24 * 400, max(0.25, float(p.get("hours", "24"))))
-    except ValueError:
-        hours = 24
+        if "hours" in p:  # preserve M5 bookmarks while range becomes canonical
+            seconds = float(p["hours"]) * 3600
+            range_text = f"{p['hours']}h"
+        else:
+            range_text = p.get("range", "24h")
+            seconds = parse_duration(range_text)
+    except (ValueError, ExprError):
+        return Response("Invalid range; use values such as 6h, 7d, or 30d", status_code=400)
+    if not 900 <= seconds <= 400 * 86400:
+        return Response("Range must be between 15m and 400d", status_code=400)
     now = request.app.state.clock.now()
     with _query(request) as q:
-        rows = [] if q is None or not monitor or not metric else q.series(
-            monitor, metric, now=now, start=now-hours*3600, end=now,
-            entity_id=entity, max_points=2000)
         choices = [] if q is None else q._conn.execute(
             "SELECT DISTINCT monitor, entity_id, metric FROM series "
             "ORDER BY monitor, entity_id, metric"
         ).fetchall()
+        monitors = sorted({row["monitor"] for row in choices})
+        monitor = monitor if monitor in monitors else (monitors[0] if monitors else None)
+        entities = sorted({row["entity_id"] for row in choices if row["monitor"] == monitor})
+        entity = entity if entity in entities else (entities[0] if entities else None)
+        metrics = sorted({row["metric"] for row in choices
+                          if row["monitor"] == monitor and row["entity_id"] == entity})
+        metric = metric if metric in metrics else (metrics[0] if metrics else None)
+        rows = [] if q is None or not monitor or not metric else q.series(
+            monitor, metric, now=now, start=now-seconds, end=now,
+            entity_id=entity, max_points=2000, statistic=statistic,
+            include_envelope=True,
+        )
     series = [{"entity": r.entity_id, "resolution": r.resolution,
                "points": [[x.ts, x.value] for x in r.points]} for r in rows]
-    return _render("metrics.html", request, title="Metrics", choices=choices,
-                   series=series, series_json=json.dumps(series), params=p)
+    selected = {"monitor": monitor, "entity": entity, "metric": metric,
+                "range": range_text, "statistic": statistic}
+    return _render(
+        "metrics.html", request, title="Metrics", choices=choices,
+        monitors=monitors, entities=entities, metrics=metrics,
+        series=series, series_json=json.dumps(series), selected=selected,
+    )
 
 
 def _trend_request(request: Request) -> tuple[str | None, float, float, str] | Response:
