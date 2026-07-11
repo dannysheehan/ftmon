@@ -78,7 +78,7 @@ FTMON requires Python 3.11 or newer and
 [uv](https://docs.astral.sh/uv/).
 
 ```sh
-git clone https://github.com/dsheehan/ftmon.git
+git clone https://github.com/dannysheehan/ftmon.git
 cd ftmon
 uv sync
 uv run ftmon init --profile desktop

@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+import ftmon
 from ftmon.cli import main
 
 
@@ -25,7 +26,9 @@ class TestVersion:
         rc = main(["version"])
         assert rc == 0
         captured = capsys.readouterr()
-        assert "2.0.0a0" in captured.out
+        # Compare against the single version source, not a literal - a
+        # release bump must not be able to fail this test.
+        assert ftmon.__version__ in captured.out
 
 
 class TestInit:

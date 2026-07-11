@@ -1,11 +1,25 @@
 [project]
 name = "ftmon"
-version = "2.0.0a0"
+version = "2.0.0a1"
 description = "FTMON v2 - lightweight local systems monitor with MCP integration"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Danny Sheehan" }]
+keywords = ["monitoring", "linux", "daemon", "sqlite", "incidents", "metrics", "mcp", "self-hosted"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+]
 dependencies = [
     "psutil>=6",
     "platformdirs>=4",
@@ -18,6 +32,13 @@ dependencies = [
 
 [project.scripts]
 ftmon = "ftmon.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dannysheehan/ftmon"
+Repository = "https://github.com/dannysheehan/ftmon"
+Issues = "https://github.com/dannysheehan/ftmon/issues"
+Demo = "https://demo.ftmon.org/"
+Documentation = "https://github.com/dannysheehan/ftmon/blob/main/docs/manual.md"
 
 [dependency-groups]
 dev = [

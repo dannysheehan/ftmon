@@ -22,7 +22,7 @@ The public-demo procedure below installs a root-owned copy because system
 deployment must not depend on one administrator's home directory.
 
 ```sh
-git clone https://github.com/dsheehan/ftmon.git
+git clone https://github.com/dannysheehan/ftmon.git
 cd ftmon
 uv tool install .
 ftmon init --profile desktop
