@@ -113,6 +113,22 @@ notice when it clears. Every notification is also appended to
 
 Every listing command takes `--json` for scripting.
 
+### Reading the web dashboard
+
+Dashboard monitor tiles restore the original FTMON at-a-glance states while
+adding an icon and text so color is never the only signal:
+
+- `✓ clear` on green: no live incident;
+- `▲ warning` on yellow: notice or warning is open or acknowledged;
+- `✖ error` on red: error or critical is open or acknowledged;
+- `● disabled` on grey: definition intentionally disabled;
+- `? unknown` on grey: stale daemon, no committed data yet, or configuration error.
+
+Acknowledging an incident stops repeat notifications but does not make its tile
+green; only recovery clears the condition. A stale dashboard also never claims
+green because old data cannot prove present health. Click a yellow/red tile to
+open incidents already filtered to that monitor.
+
 ## 4. Tuning
 
 Open the monitor's TOML file; every parameter has a comment saying what it

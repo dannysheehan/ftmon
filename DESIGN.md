@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.4**. Companion to `SPEC.md` v0.6 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
+Status: **DRAFT v0.5**. Companion to `SPEC.md` v0.7 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
 
 Design-phase artifacts:
 
@@ -441,6 +441,14 @@ Their semantics remain deliberately separate. `/metrics` selects one persisted `
 
 `GET /api/series?monitor=…&entity=…&metric=…&range=…&statistic=…` returns `{monitor, entity, metric, unit, statistic, resolution, points, lower, upper, incidents, summary, matching_trends}`. Raw metric units come from `SourceDecl`; derived units come from explicit trend-profile use when available, otherwise the neutral label `value`. Server-side Query remains authoritative for tier selection, envelopes, incident filtering, and the 2 000-point cap.
 
+### 15.3 Dashboard health tiles (M7.3, UI-14)
+
+The dashboard composition root builds a `MonitorTile` view model rather than embedding policy in Jinja: `{name, description, state, icon, label, incident_count, max_severity, trend_profiles}`. State precedence is evaluated once in Python as `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`; templates only render it. Centralizing precedence prevents a CSS class or loop ordering change from silently turning a broken monitor green.
+
+“Live incident” includes both `open` and `acked`: ack suppresses renotification but is not recovery (IN-02). Staleness overrides enabled/incident display because old database state cannot prove current health. A successfully loaded monitor with no committed load/sample evidence is also unknown; `monitor_loads`, series, or an event cursor provides evidence that it has participated in a daemon cycle. Invalid definition files become config-error tiles even though no `MonitorDef` exists.
+
+CSS state classes restore the legacy green/yellow/red scan pattern, but every tile also carries a stable glyph and text label. No state flashes: motion is unnecessary for urgency, hostile to reduced-motion users, and makes a workstation dashboard distracting. Incident links use `/incidents?monitor=…`, the same Query filter as CLI/MCP.
+
 #### M7 disk reference profile
 
 The disk detail view uses three synchronized uPlot panels rather than one overloaded dual-axis chart:
@@ -504,6 +512,7 @@ Jinja autoescape + CSP (SE-02); notification bodies strip control chars; CLI out
 | D12 | Declarative trend profiles, not name inference | names cannot establish units, limits, confidence meaning, or honest projection semantics (MD-10) |
 | D13 | One explorer plus contextual links | supports discovery and incident investigation without duplicate query/render paths (UI-12) |
 | D14 | Shared uPlot adapter, distinct page semantics | one historical rendering truth while preventing arbitrary metrics from acquiring invented trend meaning (UI-13) |
+| D15 | Tile state composed in Python with fixed precedence | prevents templates/colors from becoming hidden health policy; preserves ack and stale semantics (UI-14) |
 
 ---
 
@@ -518,5 +527,6 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
 - **M7**: WP18 historical query envelopes + signed disk rate · WP19 uPlot disk views/API + Tier-1 visualization contract tests.
 - **M7.1**: WP20 trend-profile schema/loader + generic query · WP21 Trends explorer, leak reference profile, contextual links + Tier-1 contract tests.
 - **M7.2**: WP22 generic series API + shared chart adapter · WP23 Metrics uPlot view, incident markers, summaries, Trend links + tests.
+- **M7.3**: WP24 dashboard tile view model + monitor-filtered incidents · WP25 accessible state CSS/template + HTTP tests.
 
 Each WP names its FROZEN interfaces from §4–5; an implementing model receives: SPEC excerpt, this document's relevant sections, the WP's test files, and the interface stubs — nothing else is in scope for it.
