@@ -51,7 +51,13 @@ class ProcessSampler:
     def sample(self, now: float, deadline_mono: float, options: Mapping) -> Snapshot:
         entities: list[EntitySample] = []
         live: set[tuple[int, int]] = set()
-        for proc in psutil.process_iter([]):
+        # Do not pass ``[]`` here.  psutil treats any non-None ``attrs`` value
+        # as a request to call Process.as_dict() before yielding.  With an
+        # empty list some psutil versions collect *all* attributes, including
+        # memory maps and network connections, even though FTMON reads only
+        # the bounded fields below.  Iterating bare Process objects avoids
+        # that accidental full /proc scan and preserves per-metric isolation.
+        for proc in psutil.process_iter():
             # Deadline sits between entities because a stuck native call
             # cannot be interrupted in-process (SA-02).
             if self._clock.monotonic() > deadline_mono:

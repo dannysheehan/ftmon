@@ -46,6 +46,23 @@ def test_parse_psi_invalid_returns_none():
 # --- ProcessSampler tests ---
 
 
+def test_process_iteration_does_not_prefetch_unused_attributes(monkeypatch):
+    """[SA-04] Avoid psutil as_dict prefetch of costly, unused process data."""
+    calls = []
+
+    def process_iter(*args, **kwargs):
+        calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr("psutil.process_iter", process_iter)
+
+    ProcessSampler(FakeClock()).sample(now=1000.0, deadline_mono=2000.0, options={})
+
+    # Passing attrs=[] is not equivalent: affected psutil versions prefetch
+    # every attribute, including memory maps and network connections.
+    assert calls == [((), {})]
+
+
 def test_process_entity_id_format(monkeypatch):
     """[DM-02] entity_id is '{name}:{pid}:{create_time}' where create_time is int."""
     clock = FakeClock()
