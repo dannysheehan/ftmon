@@ -62,6 +62,12 @@ follow the [installation guide](docs/install.md). The operational dashboard
 stays on loopback; reach it remotely with an SSH tunnel rather than exposing
 the unauthenticated UI through a public reverse proxy.
 
+The public `demo.ftmon.org` deployment is a different, GET-only application
+over deterministic synthetic data. Its reproducible DNS, Caddy, systemd,
+verification, update, and rollback runbook is in the
+[installation guide](docs/install.md#publish-the-synthetic-demo-website).
+Never expose an operational FTMON database as a demo.
+
 ## Documentation
 
 - [User manual](docs/manual.md) — concepts, daily use, tuning, trends, and

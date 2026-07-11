@@ -1,0 +1,17 @@
+[Unit]
+Description=Atomically refresh and reopen the FTMON public demo
+Documentation=https://github.com/dsheehan/ftmon
+
+[Service]
+Type=oneshot
+# Orchestration remains root-owned so the unprivileged demo account never gains
+# authority over system services; the actual database build runs as ftmon-demo.
+ExecStart=/usr/bin/systemctl start ftmon-demo-build.service
+# Type=oneshot runs ExecStart lines in order and stops on failure, so a failed
+# build preserves the old service; success also recovers an inactive web unit.
+ExecStart=/usr/bin/systemctl restart ftmon-demo-web.service
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+CapabilityBoundingSet=

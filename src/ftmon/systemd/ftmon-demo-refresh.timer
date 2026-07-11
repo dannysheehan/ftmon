@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily deterministic refresh of the FTMON public demo
+Documentation=https://github.com/dsheehan/ftmon
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+# Fleet synchronization is irrelevant for one host, but jitter avoids coupling
+# refresh work to unrelated daily jobs configured at an exact wall-clock time.
+RandomizedDelaySec=15m
+Unit=ftmon-demo-refresh.service
+
+[Install]
+WantedBy=timers.target
+

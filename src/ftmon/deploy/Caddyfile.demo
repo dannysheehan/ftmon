@@ -1,0 +1,53 @@
+{
+	# Stock Caddy has no request-rate directive. This reference intentionally
+	# requires a reproducibly pinned third-party module instead of implying it does:
+	# xcaddy build v2.11.4 --with github.com/mholt/caddy-ratelimit@5625512f24f6f59d6f64fb3aafe5eecff0b286db
+	order rate_limit before reverse_proxy
+	servers {
+		max_header_size 16KB
+	}
+}
+
+demo.ftmon.org {
+	encode zstd gzip
+
+	# Per-client and global sliding windows bound both abusive clients and
+	# distributed aggregate load. The plugin returns 429 with Retry-After.
+	rate_limit {
+		zone per_client {
+			key {remote_host}
+			window 1m
+			events 120
+		}
+		zone global {
+			key ftmon-demo
+			window 1m
+			events 600
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:8420 {
+		# This stock-Caddy passive-health control is also an explicit backend
+		# concurrency ceiling: excess simultaneous requests receive an error.
+		fail_duration 10s
+		unhealthy_request_count 32
+		transport http {
+			dial_timeout 2s
+			response_header_timeout 15s
+			max_conns_per_host 32
+		}
+	}
+
+	log {
+		output file /var/log/caddy/ftmon-demo-access.log {
+			roll_size 10MiB
+			roll_keep 3
+			roll_keep_for 168h
+		}
+	}
+}

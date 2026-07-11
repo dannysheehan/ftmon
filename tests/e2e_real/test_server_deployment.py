@@ -46,6 +46,34 @@ def test_server_unit_passes_host_systemd_verification_pm_09(tmp_path):
 
 
 @pytest.mark.realsystem
+def test_demo_deployment_units_pass_host_systemd_verification_do_06(tmp_path):
+    """[DO-06][SE-06] Build, web, refresh, and timer units parse together."""
+    if sys.platform != "linux" or not shutil.which("systemd-analyze"):
+        pytest.skip("Linux systemd-analyze required")
+
+    names = (
+        "ftmon-demo-build.service", "ftmon-demo-web.service",
+        "ftmon-demo-refresh.service", "ftmon-demo-refresh.timer",
+    )
+    units = []
+    for name in names:
+        content = files("ftmon").joinpath(f"systemd/{name}").read_text()
+        # Verification hosts do not need a production install; /bin/true keeps
+        # the check about unit semantics rather than local package state.
+        content = content.replace("/opt/ftmon-demo/bin/ftmon", "/bin/true")
+        unit = tmp_path / name
+        unit.write_text(content)
+        units.append(str(unit))
+    result = subprocess.run(
+        ["systemd-analyze", "verify", *units],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.realsystem
 def test_server_profile_doctor_resolves_local_secret_without_leaking_ts_13(tmp_path):
     """[NO-10][SE-05][TS-13] Doctor checks a local reference and sends nothing."""
     env = {

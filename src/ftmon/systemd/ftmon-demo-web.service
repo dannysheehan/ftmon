@@ -1,0 +1,38 @@
+[Unit]
+Description=Read-only FTMON public demonstration
+Documentation=https://github.com/dsheehan/ftmon
+Requires=ftmon-demo-build.service
+After=ftmon-demo-build.service network.target
+ConditionFileIsExecutable=/opt/ftmon-demo/bin/ftmon
+ConditionPathExists=/var/lib/ftmon-demo/demo.db
+
+[Service]
+Type=simple
+User=ftmon-demo
+Group=ftmon-demo
+ExecStart=/opt/ftmon-demo/bin/ftmon web --demo --demo-db /var/lib/ftmon-demo/demo.db --demo-host demo.ftmon.org --port 8420
+Restart=on-failure
+RestartSec=5s
+
+# The public process receives no writable FTMON tree. Network policy permits
+# its loopback listener and Caddy upstream only, not outbound discovery.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/var/lib/ftmon-demo
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET
+CapabilityBoundingSet=
+AmbientCapabilities=
+SupplementaryGroups=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+TasksMax=32
+MemoryMax=128M
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

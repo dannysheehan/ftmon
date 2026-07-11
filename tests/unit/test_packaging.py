@@ -76,3 +76,43 @@ def test_versioned_demo_scenario_is_packaged_ui_16():
     """[UI-16] Deployment builds never depend on a source checkout fixture."""
     scenario = files("ftmon.scenarios").joinpath("demo-v1.jsonl").read_text()
     assert '"scenario":"demo-v1"' in scenario.splitlines()[0]
+
+
+def test_public_demo_units_separate_build_read_and_refresh_ui_15_do_06():
+    """[UI-15][DO-06] Packaged units preserve immutable deployment roles."""
+    systemd = files("ftmon").joinpath("systemd")
+    build = systemd.joinpath("ftmon-demo-build.service").read_text()
+    web = systemd.joinpath("ftmon-demo-web.service").read_text()
+    refresh = systemd.joinpath("ftmon-demo-refresh.service").read_text()
+    timer = systemd.joinpath("ftmon-demo-refresh.timer").read_text()
+
+    assert "User=ftmon-demo" in build
+    assert "PrivateNetwork=yes" in build
+    assert "ReadWritePaths=/var/lib/ftmon-demo" in build
+    assert "/opt/ftmon-demo/bin/ftmon demo build --output " \
+        "/var/lib/ftmon-demo/demo.db" in build
+    assert "/usr/local/bin/ftmon" not in build
+    assert "ReadWritePaths=" not in web
+    assert "ReadOnlyPaths=/var/lib/ftmon-demo" in web
+    assert "IPAddressDeny=any" in web and "IPAddressAllow=localhost" in web
+    assert "--demo-host demo.ftmon.org" in web
+    assert "ExecStart=/opt/ftmon-demo/bin/ftmon web --demo" in web
+    assert "systemctl start ftmon-demo-build.service" in refresh
+    assert "systemctl restart ftmon-demo-web.service" in refresh
+    assert "try-restart" not in refresh
+    assert "OnCalendar=*-*-* 03:17:00" in timer
+    assert "Persistent=true" in timer
+
+
+def test_demo_caddy_reference_has_real_rate_and_concurrency_caps_se_06():
+    """[SE-06][DO-06] Proxy limits name their non-stock dependency explicitly."""
+    caddy = files("ftmon").joinpath("deploy/Caddyfile.demo").read_text()
+
+    # Rate limiting is a pinned custom module; concurrency uses documented
+    # stock reverse-proxy controls, so neither boundary is merely commentary.
+    assert "github.com/mholt/caddy-ratelimit@5625512f" in caddy
+    assert "rate_limit {" in caddy
+    assert "key {remote_host}" in caddy
+    assert "unhealthy_request_count 32" in caddy
+    assert "max_conns_per_host 32" in caddy
+    assert "reverse_proxy 127.0.0.1:8420" in caddy

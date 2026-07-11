@@ -243,6 +243,174 @@ the write-operation Origin check can protect against DNS rebinding and CSRF.
 The **Trends** page graphs declared growth profiles such as disk capacity and
 process memory growth; monitor and incident pages link into the same explorer.
 
+## Publish the synthetic demo website
+
+This procedure is only for a public, read-only demonstration at
+`demo.ftmon.org`. **Never pass a real operational `ftmon.db`, its backup, or a
+copy of host configuration to demo mode.** The application rejects unmarked
+databases, but deployment separation is the primary safety control: use a
+dedicated machine or account with no access to an operational FTMON home
+(UI-15, SE-06, DO-06).
+
+### 1. Prepare DNS and the host
+
+Create an `A` record for `demo.ftmon.org` and an `AAAA` record only when IPv6
+is correctly routed. Point them at the public host, allow inbound TCP 80 and
+443, and keep port 8420 blocked externally. Caddy needs 80/443 to obtain and
+renew certificates; the FTMON backend remains on loopback so bypassing TLS and
+the hosting controls is impossible.
+
+Create a non-login account and install a root-owned program:
+
+```sh
+sudo useradd --system --create-home --home-dir /var/lib/ftmon-demo \
+  --shell /usr/sbin/nologin ftmon-demo
+sudo install -d -o root -g root -m 0755 /opt/ftmon-demo/bin /opt/ftmon-demo/tools
+sudo env UV_TOOL_DIR=/opt/ftmon-demo/tools UV_TOOL_BIN_DIR=/opt/ftmon-demo/bin \
+  uv tool install --force .
+sudo install -d -o ftmon-demo -g ftmon-demo -m 0700 /var/lib/ftmon-demo
+```
+
+Keeping the root-owned demo release under `/opt/ftmon-demo` prevents the web
+account from replacing the executable systemd starts and prevents a demo update
+from colliding with an operational `/usr/local/bin/ftmon` installation. Do not
+add this account to journal, application, container, or administrative groups;
+synthetic demo mode needs no host telemetry, notification credentials, action
+directory, MCP server, or daemon.
+
+Run the install from a clean checkout of an exact signed release tag and record
+its commit ID. Installing from a floating branch would make rebuilds and
+rollback ambiguous even though the scenario itself is deterministic.
+
+### 2. Install and build the synthetic snapshot
+
+Install the checked-in demo service, builder, and timer artifacts once their
+paths have been reviewed:
+
+```sh
+sudo install -m 0644 src/ftmon/systemd/ftmon-demo-build.service \
+  /etc/systemd/system/
+sudo install -m 0644 src/ftmon/systemd/ftmon-demo-web.service \
+  /etc/systemd/system/
+sudo install -m 0644 src/ftmon/systemd/ftmon-demo-refresh.service \
+  /etc/systemd/system/
+sudo install -m 0644 src/ftmon/systemd/ftmon-demo-refresh.timer \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start ftmon-demo-build.service
+sudo systemctl enable --now ftmon-demo-web.service ftmon-demo-refresh.timer
+```
+
+The builder runs the equivalent of:
+
+```sh
+sudo -u ftmon-demo /opt/ftmon-demo/bin/ftmon demo build \
+  --output /var/lib/ftmon-demo/demo.db
+```
+
+It writes a versioned, seeded scenario to a temporary database, verifies its
+coverage, fsyncs it, and atomically replaces `demo.db`. The web service opens
+that completed file read-only and immutable. The timer rebuilds it regularly
+to make releases and resets reproducible—not to clean visitor state, because
+GET-only visitors cannot create any.
+
+### 3. Put Caddy in front
+
+Install Caddy using its [official service package](https://caddyserver.com/docs/install)
+first, and install `xcaddy` from its
+[official build instructions](https://github.com/caddyserver/xcaddy). The
+package supplies the `caddy` account and service unit that the override below
+deliberately retains. Create the bounded access-log directory explicitly so
+configuration validation exercises the same path the service will use:
+
+```sh
+sudo install -d -o caddy -g caddy -m 0750 /var/log/caddy
+```
+
+The supplied configuration uses the rate-limit module pinned in its header.
+Build that exact module revision with the stated Caddy version using `xcaddy`,
+install the resulting root-owned binary, then install the site configuration.
+Pinning makes this non-stock security dependency auditable and repeatable;
+silently falling back to stock Caddy would remove the promised request limit.
+
+```sh
+xcaddy build v2.11.4 \
+  --with github.com/mholt/caddy-ratelimit@5625512f24f6f59d6f64fb3aafe5eecff0b286db
+sudo install -o root -g root -m 0755 caddy /usr/local/bin/caddy-ftmon-demo
+sudo install -m 0644 src/ftmon/deploy/Caddyfile.demo /etc/caddy/Caddyfile
+sudo systemctl edit caddy
+```
+
+Use an override so distribution package upgrades cannot silently replace the
+pinned custom binary:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/caddy-ftmon-demo run --environ --config /etc/caddy/Caddyfile
+ExecReload=
+ExecReload=/usr/local/bin/caddy-ftmon-demo reload --config /etc/caddy/Caddyfile
+```
+
+```sh
+sudo /usr/local/bin/caddy-ftmon-demo validate --config /etc/caddy/Caddyfile
+sudo systemctl daemon-reload
+sudo systemctl enable caddy
+sudo systemctl restart caddy
+```
+
+Caddy supplies automatic HTTPS and proxies only to `127.0.0.1:8420`; it does
+not make an operational FTMON dashboard safe to publish. The demo backend also
+checks the exact public Host, ignores forwarded authority, caps request targets,
+and registers no write routes.
+
+Rate and concurrency limiting are an explicit hosting boundary. The reference
+configuration sets per-client and aggregate sliding-window limits and bounds
+backend connections. An upstream CDN/load balancer is a valid alternative,
+but its equivalent limits must be recorded and tested. Do not claim the
+deployment is complete merely because TLS works.
+
+### 4. Verify before announcing the URL
+
+```sh
+systemctl status ftmon-demo-web.service ftmon-demo-refresh.timer caddy
+journalctl -u ftmon-demo-build.service -u ftmon-demo-web.service --since today
+curl --fail --show-error https://demo.ftmon.org/
+curl --fail --show-error https://demo.ftmon.org/trends
+curl -I https://demo.ftmon.org/
+curl -X POST -o /dev/null -w '%{http_code}\n' \
+  https://demo.ftmon.org/incidents/1/ack
+lychee --max-concurrency 4 --max-retries 2 https://demo.ftmon.org/
+```
+
+Confirm the persistent synthetic-data banner, `noindex,nofollow`, security
+headers, clear/warning/error/disabled tiles, recovered and open incidents,
+disk and memory-growth charts, chart gaps, and stale-data example. POST must be
+404 or 405. Crawl the site with a bounded link checker and confirm it finds no
+`/monitors`, `/self`, action, draft, backup, or MCP surface. Test the configured
+rate/concurrency limit separately from a controlled address.
+
+### 5. Update, roll back, and monitor
+
+For an update, install the new root-owned package, rebuild to a new snapshot,
+run the verification checklist, and only then restart the web service. Retain
+the previous package version and its generated snapshot until verification
+passes; rollback means restoring both together because scenario and reader
+versions are validated as a pair. Never weaken the marker/version checks to
+make an old database load.
+
+Treat Caddy and its pinned rate-limit module as one release artifact. Rebuild,
+validate, and restart the custom binary deliberately when either version
+changes; an ordinary distribution Caddy upgrade does not update the binary
+selected by the service override.
+
+The generated database needs no backup: source scenario plus package version
+reproduces it exactly, and visitor state does not exist. Back up deployment
+configuration and release metadata instead. Monitor Caddy certificate renewal,
+HTTP 5xx/latency and limit rejections, unit restarts/RSS, builder/timer failures,
+disk space, and an external HTTPS/banner probe. Keep access logs on bounded
+retention and avoid query-string retention when it is not operationally useful.
+
 ## MCP registration
 
 Claude Code:

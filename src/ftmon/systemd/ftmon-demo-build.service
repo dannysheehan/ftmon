@@ -1,0 +1,27 @@
+[Unit]
+Description=Build deterministic FTMON public-demo data
+Documentation=https://github.com/dsheehan/ftmon
+ConditionFileIsExecutable=/opt/ftmon-demo/bin/ftmon
+
+[Service]
+Type=oneshot
+User=ftmon-demo
+Group=ftmon-demo
+UMask=0133
+StateDirectory=ftmon-demo
+StateDirectoryMode=0700
+ExecStart=/opt/ftmon-demo/bin/ftmon demo build --output /var/lib/ftmon-demo/demo.db
+
+# Building is deliberately offline and may write only the atomically replaced
+# dataset; these boundaries prevent a fixture bug becoming host discovery.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/ftmon-demo
+CapabilityBoundingSet=
+AmbientCapabilities=
+SupplementaryGroups=
+RestrictSUIDSGID=yes
+LockPersonality=yes
