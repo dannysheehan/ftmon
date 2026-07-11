@@ -442,6 +442,37 @@ rate_threshold_params = ["latency_growth_sph"]
   booleans-as-numbers, or oversized output make the run unknown rather than
   partially trusted.
 
+### 6.5 Curated extra-monitor recipes
+
+The repository's `extra-monitors/` directory is a compatibility cookbook, not
+an executable marketplace. It documents known integrations while keeping
+third-party acquisition, trust and licensing decisions with the operator.
+
+- **XR-01** Every recipe has a Markdown article plus bounded `recipe.toml`
+  metadata: stable directory-matching id, title, summary, protocol, platforms,
+  authoritative HTTPS upstream, licence, evidence status, privilege class,
+  network flag and last verified version. Evidence status distinguishes
+  fixture-tested, real-system-verified and recipe-only claims.
+- **XR-02** Every recipe supplies `checks.toml.example` and `monitor.toml`.
+  Executable argv appears only in the registry example; the definition refers
+  to its alias and validates through MD-11. Privileged examples use `sudo -n`
+  plus one exact root-owned wrapper and document why elevation is necessary.
+- **XR-03** Every recipe supplies deterministic protocol-output fixtures with
+  expected state and labels. The generic CI harness parses those fixtures and
+  validates metadata, documentation headings, registry/definition agreement
+  and monitor schema without network, root or the third-party package.
+- **XR-04** Third-party plugins are linked and installed separately, never
+  copied into this MIT repository. Recipes name the upstream licence and cover
+  credentials, data disclosure and permissions; compatibility evidence is not
+  an endorsement or warranty.
+- **XR-05** A script may ship inside a recipe only when FTMON is its original
+  maintainer, its licence is explicit, it follows the bounded FTMON JSON or
+  Nagios convention, and direct tests cover success and failure behavior.
+
+The initial catalogue proves three distinct paths: an unprivileged networked
+HTTP/TLS Nagios plugin, a read-only SMART/NVMe check with constrained privilege,
+and an original dependency-light FTMON JSON script whose metric feeds a Trend.
+
 ---
 
 ## 7. Calculations, baselines, and built-in monitors
@@ -865,6 +896,10 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   plugin metric through derived growth/confidence to incident, Metrics, Trend,
   CLI and MCP. No CI test contacts a network service or requires Nagios to be
   installed.
+- **TS-16** Extra-monitor tests discover recipe directories, validate their
+  manifest/article/configuration contract, parse all declared fixtures and run
+  any repository-maintained script tests. Default CI remains offline and
+  unprivileged; network, hardware and installed-plugin checks are opt-in only.
 
 ## 17. Documentation deliverables (v1)
 
@@ -886,6 +921,10 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   value accurately: reuse a mature check ecosystem while FTMON adds bounded
   local history, confirmation, incidents, notifications and trend analysis;
   it MUST label the capability planned until M9 ships.
+- **DO-08** `extra-monitors/README.md` explains recipe confidence labels,
+  contribution structure and offline validation; each recipe documents why,
+  installation, configuration, testing, security/permissions, upstream and
+  licence.
 
 ---
 
@@ -930,10 +969,17 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M8** | Server profile, per-channel outbox, ntfy/webhook/SMTP, server service/docs (PM-08/09, DM-18, NO-05..10, SE-05, TS-13, DO-06) | lightweight single-server monitor |
 | **M8.1** | Synthetic read-only public demo mode and deployment (UI-15/16, SE-06, TS-14, DO-06) | safe `demo.ftmon.org` experience |
 | **M9** | Administrator check registry, external subprocess source, FTMON JSON and Nagios adapters, declared perfdata history/Trends (EC-*, MD-11, SE-07, TS-15, DO-07) | bring-your-own checks without a monitoring stack |
+| **M9.1** | Curated `extra-monitors/` recipe contract, offline validator, HTTP/TLS, SMART/NVMe and native JSON examples (XR-*, TS-16, DO-08) | a tested integration cookbook without vendoring an ecosystem |
 
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.11 (2026-07-12)** — specifies a curated, testable extra-monitor cookbook.
+Human-readable articles are paired with bounded metadata, example registry and
+definition files, and deterministic output fixtures. Third-party plugins remain
+upstream-owned and separately licensed; an original FTMON script must meet a
+higher direct-test and licence bar.
 
 **v0.10 (2026-07-11)** — specifies M9's bounded external-check seam. An
 administrator registers exact local argv once; declarative monitors may reuse

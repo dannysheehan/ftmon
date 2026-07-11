@@ -23,6 +23,9 @@ PROJECTS/ftmon/                  # monorepo root (git)
 ├── pyproject.toml  uv.lock      # single Python project at repo root
 ├── design/
 │   └── builtins/*.toml          # normative built-in defs; copied into package data by WP
+├── extra-monitors/              # articles + testable external-check recipes (XR-*)
+│   ├── _template/
+│   └── <recipe>/{README.md,recipe.toml,checks.toml.example,monitor.toml,fixtures/}
 ├── src/ftmon/                   # the package (SPEC §3)
 │   ├── paths.py                 # FS-01: all filesystem paths (platformdirs)
 │   ├── clock.py                 # TS-03: Clock protocol + SystemClock + ControlledClock
@@ -683,6 +686,37 @@ existing execution authority (EC-06/08).
 
 ---
 
+### 10.9 Extra-monitor recipe catalogue (XR-*, TS-16)
+
+Each non-underscore directory below `extra-monitors/` is a self-contained
+compatibility claim. Markdown carries operator reasoning and machine-readable
+`recipe.toml` carries only bounded catalogue metadata and fixture expectations.
+Keeping both avoids two failure modes: prose-only examples silently rot, while
+configuration-only examples omit the security, licensing and threshold reasons
+an operator needs to trust them.
+
+`tests/extra_monitors/test_recipes.py` discovers recipes rather than maintaining
+a second index. It validates exact manifest keys, required article headings,
+HTTPS upstream and licence metadata, registry/definition alias agreement,
+external-definition schema, privilege shape and deterministic adapter output.
+It never loads the registry through `checks.registry` because example
+executables are intentionally not installed in CI; executable readiness remains
+an operator responsibility verified by `doctor` on the target host.
+
+Fixtures are captured protocol output, not golden FTMON database snapshots.
+They prove the volatile third-party boundary—exit state, labels and UOM—while
+the central TS-15 journey already proves projection through history, incidents
+and Trends. Network, hardware and installed-plugin checks stay opt-in so the
+default suite remains deterministic and does not turn upstream availability or
+root access into a merge gate.
+
+Repository-maintained scripts are the exception to the no-vendoring rule. They
+live under their recipe's `scripts/`, carry an explicit licence header, depend
+only on documented platform tools or the Python standard library, and have
+direct behavioral tests in addition to protocol fixtures (XR-05).
+
+---
+
 ## 11. Event pipeline (SA-03/08, DM-07..10, DM-15)
 
 `journald.py`: spawns `journalctl -f -o json --output-fields=MESSAGE,PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,__CURSOR [--after-cursor=C]`. Reader thread appends raw lines to deque. `drain()` (main thread): parse JSON (malformed → count, skip), normalize → `EventRecord` (severity map: PRIORITY 0–2→critical, 3→error, 4→warning, 5→notice, 6–7→info; provider = `_SYSTEMD_UNIT` else `SYSLOG_IDENTIFIER`), return last `__CURSOR`. Cursor is persisted in the tick's write txn (DM-15). Storm counter per (source, provider) sliding minute (DM-10); store-filter per amended DM-09; matching against loaded event rules uses the same compiled `when` expressions with the event-field NameEnv. Reader death → `alive()` false → scheduler restarts with backoff (SA-03).
@@ -932,5 +966,8 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
   external sampler and scheduler fairness · WP35 controlled-clock
   state/perfdata-to-Trend journey, doctor/CLI/MCP/web contracts and external
   check authoring/reuse documentation.
+- **M9.1**: WP36 recipe schema/template + discovery validator · WP37 HTTP/TLS
+  and constrained SMART/NVMe Nagios recipes · WP38 maintained native JSON
+  script, direct tests, catalogue/user-documentation links.
 
 Each WP names its FROZEN interfaces from §4–5; an implementing model receives: SPEC excerpt, this document's relevant sections, the WP's test files, and the interface stubs — nothing else is in scope for it.

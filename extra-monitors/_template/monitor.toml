@@ -1,0 +1,21 @@
+schema = 1
+
+[monitor]
+name = "replace_me"
+description = "Replace this description"
+version = 1
+enabled = false
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "replace_me"
+entity = "replace-me"
+
+[[rule]]
+id = "plugin-critical"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 2
+message = "{plugin_message}"

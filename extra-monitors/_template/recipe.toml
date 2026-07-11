@@ -1,0 +1,20 @@
+schema = 1
+
+[recipe]
+id = "replace_me"
+title = "Replace me"
+summary = "One sentence describing the operational value."
+kind = "nagios"
+platforms = ["linux"]
+upstream = "https://example.org/project"
+license = "UNKNOWN"
+status = "recipe-only"
+privilege = "none"
+network = false
+last_verified_version = "not yet verified"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = []

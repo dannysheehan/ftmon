@@ -1,0 +1,4 @@
+[check.replace_me]
+argv = ["/absolute/path/to/check_replace_me"]
+protocol = "nagios"
+timeout = "10s"
