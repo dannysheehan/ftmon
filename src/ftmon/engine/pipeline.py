@@ -76,14 +76,20 @@ class Pipeline:
         now: float,
         deadline_mono: float,
         writer,  # store.writer.TickWriter; untyped to keep engine->store loose
-        snapshot_cache: dict[str, Snapshot],
+        snapshot_cache: dict[object, Snapshot],
     ) -> list[EvalOutcome]:
         # SA-06: a source shared by several monitors runs once per tick; all
         # consumers see identical values and timestamps.
-        snap = snapshot_cache.get(mdef.source)
+        # External definitions can map the same immutable raw plugin result to
+        # different metric names and units. Cache their projected snapshots per
+        # monitor; ExternalSampler separately guarantees the alias executes once.
+        cache_key: object = (
+            (mdef.source, mdef.name) if mdef.source == "external" else mdef.source
+        )
+        snap = snapshot_cache.get(cache_key)
         if snap is None:
             snap = self._samplers[mdef.source].sample(now, deadline_mono, mdef.source_options)
-            snapshot_cache[mdef.source] = snap
+            snapshot_cache[cache_key] = snap
 
         st = self._state.setdefault(mdef.name, _MonitorState())
         rings = self._rings

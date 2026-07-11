@@ -152,8 +152,28 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("source_activity_age_s", "s", "gauge", "Seconds since event reader produced data"),
             _m("eval_unknown_total", "count", "counter", "Rule evaluations returning unknown"),
             _m("samples_rejected", "count", "counter", "NaN/inf samples rejected (DM-01)"),
+            _m("external_checks_skipped", "count", "counter",
+               "External aliases skipped when their source budget expired"),
+            _m("external_check_failures", "count", "counter",
+               "External execution/protocol failures across stable categories"),
+            _m("external_perfdata_rejected", "count", "counter",
+               "Declared external performance values rejected at projection"),
         ),
         attrs=(),
+    ),
+    # Mapped metrics are deliberately absent here. The definition validator
+    # composes them from administrator-authored EC-04 mappings before building
+    # its NameEnv, so plugin output can never grow the metric namespace.
+    "external": SourceDecl(
+        name="external",
+        kind="sampler",
+        entity_kind="external",
+        metrics=(
+            _m("plugin_state", "state", "gauge", "Plugin state 0..3"),
+            _m("plugin_ok", "bool", "gauge", "1 only for plugin state OK"),
+            _m("duration_s", "seconds", "gauge", "Check execution duration"),
+        ),
+        attrs=(_a("plugin_message", "Sanitized first-line check message"),),
     ),
     "events": SourceDecl(
         name="events",

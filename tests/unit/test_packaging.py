@@ -58,6 +58,7 @@ def test_server_unit_defines_non_session_filesystem_paths_pm_09():
     assert "Environment=FTMON_DATA_DIR=/var/lib/ftmon/.local/share/ftmon" in unit
     assert "Environment=FTMON_STATE_DIR=/var/lib/ftmon/.local/state/ftmon" in unit
     assert "Environment=FTMON_RUNTIME_DIR=/run/ftmon" in unit
+    assert "Environment=FTMON_CHECK_REGISTRY=/etc/ftmon/checks.toml" in unit
     assert "RuntimeDirectory=ftmon" in unit
 
 

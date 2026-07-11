@@ -12,6 +12,8 @@ from __future__ import annotations
 import keyword
 import re
 
+from ftmon import model
+
 __all__ = [
     "TOP_LEVEL_KEYS",
     "MONITOR_KEYS",
@@ -31,6 +33,11 @@ __all__ = [
     "WATCHLIST_TARGET_KEYS",
     "SOURCE_OPTIONS_WATCHLIST_SOURCES",
     "SOURCE_OPTIONS_TOPN_SOURCES",
+    "EXTERNAL_SOURCE_OPTIONS_KEYS",
+    "PERFDATA_KEYS",
+    "MAX_PERFDATA_MAPPINGS",
+    "EXTERNAL_ENTITY_MAX_LEN",
+    "external_decl",
     "TOP_N_MIN",
     "TOP_N_MAX",
     "TOP_N_DEFAULT",
@@ -80,6 +87,10 @@ WATCHLIST_ENTRY_KEYS = WATCHLIST_TARGET_KEYS | {"during", "expected"}
 TOP_N_MIN = 5
 TOP_N_MAX = 50
 TOP_N_DEFAULT = 15
+EXTERNAL_SOURCE_OPTIONS_KEYS = frozenset({"check", "entity", "perfdata"})
+PERFDATA_KEYS = frozenset({"label", "metric", "plugin_uom", "unit", "kind", "scale"})
+MAX_PERFDATA_MAPPINGS = 32  # EC-08 bounds definition-controlled schema growth.
+EXTERNAL_ENTITY_MAX_LEN = 256
 
 # --- [parameters] ---
 PARAM_KEYS = frozenset({"value", "doc"})
@@ -109,6 +120,29 @@ DEFAULT_COOLDOWN_S = 600.0  # "10m"
 DEFAULT_CLEAR_AFTER_S = 1800.0  # "30m"
 
 MAX_POINTS = 10_000  # CA-04
+
+
+def external_decl(perfdata: list[dict]) -> model.SourceDecl:
+    """Compose the declaration that expressions see for one external monitor.
+
+    Output labels cannot extend this declaration at runtime: only mappings that
+    passed definition validation are supplied here (EC-04/05, MD-11).
+    """
+    fixed = (
+        model.MetricDecl("plugin_state", "state", "gauge", "Plugin state 0..3"),
+        model.MetricDecl("plugin_ok", "bool", "gauge", "1 only for plugin state OK"),
+        model.MetricDecl("duration_s", "seconds", "gauge", "Check execution duration"),
+    )
+    mapped = tuple(
+        model.MetricDecl(item["metric"], item["unit"], item["kind"],
+                         f"Mapped external check value {item['label']!r}")
+        for item in perfdata
+    )
+    return model.SourceDecl(
+        name="external", kind="sampler", entity_kind="external",
+        metrics=fixed + mapped,
+        attrs=(model.AttrDecl("plugin_message", "Sanitized first-line check message"),),
+    )
 
 
 def is_identifier(name: object) -> bool:

@@ -22,10 +22,23 @@ def test_paths_env_overrides(tmp_path):
     }
     p = get_paths(env)
     assert p.monitors_dir == tmp_path / "cfg" / "monitors"
+    assert p.check_registry_file == tmp_path / "cfg" / "checks.toml"
     assert p.db_file == tmp_path / "data" / "ftmon.db"
     p.ensure()
     mode = stat.S_IMODE(os.stat(p.config_dir).st_mode)
     assert mode == 0o700  # [SE-04]
+
+
+def test_check_registry_path_override(tmp_path):
+    """[FS-03] The dedicated override selects external-check authority."""
+    selected = tmp_path / "admin" / "checks.toml"
+    paths = get_paths(
+        {
+            "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+            "FTMON_CHECK_REGISTRY": str(selected),
+        }
+    )
+    assert paths.check_registry_file == selected
 
 
 def test_atomic_write_modes_and_content(tmp_path):

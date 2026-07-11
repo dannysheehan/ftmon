@@ -154,6 +154,129 @@ confirm_cycles = 1
 message = "hi {entity}"
 """
 
+VALID_EXTERNAL = """
+schema = 1
+
+[monitor]
+name = "website"
+description = "external check"
+version = 1
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "website_https"
+entity = "https://example.org"
+
+[[source_options.perfdata]]
+label = "time"
+metric = "response_time_s"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+scale = 1.0
+"""
+
+
+def test_external_mappings_extend_nameenv_for_derived_rules_and_trends_ec_04_ec_05_md_11():
+    """[EC-04][EC-05][MD-11] Mapped fields extend the validated name environment."""
+    definition = load_text(VALID_EXTERNAL + '''
+[parameters]
+growth_min = { value = 0.2, doc = "growth threshold" }
+
+[[derived]]
+name = "response_time_rate_sph"
+expr = 'slope(response_time_s, "2h") * 3600'
+
+[[rule]]
+id = "degrading"
+when = "response_time_rate_sph > growth_min and plugin_ok == 0"
+severity = "warning"
+message = "{plugin_message}"
+
+[[trend]]
+id = "response-time"
+kind = "growth"
+title = "Response time"
+value_metric = "response_time_s"
+value_unit = "seconds"
+rate_metric = "response_time_rate_sph"
+rate_unit = "seconds/hour"
+''')
+    assert definition.source_options["perfdata"] == [{
+        "label": "time", "metric": "response_time_s", "plugin_uom": "s",
+        "unit": "seconds", "kind": "gauge", "scale": 1.0,
+    }]
+    assert definition.trends[0].value_metric == "response_time_s"
+    assert definition.rules[0].message == "{plugin_message}"
+
+
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        (VALID_EXTERNAL.replace('check = "website_https"\n', ""), "source_options.check"),
+        (VALID_EXTERNAL.replace('entity = "https://example.org"\n', ""),
+         "source_options.entity"),
+        (VALID_EXTERNAL.replace('scale = 1.0', 'scale = inf'),
+         "source_options.perfdata[0].scale"),
+        (VALID_EXTERNAL + '''
+[[source_options.perfdata]]
+label = "time"
+metric = "other"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+''', "source_options.perfdata[1].label"),
+        (VALID_EXTERNAL.replace('metric = "response_time_s"', 'metric = "plugin_state"'),
+         "source_options.perfdata[0].metric"),
+    ],
+)
+def test_external_mapping_schema_rejects_invalid_or_ambiguous_values_md_11(text, path):
+    with pytest.raises(ValidationError) as exc:
+        load_text(text)
+    assert any(error["path"] == path for error in exc.value.errors)
+
+
+def test_external_perfdata_mapping_count_is_capped_ec_08():
+    mapping = '''
+[[source_options.perfdata]]
+label = "label{index}"
+metric = "metric{index}"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+'''
+    prefix = VALID_EXTERNAL.split("[[source_options.perfdata]]", 1)[0]
+    text = prefix + "".join(mapping.format(index=i) for i in range(33))
+    with pytest.raises(ValidationError) as exc:
+        load_text(text)
+    assert any(error["path"] == "source_options.perfdata"
+               and error["code"] == "too_many_items" for error in exc.value.errors)
+
+
+def test_external_mapped_metric_must_exist_for_rule_and_trend_md_11():
+    with pytest.raises(ValidationError) as exc:
+        load_text(VALID_EXTERNAL + '''
+[[rule]]
+id = "bad"
+when = "latency_ms > 1"
+severity = "warning"
+message = "bad"
+
+[[trend]]
+id = "bad"
+kind = "growth"
+title = "Bad"
+value_metric = "latency_ms"
+value_unit = "milliseconds"
+rate_metric = "duration_s"
+rate_unit = "seconds/hour"
+''')
+    paths = {error["path"] for error in exc.value.errors}
+    assert "rule[0].when" in paths
+    assert "trend[0].value_metric" in paths
+
 VALID_EVENTS = """
 schema = 1
 

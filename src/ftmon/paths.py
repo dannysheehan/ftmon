@@ -23,6 +23,7 @@ class Paths:
     drafts_dir: Path
     actions_dir: Path
     config_file: Path
+    check_registry_file: Path
     data_dir: Path
     db_file: Path
     state_dir: Path
@@ -59,6 +60,9 @@ def get_paths(env: dict[str, str] | None = None) -> Paths:
         drafts_dir=config / "monitors" / "drafts",
         actions_dir=config / "actions",
         config_file=config / "config.toml",
+        check_registry_file=Path(
+            e.get("FTMON_CHECK_REGISTRY", str(config / "checks.toml"))
+        ),
         data_dir=data,
         db_file=data / "ftmon.db",
         state_dir=state,

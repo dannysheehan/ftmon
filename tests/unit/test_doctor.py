@@ -66,4 +66,5 @@ def test_doctor_reports_redacted_channel_readiness_no_10(tmp_path, monkeypatch, 
     assert "Notification desktop: disabled" in captured.out
     assert "Notification ntfy: error (invalid_config)" in captured.out
     assert "Notification webhook: disabled" in captured.out
+    assert "External checks: disabled (registry missing)" in captured.out
     assert "ABSENT_PRIVATE_TOKEN" not in captured.out + captured.err

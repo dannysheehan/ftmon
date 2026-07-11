@@ -627,8 +627,21 @@ async def events(request: Request):
 
 async def monitors(request: Request):
     paths = request.app.state.paths
+    check_aliases: frozenset[str] = frozenset()
+    if paths.check_registry_file.exists():
+        try:
+            from ftmon.checks.registry import load as load_check_registry
+
+            check_aliases = frozenset(load_check_registry(
+                paths.check_registry_file, paths=paths
+            ))
+        except ValueError:
+            # The page must not disclose administrator argv; daemon/doctor
+            # surface the stable registry error category separately.
+            pass
     defs, errors = loader.load_dir(
-        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True,
+        check_aliases=check_aliases, require_checks=True,
     )
     drafts = []
     for path in sorted(paths.drafts_dir.glob("*.toml")) if paths.drafts_dir.exists() else []:
@@ -646,13 +659,26 @@ async def monitor_action(request: Request):
     from ftmon.definitions import manage
 
     name, action = request.path_params["name"], request.path_params["action"]
+    paths = request.app.state.paths
+    check_aliases: frozenset[str] = frozenset()
+    if paths.check_registry_file.exists():
+        try:
+            from ftmon.checks.registry import load as load_check_registry
+
+            check_aliases = frozenset(load_check_registry(
+                paths.check_registry_file, paths=paths
+            ))
+        except ValueError:
+            pass
     try:
         if action == "approve":
-            manage.approve_draft(request.app.state.paths, name)
+            manage.approve_draft(paths, name, check_aliases=check_aliases)
         elif action == "delete-draft":
-            manage.delete_draft(request.app.state.paths, name)
+            manage.delete_draft(paths, name)
         elif action in {"enable", "disable"}:
-            manage.set_enabled(request.app.state.paths, name, action == "enable")
+            manage.set_enabled(
+                paths, name, action == "enable", check_aliases=check_aliases
+            )
         else:
             return Response("Unknown action", status_code=404)
     except manage.ManageError as exc:

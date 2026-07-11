@@ -19,6 +19,10 @@ from dataclasses import dataclass, field
 from queue import SimpleQueue
 
 from ftmon import definitions
+from ftmon.checks import CheckRunner, ExternalSampler
+from ftmon.checks.registry import RegistryError
+from ftmon.checks.registry import empty as empty_registry
+from ftmon.checks.registry import load as load_check_registry
 from ftmon.clock import Clock, ControlledClock, SystemClock
 from ftmon.config import AppConfig, QuietHours, load_config
 from ftmon.definitions.loader import MonitorDef
@@ -84,6 +88,18 @@ class DaemonCore:
         self.writer = TickWriter(self.conn, on_reject=lambda _n: self.stats.count(
             "samples_rejected"))
         self.rings = RingStore()
+        self.check_registry = empty_registry()
+        self._registry_stamp: tuple[int, int] | None = None
+        self.external_sampler = ExternalSampler(
+            self.check_registry,
+            # Deadline arithmetic must share the scheduler's monotonic clock;
+            # controlled-clock tests intentionally use a different epoch from
+            # the host monotonic clock.
+            CheckRunner(self.paths.state_dir, self.clock),
+            self.stats.count,
+            self.clock,
+        )
+        self._reload_check_registry(initial=True)
         self.samplers = {
             "process": ProcessSampler(self.clock),
             "disk": DiskSampler(self.clock),
@@ -91,6 +107,7 @@ class DaemonCore:
             "unit": UnitSampler(self.clock),
             "net": NetSampler(self.clock),
             "self": SelfSampler(self.stats, self.paths.db_file),
+            "external": self.external_sampler,
         }
         # Rollups/retention/baselines (DM-04/05, CA-05) run in-daemon; the
         # lookup is handed to the pipeline so baseline() in rules reads the
@@ -197,6 +214,39 @@ class DaemonCore:
         # otherwise-real missed-reload window without hashing every 5-second tick.
         return info.st_ino, info.st_mtime_ns, info.st_size
 
+    def _check_registry_stamp(self) -> tuple[int, int, int] | None:
+        try:
+            info = self.paths.check_registry_file.stat()
+        except OSError:
+            return None
+        return info.st_ino, info.st_mtime_ns, info.st_size
+
+    def _reload_check_registry(self, *, initial: bool = False) -> None:
+        """Atomically publish only a complete administrator authority file."""
+        stamp = self._check_registry_stamp()
+        if not initial and stamp == self._registry_stamp:
+            return
+        self._registry_stamp = stamp
+        if stamp is None:
+            # A missing default registry means no external authority. If a
+            # previously valid file disappears, retain it until a valid
+            # replacement arrives, matching EC-06's atomic reload contract.
+            return
+        try:
+            registry = load_check_registry(self.paths.check_registry_file, paths=self.paths)
+        except RegistryError as exc:
+            print(f"config_error: checks.toml: {exc.category}", file=sys.stderr)
+            self.stats.count("config_errors")
+            if not initial:
+                self.writer.add_event(EventRecord(
+                    ts=self.clock.now(), ingest_ts=self.clock.now(), source="self",
+                    provider="ftmon.config", event_id=None, severity=2,
+                    message=f"external check registry rejected: {exc.category}",
+                ))
+            return
+        self.check_registry = registry
+        self.external_sampler.set_registry(registry)
+
     def _reload_channels(self) -> None:
         """NO-10: apply changed channel config at a delivery-attempt boundary."""
         if not self._reload_global_config:
@@ -250,6 +300,8 @@ class DaemonCore:
             self.paths.monitors_dir,
             actions_dir=self.paths.actions_dir,
             require_actions=True,
+            check_aliases=frozenset(self.check_registry),
+            require_checks=True,
         )
         now = self.clock.now()
         for path, err in errors:
@@ -420,11 +472,17 @@ class DaemonCore:
         if mono - self._last_rescan >= _RESCAN_EVERY_S:
             self._last_rescan = mono
             self._reload_channels()
+            self._reload_check_registry()
             self._load_definitions()
             self._refresh_acks()
         cache: dict = {}
         outcomes: list[EvalOutcome] = []
-        for name in self.due.due(mono, lambda _n: self._overrun()):
+        due_names = self.due.due(mono, lambda _n: self._overrun())
+        due_defs = [self.monitors[name] for name in due_names if name in self.monitors]
+        # The scheduler owns the complete due set, so it can run each alias
+        # once fairly before definitions project that immutable raw evidence.
+        self.external_sampler.prepare(due_defs, mono + 10.0)
+        for name in due_names:
             mdef = self.monitors.get(name)
             if mdef is None:
                 continue

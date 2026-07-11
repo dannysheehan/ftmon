@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import math
 import string
 import tomllib
+from collections.abc import Set
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -388,6 +390,8 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
             allowed_so = frozenset({"watchlist"})
         elif source in schema.SOURCE_OPTIONS_TOPN_SOURCES:
             allowed_so = frozenset({"top_n"})
+        elif source == "external":
+            allowed_so = schema.EXTERNAL_SOURCE_OPTIONS_KEYS
         else:
             allowed_so = frozenset()
         _check_unknown_keys(source_options_tbl, allowed_so, "source_options", errors)
@@ -433,6 +437,102 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
             )
             top_n = schema.TOP_N_DEFAULT
         source_options = {"top_n": top_n}
+    elif source == "external":
+        options = source_options_tbl or {}
+        check = options.get("check")
+        if not schema.valid_name(check):
+            errors.append(_err(
+                "source_options.check", "invalid_value",
+                f"check alias {check!r} must match {schema.NAME_RE.pattern}",
+            ))
+        entity = options.get("entity")
+        if (
+            not isinstance(entity, str)
+            or not entity
+            or len(entity) > schema.EXTERNAL_ENTITY_MAX_LEN
+        ):
+            errors.append(_err(
+                "source_options.entity", "invalid_value",
+                f"entity must be a non-empty string <= {schema.EXTERNAL_ENTITY_MAX_LEN} chars",
+            ))
+        mappings = options.get("perfdata", [])
+        if not isinstance(mappings, list):
+            errors.append(_err(
+                "source_options.perfdata", "invalid_type", "perfdata must be an array of tables",
+            ))
+            mappings = []
+        elif len(mappings) > schema.MAX_PERFDATA_MAPPINGS:
+            errors.append(_err(
+                "source_options.perfdata", "too_many_items",
+                f"perfdata has {len(mappings)} mappings; maximum is "
+                f"{schema.MAX_PERFDATA_MAPPINGS}",
+            ))
+
+        valid_mappings: list[dict] = []
+        seen_labels: set[str] = set()
+        seen_metrics: set[str] = set()
+        fixed_metrics = {"plugin_state", "plugin_ok", "duration_s"}
+        for i, item in enumerate(mappings):
+            path = f"source_options.perfdata[{i}]"
+            if not isinstance(item, dict):
+                errors.append(_err(path, "invalid_type", f"{path} must be a table"))
+                continue
+            _check_unknown_keys(item, schema.PERFDATA_KEYS, path, errors)
+            for key in ("label", "metric", "plugin_uom", "unit", "kind"):
+                if key not in item:
+                    errors.append(_err(f"{path}.{key}", "missing_key", f"missing {path}.{key}"))
+
+            label = item.get("label")
+            metric_name = item.get("metric")
+            plugin_uom = item.get("plugin_uom")
+            unit = item.get("unit")
+            kind = item.get("kind")
+            scale = item.get("scale", 1.0)
+            valid = True
+            if not isinstance(label, str) or not label:
+                errors.append(_err(f"{path}.label", "invalid_value", "label must be non-empty"))
+                valid = False
+            elif label in seen_labels:
+                errors.append(_err(f"{path}.label", "duplicate_name", f"duplicate label {label!r}"))
+                valid = False
+            else:
+                seen_labels.add(label)
+            if not schema.is_identifier(metric_name):
+                errors.append(_err(f"{path}.metric", "invalid_value",
+                                   "metric must be a bare identifier"))
+                valid = False
+            elif metric_name in fixed_metrics or metric_name in seen_metrics:
+                errors.append(_err(f"{path}.metric", "duplicate_name",
+                                   f"duplicate or reserved metric {metric_name!r}"))
+                valid = False
+            else:
+                seen_metrics.add(metric_name)
+            for key, value in (("plugin_uom", plugin_uom), ("unit", unit)):
+                if not isinstance(value, str) or not value or len(value) > 32:
+                    errors.append(_err(f"{path}.{key}", "invalid_value",
+                                       f"{key} must be a non-empty string <= 32 chars"))
+                    valid = False
+            if kind not in {"gauge", "counter"}:
+                errors.append(_err(f"{path}.kind", "invalid_value",
+                                   "kind must be gauge or counter"))
+                valid = False
+            if (not isinstance(scale, (int, float)) or isinstance(scale, bool)
+                    or not math.isfinite(scale)):
+                errors.append(_err(f"{path}.scale", "invalid_value",
+                                   "scale must be a finite number"))
+                valid = False
+            if valid:
+                valid_mappings.append({
+                    "label": label, "metric": metric_name, "plugin_uom": plugin_uom,
+                    "unit": unit, "kind": kind, "scale": float(scale),
+                })
+        source_options = {"check": check, "entity": entity, "perfdata": valid_mappings}
+
+        # External is the only source whose definition declaration depends on
+        # validated options; compose it before any NameEnv is constructed.
+        dynamic_decl = schema.external_decl(valid_mappings)
+        decl_metrics = dynamic_decl.metric_names()
+        decl_attrs = dynamic_decl.attr_names()
 
     # --- [promotion] -----------------------------------------------------------
     promotion_tbl = parsed.get("promotion")
@@ -488,6 +588,14 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
                             f"{dpath}.name",
                             "invalid_value",
                             f"derived name {dname!r} must be an identifier",
+                        )
+                    )
+                    continue
+                if dname in decl_metrics:
+                    errors.append(
+                        _err(
+                            f"{dpath}.name", "duplicate_name",
+                            f"derived name {dname!r} duplicates a source metric",
                         )
                     )
                     continue
@@ -949,6 +1057,8 @@ def load_text(
     *,
     actions_dir: Path | None = None,
     require_actions: bool = False,
+    check_aliases: Set[str] | None = None,
+    require_checks: bool = False,
 ) -> MonitorDef:
     """Parse and validate one definition.
 
@@ -970,6 +1080,15 @@ def load_text(
         action_errors = _action_errors(monitor_def, actions_dir, filename)
         if action_errors:
             raise ValidationError(action_errors)
+    if require_checks and monitor_def.source == "external":
+        alias = monitor_def.source_options["check"]
+        if check_aliases is None or alias not in check_aliases:
+            raise ValidationError([_err(
+                "source_options.check", "check_unavailable",
+                f"{filename}: external check alias {alias!r} is not available in the "
+                "administrator registry",
+                "register the executable in checks.toml before activating this monitor",
+            )])
     return monitor_def
 
 
@@ -999,23 +1118,28 @@ def _action_errors(mdef: MonitorDef, actions_dir: Path | None, filename: str) ->
 
 
 def load_file(
-    path: Path, *, actions_dir: Path | None = None, require_actions: bool = False
+    path: Path, *, actions_dir: Path | None = None, require_actions: bool = False,
+    check_aliases: Set[str] | None = None, require_checks: bool = False,
 ) -> MonitorDef:
     reject_symlink(path)  # PM-06c
     text = path.read_text(encoding="utf-8")
     return load_text(text, filename=str(path), actions_dir=actions_dir,
-                     require_actions=require_actions)
+                     require_actions=require_actions, check_aliases=check_aliases,
+                     require_checks=require_checks)
 
 
 def load_dir(
-    monitors_dir: Path, *, actions_dir: Path | None = None, require_actions: bool = False
+    monitors_dir: Path, *, actions_dir: Path | None = None, require_actions: bool = False,
+    check_aliases: Set[str] | None = None, require_checks: bool = False,
 ) -> tuple[list[MonitorDef], list[tuple[Path, ValidationError]]]:
     defs: list[MonitorDef] = []
     errors: list[tuple[Path, ValidationError]] = []
     for path in sorted(monitors_dir.glob("*.toml")):
         try:
             defs.append(load_file(path, actions_dir=actions_dir,
-                                  require_actions=require_actions))
+                                  require_actions=require_actions,
+                                  check_aliases=check_aliases,
+                                  require_checks=require_checks))
         except ValidationError as e:
             errors.append((path, e))
         except OSError as e:

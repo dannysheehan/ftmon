@@ -104,6 +104,19 @@ def cmd_init(args: argparse.Namespace) -> int:
     else:
         print(f"kept: {paths.config_file} (unchanged)")
 
+    default_registry = paths.config_dir / "checks.toml"
+    if paths.check_registry_file == default_registry and not paths.check_registry_file.exists():
+        # A concrete empty table makes "no execution authority" explicit and
+        # gives operators a discoverable starting point without granting any
+        # command through monitor definitions themselves (FS-03/EC-01).
+        atomic_write(
+            paths.check_registry_file,
+            b"# Administrator-owned external check registry.\n"
+            b"# Monitor definitions may reference aliases declared here.\n"
+            b"[check]\n",
+        )
+        print(f"wrote: {paths.check_registry_file}")
+
     # Install builtin monitors
     installed = []
     skipped = []
@@ -193,6 +206,17 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     paths = get_paths()
     errors: list[str] = []
+    check_aliases: frozenset[str] = frozenset()
+    if paths.check_registry_file.exists():
+        try:
+            from ftmon.checks.registry import load as load_check_registry
+
+            check_aliases = frozenset(load_check_registry(
+                paths.check_registry_file, paths=paths
+            ))
+        except ValueError as exc:
+            # Registry errors expose only a stable category, never argv.
+            errors.append(f"{paths.check_registry_file}: registry: {exc}")
 
     def render(file: Path, ve: Exception) -> None:
         # ValidationError carries structured errors (MD-01: file, key path,
@@ -211,7 +235,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     if args.path:
         try:
             loader.load_file(Path(args.path), actions_dir=paths.actions_dir,
-                             require_actions=True)
+                             require_actions=True, check_aliases=check_aliases,
+                             require_checks=True)
         except Exception as e:
             render(Path(args.path), e)
     else:
@@ -224,6 +249,8 @@ def cmd_check(args: argparse.Namespace) -> int:
                 d,
                 actions_dir=paths.actions_dir,
                 require_actions=d == paths.monitors_dir,
+                check_aliases=check_aliases,
+                require_checks=d == paths.monitors_dir,
             )
             for file, ve in file_errors:
                 render(file, ve)
@@ -404,13 +431,26 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     from ftmon.definitions import manage
 
     paths = get_paths()
+    check_aliases: frozenset[str] = frozenset()
+    if paths.check_registry_file.exists():
+        try:
+            from ftmon.checks.registry import load as load_check_registry
+
+            check_aliases = frozenset(load_check_registry(
+                paths.check_registry_file, paths=paths
+            ))
+        except ValueError:
+            # Approval must fail closed; doctor carries the redacted category.
+            pass
     try:
         if args.action == "approve":
-            target = manage.approve_draft(paths, args.name)
+            target = manage.approve_draft(paths, args.name, check_aliases=check_aliases)
             print(f"approved: {target} (the daemon picks it up within 30s)")
         else:
             enabled = args.action == "enable"
-            target = manage.set_enabled(paths, args.name, enabled)
+            target = manage.set_enabled(
+                paths, args.name, enabled, check_aliases=check_aliases
+            )
             print(f"{'enabled' if enabled else 'disabled'}: {target}")
         return 0
     except manage.ManageError as e:
@@ -458,6 +498,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 1
     config, config_warnings = load_config(paths.config_file)
     config_errors = list(config_warnings)
+    check_aliases: frozenset[str] = frozenset()
+    registry_status = "disabled (registry missing)"
+    if paths.check_registry_file.exists():
+        try:
+            from ftmon.checks.registry import load as load_check_registry
+
+            registry = load_check_registry(paths.check_registry_file, paths=paths)
+            check_aliases = frozenset(registry)
+            registry_status = f"ready ({len(registry)} aliases)"
+        except ValueError as exc:
+            registry_status = f"error ({exc})"
+            config_errors.append(f"external check registry: {exc}")
     channel_errors = {
         warning.split("]", 1)[0].removeprefix("[notify.")
         for warning in config_warnings if warning.startswith("[notify.")
@@ -465,7 +517,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if any(warning.startswith("config.toml unreadable") for warning in config_warnings):
         channel_errors.update(name for name, _channel in config.channels)
     _defs, definition_errors = loader.load_dir(
-        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True,
+        check_aliases=check_aliases, require_checks=True,
     )
     config_errors.extend(f"{path}: {error}" for path, error in definition_errors)
     conn = connect(paths.db_file)
@@ -487,6 +540,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for cursor in report["cursors"]:
         print(f"Cursor {cursor['source']}: {cursor['age_s']:.0f}s old")
     print("Notification file: ready")
+    print(f"External checks: {registry_status}")
     for name, channel in config.channels:
         # A stable code is useful to automation; resolver prose remains only a
         # redacted diagnostic and doctor never sends a probe message (NO-10).

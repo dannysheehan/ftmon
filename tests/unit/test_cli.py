@@ -40,6 +40,9 @@ class TestInit:
         cfg_dir = tmp_path / "cfg"
         assert cfg_dir.is_dir()
         assert (cfg_dir / "config.toml").exists()
+        registry = cfg_dir / "checks.toml"
+        assert registry.read_text().endswith("[check]\n")
+        assert registry.stat().st_mode & 0o777 == 0o600
 
         # Check content has the right sections
         content = (cfg_dir / "config.toml").read_text()

@@ -14,6 +14,7 @@ user-editable at any moment, so trust nothing that was validated earlier
 from __future__ import annotations
 
 import re
+from collections.abc import Set
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,13 +38,16 @@ class ManageError(Exception):
 
 
 def _validate_text(
-    toml_text: str, *, paths: Paths | None = None, require_actions: bool = False
+    toml_text: str, *, paths: Paths | None = None, require_actions: bool = False,
+    check_aliases: Set[str] | None = None, require_checks: bool = False,
 ) -> loader.MonitorDef:
     try:
         return loader.load_text(
             toml_text,
             actions_dir=paths.actions_dir if paths is not None else None,
             require_actions=require_actions,
+            check_aliases=check_aliases,
+            require_checks=require_checks,
         )
     except loader.ValidationError as e:
         raise ManageError(
@@ -74,7 +78,9 @@ def write_draft(paths: Paths, toml_text: str) -> Path:
     return draft
 
 
-def approve_draft(paths: Paths, name: str) -> Path:
+def approve_draft(
+    paths: Paths, name: str, *, check_aliases: Set[str] | None = None
+) -> Path:
     """PM-06(d): re-validate the draft, then rename() into monitors/ —
     atomic on the same filesystem, and it FAILS if the target appeared in
     the meantime (the approval race in TS-05) rather than clobbering it."""
@@ -86,7 +92,10 @@ def approve_draft(paths: Paths, name: str) -> Path:
             hint="ftmon monitors lists drafts; define_monitor creates them",
         )
     reject_symlink(draft)  # PM-06c
-    _validate_text(draft.read_text(), paths=paths, require_actions=True)
+    _validate_text(
+        draft.read_text(), paths=paths, require_actions=True,
+        check_aliases=check_aliases, require_checks=True,
+    )
     target = paths.monitors_dir / f"{name}.toml"
     if target.exists():
         raise ManageError(
@@ -117,7 +126,9 @@ _ENABLED_LINE = re.compile(r"^(\s*enabled\s*=\s*)(true|false)(\s*(#.*)?)$",
                            re.MULTILINE)
 
 
-def set_enabled(paths: Paths, name: str, enabled: bool) -> Path:
+def set_enabled(
+    paths: Paths, name: str, enabled: bool, *, check_aliases: Set[str] | None = None
+) -> Path:
     """MD-05: disabling is a one-line edit with the key retained in place —
     the file (and its git history) stays where the user put it. Done by
     textual substitution, not TOML re-serialization, so comments and
@@ -140,6 +151,12 @@ def set_enabled(paths: Paths, name: str, enabled: bool) -> Path:
             message=f"{target} has no `enabled = true|false` line to edit",
             hint="add `enabled = true` under [monitor] and retry",
         )
-    _validate_text(new_text, paths=paths, require_actions=True)
+    _validate_text(
+        new_text, paths=paths, require_actions=True,
+        check_aliases=check_aliases,
+        # Removing execution from the schedule must remain possible even when
+        # its administrator registry entry has already disappeared.
+        require_checks=enabled,
+    )
     atomic_write(target, new_text.encode())
     return target

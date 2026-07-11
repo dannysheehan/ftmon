@@ -64,6 +64,20 @@ class SelfSampler:
             "source_activity_age_s": s.source_activity_age_s,
             "eval_unknown_total": float(s.counters.get("eval_unknown_total", 0)),
             "samples_rejected": float(s.counters.get("samples_rejected", 0)),
+            "external_checks_skipped": float(
+                s.counters.get("external_checks_skipped", 0)
+            ),
+            # Category suffixes remain available in SelfStats for diagnosis;
+            # the persisted self entity exposes bounded totals so plugin output
+            # cannot create an unbounded metric namespace.
+            "external_check_failures": float(sum(
+                value for name, value in s.counters.items()
+                if name.startswith("external_check_failures:")
+            )),
+            "external_perfdata_rejected": float(sum(
+                value for name, value in s.counters.items()
+                if name.startswith("external_perfdata_rejected:")
+            )),
         }
         entity = EntitySample(entity_id="ftmon", attrs={}, metrics=metrics)
         return Snapshot(source=self.decl.name, ts=now, entities=(entity,))
