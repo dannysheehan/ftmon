@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import tomllib
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode
 
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -18,13 +21,13 @@ from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
 from ftmon.clock import SystemClock
-from ftmon.definitions import loader, manage
+from ftmon.definitions import loader
 from ftmon.expr import ExprError, parse_duration
 from ftmon.model import severity_name
 from ftmon.paths import Paths, get_paths
 from ftmon.sources.base import SOURCE_DECLS
 from ftmon.store.db import connect
-from ftmon.store.query import Query, SmallWrites
+from ftmon.store.query import Query
 
 _CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
 _jinja = Environment(loader=PackageLoader("ftmon.web", "templates"),
@@ -72,6 +75,7 @@ def _render(name: str, request: Request, **context) -> HTMLResponse:
         request=request,
         severity_name=severity_name,
         utc_iso=lambda ts: datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d %H:%M UTC"),
+        demo=getattr(request.app.state, "demo", False),
     )
     return HTMLResponse(_jinja.get_template(name).render(**context))
 
@@ -82,7 +86,14 @@ def _query(request: Request, *, writable: bool = False):
     if not paths.db_file.exists():
         yield None
         return
-    conn = connect(paths.db_file, readonly=not writable)
+    if getattr(request.app.state, "demo", False):
+        # immutable=1 tells SQLite never to create WAL/SHM sidecars. This is a
+        # second write barrier beneath the GET-only route construction.
+        conn = sqlite3.connect(f"file:{paths.db_file}?mode=ro&immutable=1", uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+    else:
+        conn = connect(paths.db_file, readonly=not writable)
     try:
         yield Query(conn) if not writable else conn
     finally:
@@ -101,17 +112,84 @@ def _status(request: Request, q: Query | None) -> dict:
 
 async def dashboard(request: Request):
     paths = request.app.state.paths
-    defs, errors = loader.load_dir(
-        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
-    )
     with _query(request) as q:
+        if getattr(request.app.state, "demo", False):
+            defs, errors = _demo_definitions(q)
+        else:
+            defs, errors = loader.load_dir(
+                paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+            )
         status = _status(request, q)
         incidents = [] if q is None else q.incidents(state=None)
         incidents = [r for r in incidents if r["state"] != "cleared"][:10]
-        tiles = _monitor_tiles(defs, errors, q, status)
+        tiles = (
+            _demo_monitor_tiles(defs, q)
+            if getattr(request.app.state, "demo", False)
+            else _monitor_tiles(defs, errors, q, status)
+        )
     return _render("dashboard.html", request, title="Dashboard", status=status,
                    tiles=tiles, config_errors=errors, incidents=incidents,
                    refresh_ms=5000)
+
+
+def _demo_definitions(q: Query | None):
+    """Recover synthetic presentation metadata without reading host config."""
+    if q is None:
+        return [], []
+    rows = q._conn.execute(
+        "SELECT normalized FROM monitor_loads ml WHERE loaded_ts=("
+        "SELECT MAX(loaded_ts) FROM monitor_loads WHERE monitor=ml.monitor) "
+        "ORDER BY monitor"
+    ).fetchall()
+    definitions = []
+    for row in rows:
+        try:
+            definitions.append(loader.load_text(row["normalized"], "<synthetic-demo>"))
+        except loader.ValidationError:
+            # The seeded builder stores only a JSON presentation summary, not
+            # user configuration. Load matching packaged metadata so public
+            # Trends acquire declared meaning without consulting host files.
+            try:
+                summary = json.loads(row["normalized"])
+                resource = Path(__file__).parents[1] / "definitions/builtins" / (
+                    f"{summary['name']}.toml"
+                )
+                mdef = loader.load_text(resource.read_text(), "<packaged-demo-metadata>")
+                definitions.append(replace(mdef, enabled=bool(summary["enabled"])))
+            except (KeyError, OSError, TypeError, ValueError, loader.ValidationError):
+                # The builder verifies coverage; malformed synthetic metadata
+                # is omitted rather than exposing filesystem diagnostics.
+                continue
+    return definitions, []
+
+
+def _demo_monitor_tiles(definitions, q: Query | None) -> list[MonitorTile]:
+    """Render seeded examples independently of real daemon precedence (UI-16)."""
+    if q is None:
+        return []
+    row = q._conn.execute(
+        "SELECT value FROM meta WHERE key='demo_monitor_states'"
+    ).fetchone()
+    summaries = json.loads(row["value"]) if row else {}
+    live = {
+        row["monitor"]: row["count"]
+        for row in q._conn.execute(
+            "SELECT monitor,COUNT(*) count FROM incidents WHERE state!='cleared' GROUP BY monitor"
+        )
+    }
+    presentation = {
+        "clear": ("✓", "clear"), "warning": ("▲", "warning"),
+        "error": ("✖", "error"), "disabled": ("●", "disabled"),
+    }
+    tiles = []
+    for mdef in definitions:
+        state = summaries.get(mdef.name, "unknown")
+        icon, label = presentation.get(state, ("?", "unknown"))
+        tiles.append(MonitorTile(
+            mdef.name, mdef.description, mdef.enabled,
+            state, icon, label, live.get(mdef.name, 0), None, mdef.trends,
+        ))
+    return sorted(tiles, key=lambda tile: tile.name)
 
 
 def _monitor_tiles(defs, errors, q: Query | None, status: dict) -> list[MonitorTile]:
@@ -184,7 +262,7 @@ async def incident_detail(request: Request):
     if row is None:
         return Response("Incident not found", status_code=404)
     trend_profile = next((
-        profile for mdef, profile in _trend_catalog(request.app.state.paths)
+        profile for mdef, profile in _trend_catalog(request)
         if mdef.name == row["monitor"]
         and (profile.incident_group is None or profile.incident_group == row["grp"])
     ), None)
@@ -194,6 +272,8 @@ async def incident_detail(request: Request):
 
 
 async def ack(request: Request):
+    from ftmon.store.query import SmallWrites
+
     iid = int(request.path_params["id"])
     form = parse_qs((await request.body()).decode(errors="replace"))
     with _query(request, writable=True) as conn:
@@ -418,16 +498,23 @@ def _trend_request(request: Request) -> tuple[str | None, float, float, str] | R
     return entity, now - seconds, now, range_text
 
 
-def _trend_catalog(paths: Paths):
+def _trend_catalog(request: Request):
     """Load profile owners together so cross-monitor IDs never collide."""
+    if getattr(request.app.state, "demo", False):
+        return [
+            (mdef, profile)
+            for mdef in request.app.state.demo_definitions
+            for profile in mdef.trends
+        ]
+    paths = request.app.state.paths
     defs, _errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
     )
     return [(mdef, profile) for mdef in defs for profile in mdef.trends]
 
 
-def _selected_profile(paths: Paths, monitor: str | None, profile_id: str | None):
-    catalog = _trend_catalog(paths)
+def _selected_profile(request: Request, monitor: str | None, profile_id: str | None):
+    catalog = _trend_catalog(request)
     if monitor and profile_id:
         return next(((m, p) for m, p in catalog
                      if m.name == monitor and p.id == profile_id), None)
@@ -442,7 +529,7 @@ async def disk_trend_api(request: Request):
     entity, start, end, range_text = parsed
     if not entity:
         return Response("entity is required", status_code=400)
-    selected = _selected_profile(request.app.state.paths, "disk", "space-growth")
+    selected = _selected_profile(request, "disk", "space-growth")
     mdef = selected[0] if selected else None
     filling_frac = mdef.parameters.get("filling_frac", 0.85) if mdef else 0.85
     with _query(request) as q:
@@ -467,7 +554,7 @@ async def trend_api(request: Request):
     entity, start, end, range_text = parsed
     monitor = request.query_params.get("monitor")
     profile_id = request.query_params.get("profile")
-    selected = _selected_profile(request.app.state.paths, monitor, profile_id)
+    selected = _selected_profile(request, monitor, profile_id)
     if not entity or selected is None:
         return Response("monitor, profile, and entity are required", status_code=400)
     mdef, profile = selected
@@ -493,8 +580,8 @@ async def trends(request: Request):
     selection = request.query_params.get("selection", "")
     if "/" in selection:
         monitor, profile_id = selection.split("/", 1)
-    catalog = _trend_catalog(request.app.state.paths)
-    selected = _selected_profile(request.app.state.paths, monitor, profile_id)
+    catalog = _trend_catalog(request)
+    selected = _selected_profile(request, monitor, profile_id)
     mdef, profile = selected if selected else (None, None)
     with _query(request) as q:
         entities = [] if q is None or mdef is None else [
@@ -554,6 +641,10 @@ async def monitors(request: Request):
 
 
 async def monitor_action(request: Request):
+    # Keep definition writers outside module import time: the public demo
+    # imports shared read handlers but must never import a mutation capability.
+    from ftmon.definitions import manage
+
     name, action = request.path_params["name"], request.path_params["action"]
     try:
         if action == "approve":
@@ -624,6 +715,16 @@ def run(_args=None) -> int:
     """Serve only on loopback (UI-01)."""
     import uvicorn
     paths = get_paths()
-    port = configured_port(paths)
+    if _args is not None and getattr(_args, "demo", False):
+        from ftmon.web.demo_app import create_demo_app
+
+        port = _args.port or 8420
+        uvicorn.run(
+            create_demo_app(Path(_args.demo_db), _args.demo_host),
+            host="127.0.0.1",
+            port=port,
+        )
+        return 0
+    port = (_args.port if _args is not None else None) or configured_port(paths)
     uvicorn.run(create_app(paths, port=port), host="127.0.0.1", port=port)
     return 0

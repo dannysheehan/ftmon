@@ -1,6 +1,6 @@
 """Command-line interface (CL-01..05).
 
-Entry point: main(argv). Subcommands: version, init, check, status, and
+Entry point: main(argv). Subcommands: version, init, check, status, demo build, and
 stubs for daemon/mcp/web/top/incidents/etc. All read paths work with daemon
 down (PM-01). Every subcommand that produces lists supports --json (CL-03).
 Status exit codes: 0 all-clear, 1 warnings, 2 errors+ (CL-04).
@@ -524,6 +524,7 @@ def main(argv: list[str] | None = None) -> int:
     - init: setup paths and install defaults
     - check [file]: validate definitions
     - status: daemon status (exit code 0/1/2 per CL-04)
+    - demo build: atomically create deterministic synthetic demonstration data
     - daemon, mcp, web, top, incidents, etc.: stubs (return 2)
     """
     parser = argparse.ArgumentParser(
@@ -592,10 +593,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # web
-    subparsers.add_parser(
+    web_parser = subparsers.add_parser(
         "web",
         help="Run the web dashboard (http://localhost:8420)"
     )
+    web_parser.add_argument(
+        "--demo", action="store_true",
+        help="serve only a validated synthetic database through the GET-only demo app",
+    )
+    web_parser.add_argument("--demo-db", type=Path, help="synthetic demo database")
+    web_parser.add_argument("--demo-host", help="exact public demo hostname")
+    web_parser.add_argument("--port", type=int, help="loopback listen port")
 
     # top
     subparsers.add_parser(
@@ -690,7 +698,24 @@ def main(argv: list[str] | None = None) -> int:
         help="Backup database to this path"
     )
 
+    demo_parser = subparsers.add_parser(
+        "demo", help="Build deterministic synthetic public-demo data"
+    )
+    demo_subparsers = demo_parser.add_subparsers(dest="demo_command", required=True)
+    demo_build = demo_subparsers.add_parser(
+        "build", help="Atomically build a marked synthetic SQLite database"
+    )
+    demo_build.add_argument("--output", required=True, type=Path, metavar="PATH")
+
     args = parser.parse_args(argv)
+
+    if args.command == "web" and args.demo:
+        if args.demo_db is None or args.demo_host is None:
+            parser.error("web --demo requires --demo-db and --demo-host")
+    elif args.command == "web" and (args.demo_db is not None or args.demo_host is not None):
+        parser.error("--demo-db and --demo-host require web --demo")
+    if args.command == "web" and args.port is not None and not 1 <= args.port <= 65535:
+        parser.error("web --port must be between 1 and 65535")
 
     # Dispatch to handler
     if args.command == "version":
@@ -743,6 +768,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_baseline(args)
     elif args.command == "doctor":
         return cmd_doctor(args)
+    elif args.command == "demo":
+        from ftmon.demo import build
+
+        output = build(args.output)
+        print(f"built synthetic demo database: {output}")
+        return 0
     else:
         parser.print_help()
         return 1

@@ -70,3 +70,9 @@ def test_offline_web_brand_assets_are_packaged_ui_01():
         b"\x89PNG\r\n\x1a\n"
     )
     assert brand.joinpath("favicon.ico").read_bytes().startswith(b"\x00\x00\x01\x00")
+
+
+def test_versioned_demo_scenario_is_packaged_ui_16():
+    """[UI-16] Deployment builds never depend on a source checkout fixture."""
+    scenario = files("ftmon.scenarios").joinpath("demo-v1.jsonl").read_text()
+    assert '"scenario":"demo-v1"' in scenario.splitlines()[0]

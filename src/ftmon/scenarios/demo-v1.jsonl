@@ -1,0 +1,16 @@
+{"type":"header","scenario":"demo-v1","version":1,"seed":20260711,"now":1783728000,"host":"demo-host"}
+{"type":"monitor","name":"load","state":"clear","enabled":true}
+{"type":"monitor","name":"disk","state":"warning","enabled":true}
+{"type":"monitor","name":"leak","state":"error","enabled":true}
+{"type":"monitor","name":"service","state":"disabled","enabled":false}
+{"type":"series","monitor":"load","entity":"system","metric":"load1","unit":"ratio","durable":true,"start":0.22,"step":0.001,"jitter":0.03}
+{"type":"series","monitor":"disk","entity":"mount:/srv/demo","metric":"used_pct","unit":"percent","durable":true,"start":88,"step":0.04,"jitter":0.02}
+{"type":"series","monitor":"disk","entity":"mount:/srv/demo","metric":"free_bytes","unit":"bytes","durable":true,"start":55834574848,"step":-67108864,"jitter":8388608}
+{"type":"series","monitor":"disk","entity":"mount:/srv/demo","metric":"fill_rate_bph","unit":"bytes/hour","durable":true,"start":67108864,"step":0,"jitter":4194304,"gap":[72,78]}
+{"type":"series","monitor":"disk","entity":"mount:/srv/demo","metric":"filling","unit":"ratio","durable":true,"start":0.92,"step":0,"jitter":0.025,"gap":[72,78]}
+{"type":"series","monitor":"leak","entity":"process:demo-worker","metric":"rss_mb","unit":"MiB","durable":false,"start":128,"step":2,"jitter":0.25}
+{"type":"series","monitor":"leak","entity":"process:demo-worker","metric":"rss_slope_mbph","unit":"MiB/hour","durable":false,"start":144,"step":0,"jitter":4,"gap":[116,121]}
+{"type":"series","monitor":"leak","entity":"process:demo-worker","metric":"rss_growth_confidence","unit":"ratio","durable":false,"start":0.89,"step":0,"jitter":0.03,"gap":[116,121]}
+{"type":"incident","id":1,"monitor":"disk","group":"space","entity":"mount:/srv/demo","state":"open","severity":2,"opened_offset":-21600,"changed_offset":-1800}
+{"type":"incident","id":2,"monitor":"leak","group":"leak","entity":"process:demo-worker","state":"open","severity":3,"opened_offset":-10800,"changed_offset":-900}
+{"type":"incident","id":3,"monitor":"load","group":"load-spike","entity":"system","state":"cleared","severity":1,"opened_offset":-172800,"changed_offset":-169200,"cleared_offset":-169200}
