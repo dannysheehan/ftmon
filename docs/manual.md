@@ -100,9 +100,9 @@ ftmon check             # validate definitions (run after editing)
 ftmon incidents         # open/acked problems (--all includes cleared)
 ftmon ack 42            # stop re-notifying, keep watching
 ftmon baseline reset leak         # forget learned "normal" (e.g. after an upgrade)
+ftmon events --min-severity error   # stored journal events (--provider, --hours)
 ftmon incident 42       # full story of one incident        (soon)
 ftmon top rss --range 3h  # what was eating memory          (soon)
-ftmon events --min-severity error                          # (M3)
 ftmon doctor            # database health, backup           (M6)
 ```
 
@@ -136,6 +136,21 @@ go quiet while relearning rather than firing against the old normal.
 FTMON keeps raw minute-level history for 48 h, 5-minute summaries for a
 month, and hourly summaries for about a year, pruning automatically to stay
 inside the 200 MB budget. Incident history is never pruned.
+
+**Journal events** (the `events` monitor) watch the systemd journal live.
+Not everything is stored — only entries at notice level and above, or ones
+matching an event rule — so the database holds what matters, not the whole
+journal (that's what `journalctl` is for). A matching entry opens an
+*episode*: repeats within the cooldown just count up ("12x since open"),
+and the episode closes itself after 30 quiet minutes without a popup. A
+log-spamming app is automatically collapsed after 100 stored events/minute.
+
+**Services and sockets** (`service`, `net`) are watchlist-driven: they do
+nothing until you name targets in their TOML —
+`{ unit = "syncthing.service" }`, `{ process = "^ssh-agent$" }`,
+`{ listen = "tcp:22" }`. A `during = "09:00-18:00"` field scopes a check to
+working hours (a backup service *should* be dead at noon). Connection
+totals are baselined, so `net` learns your normal before it warns.
 
 ## 5. The web UI *(arrives with M5)*
 

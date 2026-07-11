@@ -28,8 +28,17 @@ class Sampler(Protocol):
 class EventSource(Protocol):
     decl: ClassVar[SourceDecl]
 
-    def start(self, cursor: str | None) -> None: ...
-    def drain(self, max_items: int) -> tuple[list[EventRecord], str | None]: ...
+    def start(self, cursor: str | None) -> None:
+        """Begin producing from `cursor` (DM-15); None = start at now, no
+        historical backfill."""
+        ...
+
+    def drain(self, now: float, max_items: int) -> tuple[list[EventRecord], str | None]:
+        """Up to max_items queued events (ingest order) and the cursor after
+        the last one. `now` stamps ingest_ts — same deviation from the design
+        signature as Sampler.sample: sources must not read clocks (TS-03)."""
+        ...
+
     def alive(self) -> bool: ...
     def stop(self) -> None: ...
 

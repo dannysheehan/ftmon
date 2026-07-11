@@ -314,6 +314,51 @@ def cmd_ack(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_events(args: argparse.Namespace) -> int:
+    """List stored events (CL-01, DM-09). What's here is what passed the
+    store-filter: severity >= notice or rule-matched — not the full journal
+    (that's what journalctl is for)."""
+    paths = get_paths()
+    if not paths.db_file.exists():
+        print("no data - is the daemon running? (ftmon daemon)", file=sys.stderr)
+        return 1
+    from ftmon.clock import SystemClock
+    from ftmon.model import SEVERITIES, severity_name
+    from ftmon.store.db import connect
+    from ftmon.store.query import Query
+
+    min_sev = 0
+    if args.min_severity:
+        if args.min_severity not in SEVERITIES:
+            print(f"unknown severity {args.min_severity!r}; use one of "
+                  f"{', '.join(SEVERITIES)}", file=sys.stderr)
+            return 1
+        min_sev = SEVERITIES.index(args.min_severity)
+
+    now = SystemClock().now()
+    conn = connect(paths.db_file, readonly=True)
+    try:
+        rows = Query(conn).events(
+            start=now - args.hours * 3600, end=now,
+            min_severity=min_sev, provider=args.provider, limit=args.limit,
+        )
+    finally:
+        conn.close()
+    if args.json:
+        print(json.dumps([dict(r) for r in rows]))
+        return 0
+    if not rows:
+        print("no stored events in range")
+        return 0
+    for r in rows:
+        from datetime import datetime
+
+        when = datetime.fromtimestamp(r["ts"]).strftime("%m-%d %H:%M:%S")
+        print(f"{when} {severity_name(r['severity']):<8} "
+              f"{r['provider']:<20} {r['message']}")
+    return 0
+
+
 def cmd_baseline(args: argparse.Namespace) -> int:
     """CA-06: `ftmon baseline reset <monitor> [entity]` clears learned
     baselines so they relearn from scratch (they return unknown while
@@ -452,10 +497,17 @@ def main(argv: list[str] | None = None) -> int:
     ack_parser.add_argument("--note", help="Acknowledgment note")
 
     # events
-    subparsers.add_parser(
+    events_parser = subparsers.add_parser(
         "events",
-        help="List raw events (log source samples)"
+        help="List stored events (journal entries that passed the store-filter)"
     )
+    events_parser.add_argument("--min-severity", metavar="LEVEL",
+                               help="info|notice|warning|error|critical")
+    events_parser.add_argument("--provider", help="Filter by producer")
+    events_parser.add_argument("--hours", type=float, default=24.0,
+                               help="Look back this many hours (default 24)")
+    events_parser.add_argument("--limit", type=int, default=200)
+    events_parser.add_argument("--json", action="store_true", help="Output JSON")
 
     # query
     subparsers.add_parser(
@@ -545,9 +597,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "ack":
         return cmd_ack(args)
     elif args.command == "events":
-        print("events: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        return cmd_events(args)
     elif args.command == "query":
         print("query: not implemented yet (arrives in a later milestone)",
               file=sys.stderr)

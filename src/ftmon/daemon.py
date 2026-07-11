@@ -23,6 +23,7 @@ from ftmon.config import AppConfig, load_config
 from ftmon.definitions.loader import MonitorDef
 from ftmon.engine import incidents as inc
 from ftmon.engine.effects import EffectExecutor
+from ftmon.engine.events import EventEngine
 from ftmon.engine.pipeline import EvalOutcome, Pipeline
 from ftmon.engine.rings import RingStore
 from ftmon.engine.scheduler import DueTable, Scheduler
@@ -31,9 +32,12 @@ from ftmon.notify import FileNotifier
 from ftmon.notify.base import Notifier
 from ftmon.paths import Paths, get_paths
 from ftmon.selfmon import SelfSampler, SelfStats
+from ftmon.sources.base import EventSource
 from ftmon.sources.disk import DiskSampler
+from ftmon.sources.net import NetSampler
 from ftmon.sources.process import ProcessSampler
 from ftmon.sources.system import SystemSampler
+from ftmon.sources.unit import UnitSampler
 from ftmon.store import db as store_db
 from ftmon.store.outbox import Outbox
 from ftmon.store.retention import BaselineLookup, Retention
@@ -56,6 +60,10 @@ class DaemonCore:
     monitors: dict[str, MonitorDef] = field(default_factory=dict)
     notifiers: list[Notifier] | None = None
     config: AppConfig | None = None  # None = load from paths.config_file
+    # None = no event pipeline (most unit tests). Production run() passes
+    # JournaldEventSource; --fixtures passes FixtureEventSource. Injected
+    # rather than built here so DaemonCore never spawns journalctl in tests.
+    event_source: EventSource | None = None
     stop: bool = False
 
     def __post_init__(self) -> None:
@@ -73,6 +81,8 @@ class DaemonCore:
             "process": ProcessSampler(self.clock),
             "disk": DiskSampler(self.clock),
             "system": SystemSampler(self.clock),
+            "unit": UnitSampler(self.clock),
+            "net": NetSampler(self.clock),
             "self": SelfSampler(self.stats, self.paths.db_file),
         }
         # Rollups/retention/baselines (DM-04/05, CA-05) run in-daemon; the
@@ -97,9 +107,33 @@ class DaemonCore:
         self._istates: dict[IncidentKey, GroupState] = {}
         self._group_rungs: dict[tuple[str, str], tuple[inc.RungConfig, ...]] = {}
         self._last_rescan = -_RESCAN_EVERY_S
+        # Event pipeline (M3): engine exists iff a source was injected;
+        # started lazily once an events-source monitor is actually loaded.
+        self.event_monitors: dict[str, MonitorDef] = {}
+        self.events_engine = (
+            EventEngine(source=self.event_source, executor=self.executor,
+                        counter=self.stats.count)
+            if self.event_source is not None else None
+        )
         self._load_definitions(initial=True)
         self._rebuild_incidents()
+        if self.events_engine is not None and self.event_monitors:
+            self._start_events()
         self.outbox.recover(self.clock.now())  # NO-04 startup pass
+
+    def _start_events(self) -> None:
+        """DM-15: resume from the persisted cursor; rebuild open episodes so
+        a restart cannot re-open (and re-notify) a live one."""
+        assert self.events_engine is not None
+        row = self.conn.execute(
+            "SELECT cursor FROM cursors WHERE source = ?",
+            (self.events_engine.cursor_name,),
+        ).fetchone()
+        self.events_engine.start(row["cursor"] if row else None)
+        rows = self.conn.execute(
+            "SELECT * FROM incidents WHERE state IN ('open', 'acked')"
+        ).fetchall()
+        self.events_engine.rebuild(rows, list(self.event_monitors.values()))
 
     def _load_definitions(self, initial: bool = False) -> None:
         """PM-04: apply adds/changes/removes; an invalid file keeps the
@@ -114,6 +148,18 @@ class DaemonCore:
         seen = set()
         for mdef in defs:
             seen.add(mdef.name)
+            if mdef.source == "events":
+                # Event monitors have no sampler/rings/schedule: the event
+                # engine consumes them every tick against the live stream.
+                current = self.event_monitors.get(mdef.name)
+                if current is not None and current.content_hash == mdef.content_hash:
+                    continue
+                if current is not None and self.events_engine is not None:
+                    self.events_engine.supersede(mdef.name, now)  # MD-06
+                self.event_monitors[mdef.name] = mdef
+                self.writer.record_monitor_load(mdef.name, now, mdef.content_hash,
+                                                mdef.normalized_toml)
+                continue
             if mdef.source not in self.samplers:
                 if initial:
                     print(
@@ -143,6 +189,10 @@ class DaemonCore:
             del self.monitors[name]
             self.due.remove(name)
             self.rings.forget_monitor(name)
+        for name in [n for n in self.event_monitors if n not in seen]:
+            if self.events_engine is not None:
+                self.events_engine.supersede(name, now)  # MD-09
+            del self.event_monitors[name]
 
     def _index_groups(self, mdef: MonitorDef) -> None:
         """Rung configs per (monitor, group), severity-descending — the
@@ -193,6 +243,8 @@ class DaemonCore:
             "SELECT * FROM incidents WHERE state IN ('open', 'acked')"
         ).fetchall()
         for row in rows:
+            if row["monitor"] in self.event_monitors:
+                continue  # episode incidents rebuild in _start_events (IN-08)
             key = (row["monitor"], row["entity_id"], row["grp"])
             cfg = self._group_cfg(*key)
             now = self.clock.now()
@@ -246,6 +298,8 @@ class DaemonCore:
                 self._istates[key] = GroupState(
                     rungs=st.rungs, core=replace(core, state="acked")
                 )
+        if self.events_engine is not None:
+            self.events_engine.refresh_acks(acked)
 
     def on_tick(self, wall: float, mono: float, gap_s: float) -> None:
         started = self.clock.monotonic()
@@ -267,6 +321,14 @@ class DaemonCore:
                 self.pipeline.run_monitor(mdef, wall, mono + 10.0, self.writer, cache)
             )
         self._step_incidents(outcomes, wall)
+        if self.events_engine is not None and self.event_monitors:
+            if not self.events_engine._started:
+                self._start_events()  # an events monitor appeared on rescan
+            self.events_engine.tick(list(self.event_monitors.values()), wall,
+                                    mono, self.writer)
+            self.stats.event_queue_depth = self.events_engine.queue_depth
+            self.stats.events_dropped = self.events_engine.dropped
+            self.stats.source_activity_age_s = self.events_engine.last_activity_age_s
         for monitor, entity_id in self.pipeline.drain_gone():
             self._clear_gone(monitor, entity_id, wall)
         for ev in self.pipeline.drain_self_events():
@@ -356,18 +418,32 @@ def run(args) -> int:
     # notification daemon is reachable. DaemonCore tests run file-only.
     from ftmon.notify import DesktopNotifier
 
+    # Event source before core construction: DaemonCore starts the event
+    # engine (cursor resume, episode rebuild) inside __post_init__.
+    scn = None
+    if getattr(args, "fixtures", None):
+        from ftmon.sources import fixtures
+
+        scn = fixtures.scenario(args.fixtures)
+        event_source: EventSource | None = (
+            fixtures.FixtureEventSource(scn) if scn.events else None)
+    else:
+        from ftmon.sources.journald import JournaldEventSource
+
+        event_source = JournaldEventSource()
+
     core = DaemonCore(
         paths=paths,
         clock=clock,
         notifiers=[FileNotifier(paths.notifications_file), DesktopNotifier()],
+        event_source=event_source,
     )
 
-    if getattr(args, "fixtures", None):
+    if scn is not None:
         # TS-04/TS-05: replace live samplers with scenario replay. In-place
         # update — the pipeline holds a reference to this same dict.
         from ftmon.sources import fixtures
 
-        scn = fixtures.scenario(args.fixtures)
         core.samplers.update(fixtures.fixture_samplers(scn))
         print(f"fixtures: {args.fixtures} ({', '.join(sorted(scn.sources()))})",
               file=sys.stderr)
@@ -379,7 +455,10 @@ def run(args) -> int:
     signal.signal(signal.SIGINT, _stop)
 
     tick_s = core.config.tick_seconds if core.config else 5.0
-    print(f"ftmon daemon started ({len(core.monitors)} monitors)", file=sys.stderr)
+    total = len(core.monitors) + len(core.event_monitors)
+    print(f"ftmon daemon started ({total} monitors)", file=sys.stderr)
     core.run_loop(tick_s)
+    if core.events_engine is not None:
+        core.events_engine.stop()  # reap the journalctl reader
     print("ftmon daemon stopped", file=sys.stderr)
     return 0

@@ -70,9 +70,11 @@ def test_sampler_state_in_force_and_t0_anchor(tmp_path):
 
 def test_named_library_and_unknown(tmp_path):
     assert set(SCENARIO_NAMES) == {
-        "steady", "firefox-leak-2mb-min", "entity-vanishes-mid-incident"}
+        "steady", "firefox-leak-2mb-min", "entity-vanishes-mid-incident",
+        "oom-event-burst"}
     for name in SCENARIO_NAMES:
         assert scenario(name).sources() == {"process"}
+    assert len(scenario("oom-event-burst").events) == 12
     with pytest.raises(ValueError, match="unknown scenario"):
         scenario("nope")
     # a path is accepted wherever a name is (the CLI --fixtures contract)

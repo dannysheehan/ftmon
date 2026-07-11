@@ -275,13 +275,14 @@ class TestNotImplemented:
     # NOTE: "daemon" left this list when it became real (M1/WP6); its core is
     # tested in test_engine.py with a FakeClock - invoking it here would
     # start the actual scheduler loop and hang the suite.
+    # NOTE: "events" left this list in M3 (cmd_events); "daemon" in M1;
+    # "incidents"/"ack" in M2a; "baseline" in M2b.
     @pytest.mark.parametrize(
         "cmd",
         [
             "mcp",
             "web",
             "top",
-            "events",
             "query",
             "monitors",
             "doctor",

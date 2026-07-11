@@ -97,6 +97,53 @@ def test_single_instance_lock(harness):
     assert "already running" in second.stderr
 
 
+EVENTSDEF = """
+schema = 1
+[monitor]
+name = "events"
+description = "e2e events"
+version = 1
+enabled = true
+platforms = ["linux"]
+source = "events"
+[[rule]]
+id = "oom"
+when = 'provider == "kernel" and contains(message, "Out of memory")'
+severity = "critical"
+cooldown = "5m"
+clear_after = "30m"
+message = "OOM killer fired: {message}"
+"""
+
+
+def test_episode_lifecycle_e2e(tmp_path):
+    """[IN-08][TS-05][DM-15] episode open -> cooldown renotify -> quiet clear
+    through the real binary, with the cursor persisted in the DB."""
+    h = DaemonHarness(tmp_path, {"events": EVENTSDEF}, "oom-event-burst")
+    try:
+        h.start()
+        h.step_until(
+            lambda: any(n["kind"] == "open" for n in h.notifications()),
+            max_steps=30)
+        h.step_until(
+            lambda: h.paths.db_file.exists() and _db(h).execute(
+                "SELECT COUNT(*) FROM incidents WHERE state='cleared'"
+            ).fetchone()[0] == 1,
+            max_steps=520)
+        kinds = [n["kind"] for n in h.notifications()]
+        assert kinds.count("open") == 1
+        assert set(kinds[1:]) <= {"renotify"}  # quiet clear is silent
+        conn = _db(h)
+        row = conn.execute("SELECT * FROM incidents").fetchone()
+        assert row["clear_reason"] == "quiet_period"
+        assert row["occurrences"] == 12
+        assert conn.execute(
+            "SELECT cursor FROM cursors WHERE source='journald'"
+        ).fetchone()["cursor"] == "12"
+    finally:
+        h.stop()
+
+
 def test_sigterm_stops_cleanly(harness):
     """Graceful shutdown: SIGTERM + one step lets the loop exit 0."""
     h = harness

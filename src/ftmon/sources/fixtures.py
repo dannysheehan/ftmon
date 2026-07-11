@@ -30,12 +30,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from ftmon.model import EntitySample, Snapshot, SourceDecl
+from ftmon.model import EntitySample, EventRecord, Snapshot, SourceDecl
 from ftmon.sources.base import SOURCE_DECLS
 
 __all__ = [
     "Scenario",
     "FixtureSampler",
+    "FixtureEventSource",
     "load_scenario",
     "dump_scenario",
     "scenario",
@@ -126,6 +127,64 @@ def fixture_samplers(scn: Scenario) -> dict[str, FixtureSampler]:
     return {source: FixtureSampler(scn, source) for source in scn.sources()}
 
 
+class FixtureEventSource:
+    """EventSource protocol over a scenario's event lines (TS-04).
+
+    The cursor is the index of the next undelivered line, as a string —
+    minimal, but it exercises the exact DM-15 contract the e2e harness
+    asserts: a restart with the persisted cursor must not replay delivered
+    events and must not skip undelivered ones."""
+
+    decl: ClassVar[SourceDecl] = SOURCE_DECLS["events"]
+
+    def __init__(self, scn: Scenario):
+        self._events = scn.events
+        self._idx = 0
+        self._t0: float | None = None
+        self._alive = False
+
+    def start(self, cursor: str | None) -> None:
+        self._alive = True
+        if cursor is not None:
+            try:
+                self._idx = min(int(cursor), len(self._events))
+            except ValueError:
+                self._idx = 0
+
+    def drain(self, now: float, max_items: int) -> tuple[list[EventRecord], str | None]:
+        if self._t0 is None:
+            self._t0 = now
+        rel = now - self._t0
+        out: list[EventRecord] = []
+        while (self._idx < len(self._events) and len(out) < max_items
+               and self._events[self._idx]["at"] <= rel):
+            line = self._events[self._idx]
+            e = line["event"]
+            out.append(EventRecord(
+                ts=self._t0 + float(line["at"]),
+                ingest_ts=now,
+                source=str(e.get("source", "journald")),
+                provider=str(e.get("provider", "unknown")),
+                event_id=(str(e["event_id"]) if e.get("event_id") is not None
+                          else None),
+                severity=int(e.get("severity", 0)),
+                message=str(e.get("message", "")),
+            ))
+            self._idx += 1
+        return out, (str(self._idx) if out else None)
+
+    def queue_depth(self) -> int:
+        return 0  # nothing buffers: lines become due as sim time passes
+
+    dropped = 0
+
+    def alive(self) -> bool:
+        return self._alive
+
+    def stop(self) -> None:
+        self._alive = False
+
+
 # -- named scenario library (TS-04) -----------------------------------------
 # Grows with the milestones; each name is used by at least one e2e test.
 
@@ -170,10 +229,28 @@ def _entity_vanishes() -> Scenario:
     return _build(lines)
 
 
+def _oom_burst() -> Scenario:
+    """12 kernel OOM kills over 6 minutes, then silence: one episode that
+    opens on the first, accumulates occurrences (cooldown-limited renotify),
+    and quiet-clears 30 minutes after the last (IN-08). A steady process
+    keeps the samplers busy so the scenario also runs under monitors that
+    need a process source."""
+    lines: list[dict] = [_proc(0, ("calm:100:1", "calm", 50 * 2**20, 1.0))]
+    for i in range(12):
+        lines.append({
+            "at": 30.0 + i * 30.0,
+            "event": {"source": "journald", "provider": "kernel", "severity": 3,
+                      "message": f"Out of memory: Killed process {4000 + i}"
+                                 " (chrome) total-vm:1024kB"},
+        })
+    return _build(lines)
+
+
 _LIBRARY = {
     "steady": _steady,
     "firefox-leak-2mb-min": _firefox_leak,
     "entity-vanishes-mid-incident": _entity_vanishes,
+    "oom-event-burst": _oom_burst,
 }
 
 SCENARIO_NAMES = tuple(sorted(_LIBRARY))
