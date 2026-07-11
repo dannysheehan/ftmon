@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.5**. Companion to `SPEC.md` v0.7 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
+Status: **DRAFT v0.6**. Companion to `SPEC.md` v0.8 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
 
 Design-phase artifacts:
 
@@ -57,9 +57,13 @@ PROJECTS/ftmon/                  # monorepo root (git)
 │   └── cli.py                   # §15 argparse tree, every subcommand
 ├── tests/                       # §16; mirrors src layout + e2e/ + scenarios/
 ├── tools/gen_reqindex.py        # TS-01 traceability index generator
-├── docs/definitions.md install.md
-└── ftmon-legacy/                # untouched reference (GPLv2)
+└── docs/definitions.md install.md manual.md
 ```
+
+The original GPLv2 Perl tree is intentionally external at
+<https://sourceforge.net/projects/ftmon/>. Keeping it out of this repository
+makes the MIT licensing boundary obvious to users, packagers, and automated
+license scanners while retaining an authoritative historical reference.
 
 Layering rule (enforced by a lint test): `expr` imports only stdlib; `model` imports stdlib (+`expr.tribool`); `sources`, `store`, `engine` import `model`/`expr` but never each other except `engine → sources.base`; `daemon`/`mcp_server`/`web`/`cli` are the only modules that may import across the board. No module imports `daemon`.
 

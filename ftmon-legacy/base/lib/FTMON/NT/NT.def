@@ -1,5 +1,0 @@
-LIBRARY "NT"
-EXPORTS
-  boot_FTMON__NT
-  _boot_FTMON__NT = boot_FTMON__NT
-  

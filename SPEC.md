@@ -1,6 +1,6 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.7** — v0.7 restores the legacy glanceable monitor-health dashboard through accessible state tiles. All §19 open questions are resolved.
+Status: **DRAFT v0.8** — v0.8 separates the original GPLv2 project from this MIT repository. All §19 open questions are resolved.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -16,7 +16,7 @@ FTMON v2 is a lightweight, local, single-host systems monitor for desktops and w
 - exposes everything to AI assistants through a local MCP server;
 - is fully usable **without** AI through a CLI and a local web UI.
 
-It is the successor to the legacy Perl FTMON (2001–2003, preserved in `ftmon-legacy/`). It ports that system's design ideas — delta/monotonic calculations, consecutive-cycle confirmation, baselining, threshold tables, escalation — not its code.
+It is the successor to the legacy Perl FTMON (2001–2003), published separately at [SourceForge](https://sourceforge.net/projects/ftmon/). It ports that system's design ideas — delta/monotonic calculations, consecutive-cycle confirmation, baselining, threshold tables, escalation — not its code. The original source is deliberately not vendored so the v2 repository has an unambiguous MIT-licensed boundary.
 
 ### 1.1 Non-goals (v1)
 
@@ -57,8 +57,8 @@ It is the successor to the legacy Perl FTMON (2001–2003, preserved in `ftmon-l
 These were decided during specification and are not open for re-litigation by implementers:
 
 - Language: **Python ≥ 3.11**, managed with **uv** (`pyproject.toml`, lockfile). Lint/format: **ruff**. Tests: **pytest**.
-- Repo: monorepo at `PROJECTS/ftmon`; new code in `ftmon/` package; `ftmon-legacy/` retained read-only as design reference. Third-party vendored files in the legacy tree are never modified.
-- License: new code **MIT**; `ftmon-legacy/` remains GPLv2 in its subtree (separate works, clearly marked).
+- Repo: monorepo at `PROJECTS/ftmon`; new code in the `ftmon` package. The original Perl source remains in its separate SourceForge project and is not vendored here.
+- License: this repository is **MIT**. The separate original SourceForge project is GPLv2.
 - Storage: **SQLite** (WAL mode, `auto_vacuum=INCREMENTAL`). No external database, no RRDtool.
 - Process model: daemon + CLI + MCP server + web UI are **separate processes** sharing the SQLite database and (for definitions) the config directory under the coordination rules of PM-06/PM-07. Web UI is a fully separate service from the daemon.
 - Monitor definitions: **TOML** with expression strings in a **restricted Python-AST subset** (§8). Definitions are data, never executable code.
@@ -546,7 +546,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 | OPEN-4 | Docs as MCP resource | **RESOLVED v0.2**: DO-01 exposed, SPEC not (MC-05) |
 | OPEN-5 | Web freshness + chart lib | **RESOLVED v0.2**: 5 s polling (UI-04); smallest vendorable chart lib chosen in design doc (UI-06) |
 | OPEN-6 | Daemon/web coupling | **RESOLVED v0.2**: fully separate services (§3, UI-07) |
-| OPEN-7 | License | **RESOLVED v0.2**: new code MIT; legacy subtree stays GPLv2 (§3) |
+| OPEN-7 | License | **RESOLVED v0.8**: this repository is MIT; the separate original SourceForge project remains GPLv2 (§3) |
 
 ---
 
@@ -570,6 +570,8 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.8 (2026-07-11)** — removes the original Perl source from the v2 repository and points to its authoritative SourceForge project instead. This makes provenance and the MIT/GPLv2 licensing boundary unambiguous without losing the historical reference.
 
 **v0.7 (2026-07-11)** — restores the original FTMON green/yellow/red glanceability without restoring inaccessible color-only or flashing behavior. Tile state is an explicit precedence over config, freshness, enabled state, and highest live incident; acknowledged remains unhealthy until recovery.
 

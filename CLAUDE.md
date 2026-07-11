@@ -4,14 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-FTMON (Fast Track Systems Monitor) is a legacy (~2001–2003) GPL-licensed, extensible systems monitor written in Perl 5. It samples system metrics (disk, load, processes, services, sockets, syslog), evaluates them against configurable thresholds, graphs them with RRDtool, and forwards events to pluggable event managers (Tivoli, Big Brother, NT event log, log files). It targets Linux, Solaris, and Windows NT (via ActiveState Perl). All code lives under `ftmon-legacy/`. There is no test suite, linter, or build system for the Perl code; the only compiled component is the NT XS module.
+FTMON v2 succeeds a GPL-licensed Perl monitoring engine from 2001–2003. The
+original source is intentionally kept out of this repository and remains
+available from <https://sourceforge.net/projects/ftmon/>. Historical notes in
+this file describe that system for design context; they are not instructions
+to vendor or modify its source here.
 
 ## Running
 
 The daemon requires `BASE_DIR` (env var or `-a` flag) pointing at the `base/` directory:
 
 ```sh
-export BASE_DIR=/home/dsheehan/PROJECTS/ftmon/ftmon-legacy/base
+export BASE_DIR=/path/to/a/separate/ftmon-sourceforge-checkout/base
 perl $BASE_DIR/bin/ftmon.pl -o <html_dir> -p <cfg_dir> -l <log_dir> -v <interval_seconds>
 ```
 

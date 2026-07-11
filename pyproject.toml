@@ -2,7 +2,7 @@
 name = "ftmon"
 version = "2.0.0a0"
 description = "FTMON v2 - lightweight local systems monitor with MCP integration"
-readme = "SPEC.md"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Danny Sheehan" }]

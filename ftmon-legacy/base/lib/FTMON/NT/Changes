@@ -1,6 +1,0 @@
-Revision history for Perl extension FTMON::NT.
-
-0.01  Sat Jan 19 14:22:04 2002
-	- original version; created by h2xs 1.21 with options
-		-A -n FTMON::NT
-
