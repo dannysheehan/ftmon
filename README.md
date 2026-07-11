@@ -38,7 +38,7 @@ FTMON requires Python 3.11 or newer and
 git clone https://github.com/dsheehan/ftmon.git
 cd ftmon
 uv sync
-uv run ftmon init
+uv run ftmon init --profile desktop
 uv run ftmon check
 uv run ftmon daemon
 ```
@@ -51,6 +51,10 @@ uv run ftmon web
 
 Then open <http://127.0.0.1:8420/>. FTMON binds only to loopback and the web UI
 loads no external assets.
+
+For a headless single server, initialize with `--profile server`. This writes
+explicit settings with desktop popups disabled; remote ntfy, webhook, and SMTP
+channels use environment or protected-file credential references.
 
 For a user-level installation and systemd service, follow the
 [installation guide](docs/install.md).

@@ -96,14 +96,22 @@ class DaemonCore:
                                  baseline_lookup=self.baselines)
         self.due = DueTable()
         # Incident machinery (M2): pure engine + executor + outbox delivery.
-        # The file notifier is unconditional (NO-02: it is the audit trail);
-        # production run() appends the desktop channel.
+        # Tests can inject exact channels. Production derives desktop delivery
+        # from explicit config so the server profile cannot accidentally pop up
+        # through a lingering graphical session (PM-08); file remains mandatory.
         self.executor = EffectExecutor(self.writer)
         self.actions = ActionRunner(self.conn, self.paths)
+        notifiers = self.notifiers
+        if notifiers is None:
+            notifiers = [FileNotifier(self.paths.notifications_file)]
+            desktop = self.config.channel("desktop")
+            if desktop is not None and desktop.enabled:
+                from ftmon.notify import DesktopNotifier
+
+                notifiers.append(DesktopNotifier())
         self.outbox = Outbox(
             self.conn,
-            self.notifiers if self.notifiers is not None
-            else [FileNotifier(self.paths.notifications_file)],
+            notifiers,
             quiet=self.config.quiet,  # NO-03: delivery-side only
         )
         self._istates: dict[IncidentKey, GroupState] = {}
@@ -267,7 +275,7 @@ class DaemonCore:
                 )
                 continue
             last_notify = self.conn.execute(
-                "SELECT MAX(created_ts) FROM outbox WHERE incident_id = ?", (row["id"],)
+                "SELECT MAX(created_ts) FROM notifications WHERE incident_id = ?", (row["id"],)
             ).fetchone()[0]
             rungs = {r.rule_id: RungState() for r in cfg.rungs}
             owner = next((r for r in cfg.rungs if r.rule_id == row["owning_rule"]),
@@ -423,10 +431,6 @@ def run(args) -> int:
     else:
         clock = SystemClock()
 
-    # Production channels (NO-02): audit file always; desktop popups when a
-    # notification daemon is reachable. DaemonCore tests run file-only.
-    from ftmon.notify import DesktopNotifier
-
     # Event source before core construction: DaemonCore starts the event
     # engine (cursor resume, episode rebuild) inside __post_init__.
     scn = None
@@ -444,7 +448,6 @@ def run(args) -> int:
     core = DaemonCore(
         paths=paths,
         clock=clock,
-        notifiers=[FileNotifier(paths.notifications_file), DesktopNotifier()],
         event_source=event_source,
     )
 

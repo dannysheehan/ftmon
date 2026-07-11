@@ -29,8 +29,11 @@ def inspect(conn: sqlite3.Connection, *, now: float, deep: bool = False) -> dict
                      "ON p.id=x.series_id WHERE p.id IS NULL",
         "incident_history": "SELECT COUNT(*) FROM incident_history x LEFT JOIN incidents p "
                             "ON p.id=x.incident_id WHERE p.id IS NULL",
-        "outbox": "SELECT COUNT(*) FROM outbox x LEFT JOIN incidents p "
-                  "ON p.id=x.incident_id WHERE p.id IS NULL",
+        "notifications": "SELECT COUNT(*) FROM notifications x LEFT JOIN incidents p "
+                         "ON p.id=x.incident_id WHERE p.id IS NULL",
+        "notification_deliveries":
+            "SELECT COUNT(*) FROM notification_deliveries x LEFT JOIN notifications p "
+            "ON p.id=x.notification_id WHERE p.id IS NULL",
     }
     orphans = {name: conn.execute(sql).fetchone()[0] for name, sql in orphan_queries.items()}
     cursors = [{"source": row["source"], "age_s": max(0, now-row["updated_ts"])}

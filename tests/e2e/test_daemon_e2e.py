@@ -53,7 +53,7 @@ def test_leak_fire_and_clear_end_to_end(harness):
     assert row["state"] == "cleared" and row["clear_reason"] == "recovered"
     # NO-04: nothing owed — every outbox row delivered or deliberately stale
     assert conn.execute(
-        "SELECT COUNT(*) FROM outbox WHERE delivered_ts IS NULL AND stale = 0"
+        "SELECT COUNT(*) FROM notification_deliveries WHERE state = 'pending'"
     ).fetchone()[0] == 0
 
 
@@ -82,7 +82,7 @@ def test_kill9_at_most_one_duplicate_notification(harness):
     conn = _db(h)
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert conn.execute(
-        "SELECT COUNT(*) FROM outbox WHERE delivered_ts IS NULL AND stale = 0"
+        "SELECT COUNT(*) FROM notification_deliveries WHERE state = 'pending'"
     ).fetchone()[0] == 0  # no committed transition silently lost
     assert conn.execute(
         "SELECT COUNT(*) FROM incidents WHERE state = 'open'").fetchone()[0] == 1
@@ -181,7 +181,7 @@ def test_quiet_hours_digest_e2e(tmp_path):
         assert row["opened_ts"] < quiet_end_wall  # opened during quiet (NO-03)
         # held rows were digested, not dropped or left owing (NO-04)
         assert conn.execute(
-            "SELECT COUNT(*) FROM outbox WHERE delivered_ts IS NULL AND stale = 0"
+            "SELECT COUNT(*) FROM notification_deliveries WHERE state = 'pending'"
         ).fetchone()[0] == 0
     finally:
         h.stop()

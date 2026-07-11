@@ -78,8 +78,9 @@ class TestQuietOutbox:
         assert ob.flush(now=NIGHT + 60) == 1
         assert [n.severity for n in ok.delivered] == [3]
         held = conn.execute(
-            "SELECT stale FROM outbox WHERE delivered_ts IS NULL").fetchall()
-        assert len(held) == 1 and held[0]["stale"] == 0
+            "SELECT state FROM notification_deliveries WHERE state='pending'"
+        ).fetchall()
+        assert len(held) == 1 and held[0]["state"] == "pending"
 
     def test_digest_at_quiet_end(self, tmp_path):
         """[NO-03] held rows become exactly one digest when quiet ends, and
@@ -98,7 +99,8 @@ class TestQuietOutbox:
         assert "3 notification(s)" in digest.title
         assert digest.severity == 2
         assert conn.execute(
-            "SELECT COUNT(*) FROM outbox WHERE delivered_ts IS NULL").fetchone()[0] == 0
+            "SELECT COUNT(*) FROM notification_deliveries WHERE state='pending'"
+        ).fetchone()[0] == 0
         assert ob.flush(now=MORNING + 60) == 0  # digest is not repeated
 
     def test_recover_does_not_stale_quiet_held_rows(self, tmp_path):

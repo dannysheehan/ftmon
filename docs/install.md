@@ -1,8 +1,9 @@
 # Installing FTMON
 
-FTMON is a local, per-user monitor. It must not be installed or run as root:
-its database, definitions, actions, web UI, and desktop notifications belong
-to the logged-in user (SE-01).
+FTMON monitors one desktop, workstation, or server. It must not run as root:
+use the logged-in account on a desktop or a dedicated unprivileged account on
+a server. Definitions and actions are intentionally confined to that account
+(SE-01, PM-09).
 
 ## Install with uv
 
@@ -12,13 +13,43 @@ Python 3.11 or newer and [uv](https://docs.astral.sh/uv/) are required.
 git clone https://github.com/dsheehan/ftmon.git
 cd ftmon
 uv tool install .
-ftmon init
+ftmon init --profile desktop
 ftmon check
 ```
 
 For development, use `uv sync` followed by `uv run ftmon ...`. `ftmon init`
-creates private directories and installs eight editable built-in definitions.
-Running it again preserves existing files; `--force` replaces built-ins only.
+creates private directories, installs eight editable built-in definitions, and
+writes explicit desktop notification settings. For a headless host use
+`ftmon init --profile server`; it writes the same ordinary configuration with
+desktop popups disabled. Profiles only scaffold a new `config.toml`—they do not
+become a hidden runtime mode. Running init again preserves existing settings;
+`--force` replaces built-in definitions only (PM-08).
+
+## Notification credentials
+
+Remote channels are disabled in the generated configuration. Credentials are
+referenced through an environment variable or a protected file, never stored
+literally in `config.toml`. For example:
+
+```toml
+[notify.ntfy]
+enabled = true
+min_severity = "warning"
+base_url = "https://ntfy.sh"
+topic = "my-server"
+token_file = "/run/credentials/ftmon.service/ntfy-token"
+```
+
+Use exactly one of `token_env`/`token_file`, `url_env`/`url_file` for a webhook,
+or `password_env`/`password_file` for SMTP. Credential files must be regular,
+owned by the FTMON account, and inaccessible to group/other users (typically
+mode 0600). Symlinks, oversized files, literal secret keys, missing references,
+and unsafe permissions disable only that channel and produce a redacted config
+warning (SE-05, NO-10).
+
+The file notification audit remains mandatory. Remote delivery adapters and
+their independent retry worker arrive in WP27; WP26 establishes the safe config
+and durable database boundary first.
 
 ## Run the daemon with systemd
 

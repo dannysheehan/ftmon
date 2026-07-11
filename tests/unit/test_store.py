@@ -28,9 +28,9 @@ def test_migrate_idempotent_and_pragmas(tmp_path):
     v1 = db.migrate(conn)
     v2 = db.migrate(conn)
 
-    assert v1 == 2
-    assert v2 == 2
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert v1 == 3
+    assert v2 == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     # 2 == incremental (0 == none, 1 == full, 2 == incremental)
     assert conn.execute("PRAGMA auto_vacuum").fetchone()[0] == 2
@@ -53,13 +53,64 @@ def test_migrate_table_shape(tmp_path):
         "events",
         "incidents",
         "incident_history",
-        "outbox",
+        "notifications",
+        "notification_deliveries",
         "baselines",
         "cursors",
         "monitor_loads",
         "action_runs",
     }
     assert expected <= tables
+
+
+def test_migrate_v2_outbox_preserves_legacy_delivery_state(tmp_path):
+    """[DM-14][DM-18][NO-04] v2 rows become immutable notifications and
+    independent file deliveries without inventing remote-channel work."""
+    conn = db.connect(tmp_path / "ftmon.db")
+    migrations = Path(db.__file__).parent / "migrations"
+    conn.executescript((migrations / "0001_init.sql").read_text())
+    conn.executescript((migrations / "0002_action_runs.sql").read_text())
+    conn.execute("PRAGMA user_version = 2")
+    conn.execute(
+        "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+        "opened_ts,last_change_ts,notify_count,occurrences) "
+        "VALUES(11,'disk','space','/srv','open',3,'space-error',90,90,1,1)"
+    )
+    conn.executemany(
+        "INSERT INTO outbox(id,incident_id,kind,body,created_ts,delivered_ts,stale) "
+        "VALUES (?,?,?,?,?,?,?)",
+        [
+            (1, 11, "open", '{"severity":3,"title":"Disk","body":"full"}',
+             100, 110, 0),
+            (2, 12, "renotify", '{"severity":2,"title":"Memory","body":"growing"}',
+             200, None, 0),
+            (3, 13, "open", '{"severity":1,"title":"Old","body":"ignored"}',
+             300, None, 1),
+        ],
+    )
+    conn.commit()
+
+    assert db.migrate(conn) == 3
+    assert conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='outbox'"
+    ).fetchone() is None
+    notifications = conn.execute(
+        "SELECT id,severity,title,body,monitor,entity_id FROM notifications ORDER BY id"
+    ).fetchall()
+    assert [tuple(row) for row in notifications] == [
+        (1, 3, "Disk", "full", "disk", "/srv"),
+        (2, 2, "Memory", "growing", "", ""),
+        (3, 1, "Old", "ignored", "", ""),
+    ]
+    deliveries = conn.execute(
+        "SELECT notification_id,channel,state,next_attempt_ts,delivered_ts,last_error "
+        "FROM notification_deliveries ORDER BY notification_id"
+    ).fetchall()
+    assert [tuple(row) for row in deliveries] == [
+        (1, "file", "delivered", None, 110, None),
+        (2, "file", "pending", 200, None, None),
+        (3, "file", "failed", None, None, "legacy stale delivery"),
+    ]
 
 
 def test_samples_reject_nan_inf(tmp_path):

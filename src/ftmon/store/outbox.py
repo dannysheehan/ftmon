@@ -27,7 +27,6 @@ delivery counts as success if at least one notifier accepts it.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Sequence
 
@@ -61,16 +60,12 @@ class Outbox:
     def flush(self, now: float) -> int:
         """Deliver all undelivered, non-stale rows. Returns delivered count
         (a digest counts as one)."""
-        rows = self._conn.execute(
-            "SELECT id, incident_id, kind, body, created_ts FROM outbox "
-            "WHERE delivered_ts IS NULL AND stale = 0 ORDER BY id"
-        ).fetchall()
+        rows = self._pending_rows()
         delivered = 0
         quiet_now = self._quiet is not None and self._quiet.active(now)
         digestable: list[sqlite3.Row] = []
         for row in rows:
-            body = json.loads(row["body"])
-            if self._held(row, int(body.get("severity", 0))):
+            if self._held(row, int(row["severity"])):
                 if quiet_now:
                     continue  # hold: quiet is still on
                 digestable.append(row)
@@ -85,9 +80,8 @@ class Outbox:
         return delivered
 
     def _deliver_digest(self, rows: list[sqlite3.Row], now: float) -> bool:
-        bodies = [json.loads(r["body"]) for r in rows]
-        top = max(int(b.get("severity", 0)) for b in bodies)
-        summary = "; ".join(str(b.get("title", "ftmon")) for b in bodies)
+        top = max(int(row["severity"]) for row in rows)
+        summary = "; ".join(str(row["title"]) for row in rows)
         n = Notification(
             incident_id=0,  # a digest spans incidents; detail is in each one's history
             kind="digest",
@@ -107,35 +101,35 @@ class Outbox:
 
     def recover(self, now: float) -> tuple[int, int]:
         """Startup pass (NO-04). Returns (delivered, marked_stale)."""
-        rows = self._conn.execute(
-            "SELECT id, incident_id, kind, body, created_ts FROM outbox "
-            "WHERE delivered_ts IS NULL AND stale = 0 ORDER BY id"
-        ).fetchall()
+        rows = self._pending_rows()
         delivered = stale = 0
         for row in rows:
             age = now - row["created_ts"]
-            body = json.loads(row["body"])
-            if self._held(row, int(body.get("severity", 0))):
+            if self._held(row, int(row["severity"])):
                 continue  # NO-03: flush() digests these; staling would lose them
-            must_deliver = row["kind"] == "open" and body.get("severity", 0) >= 3
+            must_deliver = row["kind"] == "open" and row["severity"] >= 3
             if age <= _STALE_AFTER_S or must_deliver:
                 if self._deliver(row, prefix="(delayed) " if age > _STALE_AFTER_S else ""):
                     self._mark_delivered(row["id"], now)
                     delivered += 1
             else:
-                self._conn.execute("UPDATE outbox SET stale = 1 WHERE id = ?", (row["id"],))
+                self._conn.execute(
+                    "UPDATE notification_deliveries SET state='failed', next_attempt_ts=NULL, "
+                    "last_error='legacy stale delivery' "
+                    "WHERE notification_id=? AND channel='file'",
+                    (row["id"],),
+                )
                 self._conn.commit()
                 stale += 1
         return delivered, stale
 
     def _deliver(self, row: sqlite3.Row, prefix: str) -> bool:
-        body = json.loads(row["body"])
         n = Notification(
             incident_id=row["incident_id"],
             kind=row["kind"],
-            severity=int(body.get("severity", 0)),
-            title=str(body.get("title", "ftmon")),
-            body=prefix + str(body.get("body", "")),
+            severity=int(row["severity"]),
+            title=str(row["title"]),
+            body=prefix + str(row["body"]),
             created_ts=float(row["created_ts"]),
         )
         ok = False
@@ -149,6 +143,23 @@ class Outbox:
 
     def _mark_delivered(self, outbox_id: int, now: float) -> None:
         self._conn.execute(
-            "UPDATE outbox SET delivered_ts = ? WHERE id = ?", (round(now), outbox_id)
+            "UPDATE notification_deliveries SET state='delivered', delivered_ts=?, "
+            "next_attempt_ts=NULL, last_error=NULL "
+            "WHERE notification_id=? AND channel='file'",
+            (round(now), outbox_id),
         )
         self._conn.commit()
+
+    def _pending_rows(self) -> list[sqlite3.Row]:
+        """Return the compatibility channel's due work.
+
+        WP27 will claim individual channel rows. Until then, selecting only
+        `file` preserves the pre-M8 aggregate notifier behavior without letting
+        future remote rows be delivered by the legacy dispatcher.
+        """
+        return self._conn.execute(
+            "SELECT n.id, n.incident_id, n.kind, n.severity, n.title, n.body, "
+            "n.created_ts FROM notifications n JOIN notification_deliveries d "
+            "ON d.notification_id=n.id "
+            "WHERE d.channel='file' AND d.state='pending' ORDER BY n.id"
+        ).fetchall()

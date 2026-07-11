@@ -410,7 +410,7 @@ CREATE TABLE monitor_loads(monitor TEXT, loaded_ts INT, hash TEXT, normalized TE
   PRIMARY KEY(monitor, loaded_ts)) WITHOUT ROWID;            -- PM-07 (keep last 20/monitor)
 ```
 
-Migration `0002_notification_deliveries.sql` creates the two new tables, copies
+Migration `0003_notification_deliveries.sql` creates the two new tables, copies
 each legacy `outbox` row into `notifications`, and creates a `file` delivery:
 legacy delivered rows become `delivered`; undelivered rows become `pending`
 with `next_attempt_ts=created_ts`; legacy stale rows become terminal `failed`

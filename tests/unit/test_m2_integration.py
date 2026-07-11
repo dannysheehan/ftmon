@@ -72,7 +72,7 @@ def test_leak_to_notification_to_recovery(core_env):
     assert inc_row["state"] == "open"
     assert inc_row["grp"] == "grow"  # ungrouped rule: group defaults to rule id (IN-03)
     # NO-04: the outbox row that produced the popup is marked delivered
-    ob = conn.execute("SELECT delivered_ts FROM outbox").fetchall()
+    ob = conn.execute("SELECT delivered_ts FROM notification_deliveries").fetchall()
     assert all(r["delivered_ts"] is not None for r in ob)
 
     # The 15m slope window drains slowly after growth stops, so the rule
@@ -168,7 +168,7 @@ def test_outbox_failed_channel_retries_next_flush(tmp_path):
     assert working.flush(now=1002) == 1
     assert len(ok.delivered) == 1
     assert conn.execute(
-        "SELECT COUNT(*) FROM outbox WHERE delivered_ts IS NULL"
+        "SELECT COUNT(*) FROM notification_deliveries WHERE state='pending'"
     ).fetchone()[0] == 0
 
 
@@ -186,4 +186,6 @@ def test_outbox_recover_stale_vs_must_deliver(tmp_path):
     assert (delivered, stale) == (2, 1)
     bodies = [n.body for n in ok.delivered]
     assert any(b.startswith("(delayed) ") for b in bodies)
-    assert conn.execute("SELECT COUNT(*) FROM outbox WHERE stale=1").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM notification_deliveries WHERE state='failed'"
+    ).fetchone()[0] == 1

@@ -121,7 +121,8 @@ These were decided during specification and are not open for re-litigation by im
   settings; the profile is scaffolding, not a permanent hidden behavior switch.
   `desktop` enables the file and desktop channels. `server` enables the file
   channel only, disables desktop delivery, and documents remote-channel setup.
-  Existing configuration is never rewritten unless the user supplies `--force`.
+  Existing configuration is never rewritten; `--force` continues to reinstall
+  built-in monitor definitions only (FS-02), not user settings.
 - **PM-09** The supported server deployment runs the daemon as a dedicated
   unprivileged account or the administrator's ordinary account. It MUST NOT run
   as root. The normal web process remains on loopback; remote operational access

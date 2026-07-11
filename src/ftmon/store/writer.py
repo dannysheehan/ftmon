@@ -74,7 +74,7 @@ class TickWriter:
         # the final row (the state machine may open and escalate same-tick)
         self._pending_incidents: dict[int, tuple] = {}
         self._pending_history: list[tuple[int, int, int, str, str]] = []
-        self._pending_outbox: list[tuple[int, int, str, str, int]] = []
+        self._pending_outbox: list[tuple[int, int, str, int, str, str, str, str, int]] = []
         self._next_incident_id: int | None = None
         self._next_outbox_id: int | None = None
         self._history_seq: dict[int, int] = {}
@@ -233,14 +233,27 @@ class TickWriter:
         transition that caused it; delivery happens post-commit."""
         if self._next_outbox_id is None:
             (max_id,) = self._conn.execute(
-                "SELECT COALESCE(MAX(id), 0) FROM outbox"
+                "SELECT COALESCE(MAX(id), 0) FROM notifications"
             ).fetchone()
             self._next_outbox_id = max_id + 1
         new_id = self._next_outbox_id
         self._next_outbox_id += 1
+        rendered = dict(body)
+        pending_incident = self._pending_incidents.get(incident_id)
+        if pending_incident is not None:
+            monitor, entity_id = pending_incident[1], pending_incident[3]
+        else:
+            incident = self._conn.execute(
+                "SELECT monitor, entity_id FROM incidents WHERE id = ?", (incident_id,)
+            ).fetchone()
+            # Tests and import tools may enqueue against an absent incident;
+            # retain that historical tolerance without weakening atomicity.
+            monitor = incident["monitor"] if incident is not None else ""
+            entity_id = incident["entity_id"] if incident is not None else ""
         self._pending_outbox.append(
-            (new_id, incident_id, kind,
-             json.dumps(dict(body), ensure_ascii=False, sort_keys=True), round(created_ts))
+            (new_id, incident_id, kind, int(rendered.get("severity", 0)),
+             str(rendered.get("title", "ftmon")), str(rendered.get("body", "")),
+             monitor, entity_id, round(created_ts))
         )
         return new_id
 
@@ -341,9 +354,16 @@ class TickWriter:
                 )
             if self._pending_outbox:
                 cur.executemany(
-                    "INSERT INTO outbox(id, incident_id, kind, body, created_ts) "
-                    "VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO notifications(id, incident_id, kind, severity, title, body, "
+                    "monitor, entity_id, created_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     self._pending_outbox,
+                )
+                # Freezing the mandatory compatibility channel atomically is
+                # what prevents a crash from losing a committed notification.
+                cur.executemany(
+                    "INSERT INTO notification_deliveries(notification_id, channel, state, "
+                    "next_attempt_ts) VALUES (?, 'file', 'pending', ?)",
+                    [(row[0], row[8]) for row in self._pending_outbox],
                 )
             if self._pending_monitor_loads:
                 cur.executemany(

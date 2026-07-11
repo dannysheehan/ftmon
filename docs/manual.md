@@ -72,7 +72,7 @@ FTMON itself misbehaves.
 ```sh
 git clone <repo> && cd ftmon
 uv sync
-uv run ftmon init      # creates ~/.config/ftmon, installs built-in monitors
+uv run ftmon init --profile desktop  # use "server" for a headless host
 uv run ftmon check     # validates every monitor definition
 ```
 
@@ -106,9 +106,11 @@ ftmon top rss --range 3h  # what was eating memory          (soon)
 ftmon doctor            # database integrity, WAL, orphans and config
 ```
 
-Desktop notifications are live: an incident opens after its confirmation
-cycles, re-notifies on the backing-off schedule, and sends one recovery
-notice when it clears. Every notification is also appended to
+On the desktop profile, popup notifications are live: an incident opens after
+its confirmation cycles, re-notifies on the backing-off schedule, and sends
+one recovery notice when it clears. The server profile explicitly disables
+popups so remote channels can be configured instead. Every notification is
+also appended to
 `~/.local/state/ftmon/notifications.jsonl` (the audit trail).
 
 Every listing command takes `--json` for scripting.
@@ -236,9 +238,13 @@ version: copy the nearest built-in, rename it, edit, `ftmon check`.
 
 ## 8. Notifications & quiet hours
 
-Notifications are desktop-native and deliberately short; depth lives in
-`ftmon incident <id>` and the web UI. An audit trail of every notification
-is kept at `~/.local/state/ftmon/notifications.jsonl`.
+Notifications are deliberately short; depth lives in `ftmon incident <id>` and
+the web UI. An audit trail of every notification is kept at
+`~/.local/state/ftmon/notifications.jsonl`. Desktop popups are enabled by the
+desktop initialization profile and disabled by the server profile. Remote
+ntfy, webhook, and SMTP delivery is configured with protected external secret
+references; see `docs/install.md`. Secret values are never valid directly in
+`config.toml` (SE-05).
 
 Quiet hours are set in `config.toml`:
 

@@ -17,11 +17,14 @@ import ftmon
 from ftmon.paths import get_paths
 
 
-def _default_config_toml() -> str:
-    """Default config.toml content (FS-02): commented, tunable."""
-    return """\
+def _default_config_toml(profile: str = "desktop") -> str:
+    """Explicit profile scaffold (PM-08); no runtime profile switch remains."""
+    desktop_enabled = "true" if profile == "desktop" else "false"
+    return f"""\
 # FTMON v2 configuration
 # See docs/definitions.md for monitor setup; this file covers daemon behavior.
+# Generated for the {profile} profile. Every setting below is ordinary config;
+# changing profile later means editing these values, not changing hidden behavior.
 
 [daemon]
 # Tick interval in seconds (should be 5 for most deployments)
@@ -42,6 +45,36 @@ end = "08:00"     # may cross midnight (as here)
 [web]
 # Dashboard port (http only; use reverse proxy for TLS)
 port = 8420
+
+# The file audit channel is mandatory and has no enable switch.
+[notify.desktop]
+enabled = {desktop_enabled}
+min_severity = "info"
+
+# Remote channels start disabled. Credentials must stay outside this file;
+# choose exactly one *_env or *_file reference before enabling a channel.
+[notify.ntfy]
+enabled = false
+min_severity = "warning"
+base_url = "https://ntfy.sh"
+topic = "ftmon-hostname"
+# token_env = "FTMON_NTFY_TOKEN"
+
+[notify.webhook]
+enabled = false
+min_severity = "warning"
+# url_env = "FTMON_WEBHOOK_URL"
+
+[notify.smtp]
+enabled = false
+min_severity = "warning"
+host = "smtp.example.net"
+port = 587
+tls = "starttls"
+username = "ftmon@example.net"
+from = "ftmon@example.net"
+to = ["operator@example.net"]
+# password_env = "FTMON_SMTP_PASSWORD"
 """
 
 
@@ -66,7 +99,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     # Write config.toml only if absent (FS-02: never touch user config)
     if not paths.config_file.exists():
-        atomic_write(paths.config_file, _default_config_toml().encode())
+        atomic_write(paths.config_file, _default_config_toml(args.profile).encode())
         print(f"wrote: {paths.config_file}")
     else:
         print(f"kept: {paths.config_file} (unchanged)")
@@ -497,6 +530,10 @@ def main(argv: list[str] | None = None) -> int:
     init_parser.add_argument(
         "--force", action="store_true",
         help="Re-install builtins (does not touch user config)"
+    )
+    init_parser.add_argument(
+        "--profile", choices=("desktop", "server"), default="desktop",
+        help="Write explicit desktop or server defaults (default: desktop)",
     )
 
     # check

@@ -50,6 +50,19 @@ class TestInit:
         assert "[quiet_hours]" in content
         assert "[web]" in content
         assert "port = 8420" in content
+        assert "[notify.desktop]" in content
+        assert "enabled = true" in content
+
+    def test_server_profile_writes_visible_server_defaults(self, tmp_path, monkeypatch):
+        """[PM-08] A profile is explicit scaffolding, not runtime personality."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "server"]) == 0
+        content = (tmp_path / "cfg" / "config.toml").read_text()
+        assert "Generated for the server profile" in content
+        desktop = content.split("[notify.desktop]", 1)[1].split("[", 1)[0]
+        assert "enabled = false" in desktop
+        assert "[notify.ntfy]" in content
+        assert "# token_env = \"FTMON_NTFY_TOKEN\"" in content
 
     def test_init_does_not_overwrite_config(self, tmp_path, monkeypatch):
         """[FS-02] init writes config.toml only if absent."""
@@ -85,6 +98,22 @@ class TestInit:
 
         # Config should still be user-modified
         assert cfg_file.read_text() == "# USER MODIFIED CONFIG\n"
+
+    def test_server_profile_disables_desktop_in_daemon_composition(
+        self, tmp_path, monkeypatch
+    ):
+        """[PM-08] The generated setting controls production channel wiring."""
+        from ftmon.clock import FakeClock
+        from ftmon.daemon import DaemonCore
+        from ftmon.paths import get_paths
+
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "server"]) == 0
+        core = DaemonCore(paths=get_paths(), clock=FakeClock(wall=1000, mono=1000))
+        try:
+            assert [notifier.name for notifier in core.outbox._notifiers] == ["file"]
+        finally:
+            core.conn.close()
 
     def test_init_installs_builtin_monitors(self, tmp_path, monkeypatch, capsys):
         """[FS-02] init installs 8 builtin *.toml files from design/builtins."""
