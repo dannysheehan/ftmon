@@ -71,9 +71,10 @@ def test_sampler_state_in_force_and_t0_anchor(tmp_path):
 def test_named_library_and_unknown(tmp_path):
     assert set(SCENARIO_NAMES) == {
         "steady", "firefox-leak-2mb-min", "entity-vanishes-mid-incident",
-        "oom-event-burst"}
+        "oom-event-burst", "disk-ladder-updown", "service-flap",
+        "proc-churn-300"}
     for name in SCENARIO_NAMES:
-        assert scenario(name).sources() == {"process"}
+        assert scenario(name).sources() <= {"process", "disk", "unit"}
     assert len(scenario("oom-event-burst").events) == 12
     with pytest.raises(ValueError, match="unknown scenario"):
         scenario("nope")

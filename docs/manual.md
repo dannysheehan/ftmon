@@ -159,14 +159,26 @@ dashboard, incident browser with full explanations, metric charts, event
 search, and monitor management (including approving AI drafts). Localhost
 only, no external resources, works offline.
 
-## 6. AI integration (MCP) *(arrives with M4)*
+## 6. AI integration (MCP)
 
-Register `ftmon mcp` with your AI client (Claude Code/Desktop snippet in
-the install guide). The assistant can then answer "why was my machine slow
-this morning?" from recorded data, explain any incident, and *propose* new
-monitors — proposals land in `drafts/` and do nothing until you approve
-them with `ftmon monitor approve <name>` or the web UI. The AI can never
-install actions, run commands, or enable monitors by itself.
+Register `ftmon mcp` with your AI client. For Claude Code:
+
+```sh
+claude mcp add ftmon -- ftmon mcp        # or: uv run ftmon mcp (from source)
+```
+
+The assistant gets twelve tools: status, metric queries with automatic
+resolution, top consumers, per-process history, events, incidents with a
+full `explain_incident` story, monitor listing/validation — and exactly
+two writes: acknowledging an incident, and *proposing* a monitor.
+Proposals land in `drafts/` and do nothing until you approve them with
+`ftmon monitor approve <name>` (or the web UI). The AI can never install
+actions, run commands, or enable monitors by itself. It also gets the
+monitor-definition reference as a resource, so "write me a monitor that
+alerts when my VPN drops" works without pasting docs.
+
+`ftmon monitor enable <name>` / `disable <name>` flip a monitor's
+`enabled` line in place — comments and formatting in your file survive.
 
 ## 7. Writing your own monitors
 

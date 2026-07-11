@@ -276,11 +276,11 @@ class TestNotImplemented:
     # tested in test_engine.py with a FakeClock - invoking it here would
     # start the actual scheduler loop and hang the suite.
     # NOTE: "events" left this list in M3 (cmd_events); "daemon" in M1;
-    # "incidents"/"ack" in M2a; "baseline" in M2b.
+    # "incidents"/"ack" in M2a; "baseline" in M2b; "mcp"/"monitor" in M4 —
+    # invoking "mcp" here would start the real stdio server and hang.
     @pytest.mark.parametrize(
         "cmd",
         [
-            "mcp",
             "web",
             "top",
             "query",

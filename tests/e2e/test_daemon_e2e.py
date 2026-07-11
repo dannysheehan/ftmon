@@ -144,6 +144,45 @@ def test_episode_lifecycle_e2e(tmp_path):
         h.stop()
 
 
+def test_quiet_hours_digest_e2e(tmp_path):
+    """[NO-03][TS-05] quiet hours through the real binary: the leak opens
+    *inside* the quiet window (incidents are never suppressed, only
+    delivery), its warning-level notifications are held, and the first
+    thing ever delivered is the single digest once quiet ends."""
+    # ControlledClock starts at wall 1_700_000_000 = 22:13:20 UTC; TZ=UTC
+    # pins the daemon's local time so "22:00-22:45" means the same window.
+    quiet_end_wall = 1_700_000_000.0 + 31 * 60 + 40  # 22:45:00
+    h = DaemonHarness(tmp_path, {"leak": LEAKDEF}, "firefox-leak-2mb-min")
+    h.env["TZ"] = "UTC"
+    h.paths.config_file.write_text(
+        '[quiet_hours]\nenabled = true\nstart = "22:00"\nend = "22:45"\n')
+    try:
+        h.start()
+        # leak opens ~8 sim-minutes in (22:21, held); quiet ends 31m40s in.
+        h.step_until(
+            lambda: any(n["kind"] == "digest" for n in h.notifications()),
+            max_steps=450)
+        for _ in range(24):  # 2 more sim-minutes: post-quiet flushes run
+            h.step()
+
+        notes = h.notifications()
+        kinds = [n["kind"] for n in notes]
+        assert kinds[0] == "digest"  # nothing was delivered individually
+        assert "held during quiet hours" in notes[0]["title"]
+        assert "open" not in kinds  # the open went out inside the digest
+        assert set(kinds[1:]) <= {"renotify", "recover"}  # quiet has ended
+
+        conn = _db(h)
+        row = conn.execute("SELECT opened_ts, state FROM incidents").fetchone()
+        assert row["opened_ts"] < quiet_end_wall  # opened during quiet (NO-03)
+        # held rows were digested, not dropped or left owing (NO-04)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM outbox WHERE delivered_ts IS NULL AND stale = 0"
+        ).fetchone()[0] == 0
+    finally:
+        h.stop()
+
+
 def test_sigterm_stops_cleanly(harness):
     """Graceful shutdown: SIGTERM + one step lets the loop exit 0."""
     h = harness

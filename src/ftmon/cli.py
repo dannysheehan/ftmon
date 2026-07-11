@@ -359,6 +359,32 @@ def cmd_events(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_monitor(args: argparse.Namespace) -> int:
+    """MD-05 lifecycle: approve a draft into monitors/ (PM-06d), or flip a
+    monitor's `enabled` line in place. The daemon notices within 30s
+    (PM-04); no restart."""
+    from ftmon.definitions import manage
+
+    paths = get_paths()
+    try:
+        if args.action == "approve":
+            target = manage.approve_draft(paths, args.name)
+            print(f"approved: {target} (the daemon picks it up within 30s)")
+        else:
+            enabled = args.action == "enable"
+            target = manage.set_enabled(paths, args.name, enabled)
+            print(f"{'enabled' if enabled else 'disabled'}: {target}")
+        return 0
+    except manage.ManageError as e:
+        print(f"{e.code}: {e.message}", file=sys.stderr)
+        if e.hint:
+            print(f"  hint: {e.hint}", file=sys.stderr)
+        for err in e.errors:
+            print(f"  {err['path']}: {err['code']}: {err['message']}",
+                  file=sys.stderr)
+        return 1
+
+
 def cmd_baseline(args: argparse.Namespace) -> int:
     """CA-06: `ftmon baseline reset <monitor> [entity]` clears learned
     baselines so they relearn from scratch (they return unknown while
@@ -577,9 +603,9 @@ def main(argv: list[str] | None = None) -> int:
 
         return daemon_run(args)
     elif args.command == "mcp":
-        print("mcp: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        from ftmon.mcp_server import run as mcp_run
+
+        return mcp_run(args)
     elif args.command == "web":
         print("web: not implemented yet (arrives in a later milestone)",
               file=sys.stderr)
@@ -607,9 +633,7 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     elif args.command == "monitor":
-        print("monitor: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        return cmd_monitor(args)
     elif args.command == "baseline":
         return cmd_baseline(args)
     elif args.command == "doctor":

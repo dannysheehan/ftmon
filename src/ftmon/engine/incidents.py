@@ -200,6 +200,7 @@ def _open(
         backoff_tier=len(BACKOFF_S) - 1 if flapping else 0,
         flap_clears=flap_clears,
         occurrences=1,
+        peak_severity=owner.severity,
     )
     body = _message(evals, owner, f"{cfg.group} triggered")
     if flapping:
@@ -235,6 +236,7 @@ def _update_open(
             last_notify_ts=now,
             notify_count=core.notify_count + 1,
             backoff_tier=0,
+            peak_severity=max(core.peak_severity, owner.severity),
         )
         effects.append(RecordEffect("escalate", {"rule": owner.rule_id,
                                                  "severity": owner.severity}))
@@ -286,7 +288,11 @@ def _clear(
         if reason == "entity_gone":
             body = f"{cfg.entity_id} went away; incident closed ({duration / 60:.0f}m)"
         else:
-            body = f"recovered after {duration / 60:.0f}m (peak {severity_name(core.severity)})"
+            # peak_severity, not severity: a silent downgrade (IN-03) lowers
+            # severity in place, and "peak warning" after a critical stretch
+            # would be a lie (bug found by the M4 ladder scenario test).
+            peak = max(core.peak_severity, core.severity)
+            body = f"recovered after {duration / 60:.0f}m (peak {severity_name(peak)})"
         note = Notification(
             incident_id=core.incident_id or 0,
             kind="recover",

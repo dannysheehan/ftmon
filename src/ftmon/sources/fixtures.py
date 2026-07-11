@@ -246,11 +246,76 @@ def _oom_burst() -> Scenario:
     return _build(lines)
 
 
+def _disk_ladder() -> Scenario:
+    """used_pct walks 80 -> 87 -> 98 -> 87 -> 70 on one mount: opens at
+    warning, escalates to critical, silently downgrades back, then recovers —
+    the full IN-03 ladder on a single shared incident. Five minutes per
+    plateau gives two-rung confirm/clear counters (confirm 2 / clear 2 at a
+    60s interval) room to run their course inside each plateau."""
+    total = float(100 * 2**30)
+    lines = []
+    for minute, pct in ((0, 80.0), (5, 87.0), (10, 98.0), (15, 87.0), (20, 70.0)):
+        used = total * pct / 100.0
+        lines.append({
+            "at": minute * 60.0,
+            "source": "disk",
+            "entities": [
+                {"entity_id": "/",
+                 "attrs": {"fstype": "ext4", "device": "/dev/sda1"},
+                 "metrics": {"total_bytes": total, "used_bytes": used,
+                             "free_bytes": total - used, "used_pct": pct}},
+            ],
+        })
+    return _build(lines)
+
+
+def _service_flap() -> Scenario:
+    """present flips 1 -> 0 every 2 minutes for 20 minutes, then holds up:
+    five quick open/clear cycles. The later re-opens land within IN-05's
+    10-minute flap window of three prior clears, so they must arrive marked
+    flapping and start at the slowest backoff tier."""
+    lines = []
+    for i in range(11):  # t = 0..20 min; even i is up — ends up and holds
+        lines.append({
+            "at": i * 120.0,
+            "source": "unit",
+            "entities": [
+                {"entity_id": "unit:flappy.service",
+                 "attrs": {"unit": "flappy.service", "kind": "unit"},
+                 "metrics": {"present": 1.0 if i % 2 == 0 else 0.0,
+                             "restarts": float(i // 2)}},
+            ],
+        })
+    return _build(lines)
+
+
+def _proc_churn() -> Scenario:
+    """300 processes per minute for 20 minutes, 290 with fresh identities
+    every minute (~5800 distinct ids): a busy build box. Nothing alerts —
+    the point is RB-03/SA-05: persistence and rings must stay bounded by
+    top-N selection, not grow with identity churn. Metrics vary by index
+    (no RNG) so replays are bit-identical; the stable ten out-rank the
+    churners on rss so the persisted set is mostly stable ids."""
+    lines = []
+    for minute in range(20):
+        ents = [(f"stable{n}:{n}:1", f"stable{n}",
+                 float((50 + n) * 2**20), 1.0 + n / 10)
+                for n in range(10)]
+        ents += [(f"churn{n}:{minute * 1000 + n}:1", f"churn{n}",
+                  float((10 + n % 37) * 2**20), (n % 23) / 10)
+                 for n in range(290)]
+        lines.append(_proc(minute * 60.0, *ents))
+    return _build(lines)
+
+
 _LIBRARY = {
     "steady": _steady,
     "firefox-leak-2mb-min": _firefox_leak,
     "entity-vanishes-mid-incident": _entity_vanishes,
     "oom-event-burst": _oom_burst,
+    "disk-ladder-updown": _disk_ladder,
+    "service-flap": _service_flap,
+    "proc-churn-300": _proc_churn,
 }
 
 SCENARIO_NAMES = tuple(sorted(_LIBRARY))

@@ -123,6 +123,11 @@ class IncidentCore:
     backoff_tier: int
     flap_clears: tuple[float, ...]
     occurrences: int
+    # Highest severity ever held (IN-03): silent downgrades lower `severity`
+    # in place, so the recovery message's "peak" needs its own memory.
+    # Default 0 = "no better information than current severity" (restarts
+    # rebuild from a DB that only stores the current value).
+    peak_severity: int = 0
 
 
 @dataclass(frozen=True)
