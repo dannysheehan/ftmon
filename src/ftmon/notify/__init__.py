@@ -1,11 +1,19 @@
-"""Notification adapters (NO-02, PL-01).
+"""Bounded first-party notification adapters (NO-02, NO-05, PL-01)."""
 
-Two v1 implementations: `desktop` (notify-send) and `file` (JSONL audit
-log, always on — it is also what tests assert against, which keeps the
-delivery path identical in CI and production)."""
-
-from ftmon.notify.base import Notifier, NotifyError
+from ftmon.notify.base import (
+    DeliveryResult,
+    Notifier,
+    NotifyError,
+    PermanentDelivery,
+    RetryableDelivery,
+)
 from ftmon.notify.desktop import DesktopNotifier
 from ftmon.notify.file import FileNotifier
+from ftmon.notify.ntfy import NtfyNotifier
+from ftmon.notify.smtp import SmtpNotifier
+from ftmon.notify.webhook import WebhookNotifier
 
-__all__ = ["Notifier", "NotifyError", "DesktopNotifier", "FileNotifier"]
+__all__ = [
+    "DeliveryResult", "Notifier", "NotifyError", "PermanentDelivery", "RetryableDelivery",
+    "DesktopNotifier", "FileNotifier", "NtfyNotifier", "SmtpNotifier", "WebhookNotifier",
+]

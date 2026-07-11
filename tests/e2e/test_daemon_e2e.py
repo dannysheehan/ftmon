@@ -51,7 +51,7 @@ def test_leak_fire_and_clear_end_to_end(harness):
     conn = _db(h)
     row = conn.execute("SELECT state, clear_reason FROM incidents").fetchone()
     assert row["state"] == "cleared" and row["clear_reason"] == "recovered"
-    # NO-04: nothing owed — every outbox row delivered or deliberately stale
+    # NO-04/NO-07: no channel delivery remains owed after recovery.
     assert conn.execute(
         "SELECT COUNT(*) FROM notification_deliveries WHERE state = 'pending'"
     ).fetchone()[0] == 0

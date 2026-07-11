@@ -54,7 +54,8 @@ loads no external assets.
 
 For a headless single server, initialize with `--profile server`. This writes
 explicit settings with desktop popups disabled; remote ntfy, webhook, and SMTP
-channels use environment or protected-file credential references.
+channels use environment or protected-file credential references and maintain
+independent durable retry state.
 
 For a user-level installation and systemd service, follow the
 [installation guide](docs/install.md).

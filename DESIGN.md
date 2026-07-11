@@ -513,7 +513,8 @@ Desktop readiness is validated before rows are created; a runtime `notify-send`
 timeout is retryable and other non-zero exits are permanent. These rules avoid
 an absent desktop session creating an endless queue on a server.
 
-The ntfy adapter POSTs the body to `{base_url}/{urlquoted_topic}` with title,
+The ntfy adapter POSTs the rendered title/body to
+`{base_url}/{urlquoted_topic}` with a fixed, control-free `FTMON <severity>` title,
 priority (`info=2, notice=3, warning=4, error|critical=5`), tags
 (`ftmon`, kind, severity name), and `Authorization: Bearer …` headers; monitor
 data never enters the URL. The generic webhook POSTs `application/json` schema
@@ -531,6 +532,13 @@ reports only `ready`, `disabled`, or a stable error code. Delivery counters
 (`pending`, `failed`, age of oldest pending, failures by channel) join the self
 source and `/self` page; this makes a broken notification path observable
 without recursively notifying about notifier failure.
+
+The existing 30-second rescan also compares the `config.toml` file stamp. A
+changed valid file constructs a complete adapter snapshot, reconfigures the one
+worker at an attempt boundary, then changes the writer's policy for future
+notifications. Existing delivery rows are never added retroactively. A malformed
+or removed file retains the last known-good snapshot; a valid but individually
+invalid channel fails closed while the other channels reload (NO-10).
 
 ---
 

@@ -242,9 +242,13 @@ def _parse_channels(raw: dict, warnings: list[str]) -> tuple[tuple[str, ChannelC
             host = section.get("host")
             tls = section.get("tls", "starttls")
             port = section.get("port", 587)
+            username = section.get("username")
+            sender = section.get("from")
             recipients = section.get("to")
-            if enabled is True and (not isinstance(host, str) or not host):
-                errors.append("host is required when enabled")
+            if enabled is True:
+                for key, value in (("host", host), ("username", username), ("from", sender)):
+                    if not _safe_config_text(value):
+                        errors.append(f"{key} must be non-empty and contain no controls")
             if tls not in ("starttls", "implicit"):
                 errors.append("tls must be starttls or implicit")
             if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
@@ -252,12 +256,12 @@ def _parse_channels(raw: dict, warnings: list[str]) -> tuple[tuple[str, ChannelC
             if enabled is True and (
                 not isinstance(recipients, list)
                 or not recipients
-                or not all(isinstance(item, str) and item for item in recipients)
+                or not all(_safe_config_text(item) for item in recipients)
             ):
-                errors.append("to must be a non-empty string array when enabled")
+                errors.append("to must be a non-empty control-free string array when enabled")
             settings = {
                 "host": host, "port": port, "tls": tls,
-                "username": section.get("username"), "from": section.get("from"),
+                "username": username, "from": sender,
                 "to": recipients,
             }
 
@@ -311,4 +315,10 @@ def _http_url(value: object, *, allow_path: bool) -> bool:
         and parts.username is None and parts.password is None
         and (allow_path or not parts.query) and not parts.fragment
         and (allow_path or parts.path in ("", "/"))
+    )
+
+
+def _safe_config_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and all(
+        ord(char) >= 32 and ord(char) != 127 for char in value
     )

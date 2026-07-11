@@ -16,10 +16,11 @@ from __future__ import annotations
 import fcntl
 import sys
 from dataclasses import dataclass, field
+from queue import SimpleQueue
 
 from ftmon import definitions
 from ftmon.clock import Clock, ControlledClock, SystemClock
-from ftmon.config import AppConfig, load_config
+from ftmon.config import AppConfig, QuietHours, load_config
 from ftmon.definitions.loader import MonitorDef
 from ftmon.engine import incidents as inc
 from ftmon.engine.actions import ActionRunner
@@ -29,8 +30,8 @@ from ftmon.engine.pipeline import EvalOutcome, Pipeline
 from ftmon.engine.rings import RingStore
 from ftmon.engine.scheduler import DueTable, Scheduler
 from ftmon.model import EventRecord, GroupState, IncidentCore, RungState
-from ftmon.notify import FileNotifier
-from ftmon.notify.base import Notifier
+from ftmon.notify import FileNotifier, NtfyNotifier, SmtpNotifier, WebhookNotifier
+from ftmon.notify.base import DeliveryError, Notifier
 from ftmon.paths import Paths, get_paths
 from ftmon.selfmon import SelfSampler, SelfStats
 from ftmon.sources.base import EventSource
@@ -40,7 +41,7 @@ from ftmon.sources.process import ProcessSampler
 from ftmon.sources.system import SystemSampler
 from ftmon.sources.unit import UnitSampler
 from ftmon.store import db as store_db
-from ftmon.store.outbox import Outbox
+from ftmon.store.outbox import DispatchWorker, Outbox
 from ftmon.store.retention import BaselineLookup, Retention
 from ftmon.store.writer import TickWriter
 
@@ -65,14 +66,19 @@ class DaemonCore:
     # JournaldEventSource; --fixtures passes FixtureEventSource. Injected
     # rather than built here so DaemonCore never spawns journalctl in tests.
     event_source: EventSource | None = None
+    background_dispatch: bool = False
     stop: bool = False
 
     def __post_init__(self) -> None:
         self.stats = SelfStats()
-        if self.config is None:
+        self._delivery_failures: SimpleQueue[tuple[str, str, float]] = SimpleQueue()
+        self._reload_global_config = self.config is None
+        if self._reload_global_config:
             self.config, config_warnings = load_config(self.paths.config_file)
             for w in config_warnings:
                 print(f"config warning: {w}", file=sys.stderr)
+        self._config_stamp = self._config_file_stamp()
+        self._notifier_override = tuple(self.notifiers) if self.notifiers is not None else None
         self.conn = store_db.connect(self.paths.db_file)
         store_db.migrate(self.conn)
         self.writer = TickWriter(self.conn, on_reject=lambda _n: self.stats.count(
@@ -101,19 +107,14 @@ class DaemonCore:
         # through a lingering graphical session (PM-08); file remains mandatory.
         self.executor = EffectExecutor(self.writer)
         self.actions = ActionRunner(self.conn, self.paths)
-        notifiers = self.notifiers
-        if notifiers is None:
-            notifiers = [FileNotifier(self.paths.notifications_file)]
-            desktop = self.config.channel("desktop")
-            if desktop is not None and desktop.enabled:
-                from ftmon.notify import DesktopNotifier
-
-                notifiers.append(DesktopNotifier())
-        self.outbox = Outbox(
-            self.conn,
-            notifiers,
-            quiet=self.config.quiet,  # NO-03: delivery-side only
-        )
+        notifiers = self._build_notifiers(self.config)
+        available = {notifier.name for notifier in notifiers}
+        self.writer.set_delivery_channels({
+            name: channel.min_severity
+            for name, channel in self.config.channels
+            if channel.enabled and name in available
+        })
+        self.outbox = self._new_outbox(notifiers, self.config.quiet)
         self._istates: dict[IncidentKey, GroupState] = {}
         self._group_rungs: dict[tuple[str, str], tuple[inc.RungConfig, ...]] = {}
         self._last_rescan = -_RESCAN_EVERY_S
@@ -129,7 +130,104 @@ class DaemonCore:
         self._rebuild_incidents()
         if self.events_engine is not None and self.event_monitors:
             self._start_events()
-        self.outbox.recover(self.clock.now())  # NO-04 startup pass
+        self.dispatch_worker: DispatchWorker | None = None
+        if self.background_dispatch:
+            # Network adapters run only on this worker connection; sampling
+            # never waits for their ten-second timeout (DESIGN 10.7).
+            self.outbox.reset_inflight()
+            self.dispatch_worker = DispatchWorker(
+                self.paths.db_file, notifiers, self.clock.now,
+                quiet=self.config.quiet, on_terminal=self._record_delivery_failure,
+            )
+            self.dispatch_worker.start()
+        else:
+            self.outbox.recover(self.clock.now())  # deterministic tests
+
+    def _build_notifiers(self, config: AppConfig) -> list[Notifier]:
+        """Construct only validated channels; one bad remote stays isolated."""
+        if self._notifier_override is not None:
+            return list(self._notifier_override)
+        notifiers: list[Notifier] = [FileNotifier(self.paths.notifications_file)]
+        desktop = config.channel("desktop")
+        if desktop is not None and desktop.enabled:
+            from ftmon.notify import DesktopNotifier
+
+            desktop_notifier = DesktopNotifier()
+            if desktop_notifier.available:
+                notifiers.append(desktop_notifier)
+            else:
+                print("config warning: [notify.desktop] desktop_unavailable; "
+                      "channel disabled", file=sys.stderr)
+                self.stats.count("config_errors")
+        remote_types = {
+            "ntfy": NtfyNotifier,
+            "webhook": WebhookNotifier,
+            "smtp": SmtpNotifier,
+        }
+        for name, notifier_type in remote_types.items():
+            channel = config.channel(name)
+            if channel is None or not channel.enabled:
+                continue
+            try:
+                notifiers.append(notifier_type(channel))
+            except DeliveryError as exc:
+                # Loading normally catches readiness first. Constructor failure
+                # remains isolated if a secret rotates between validation/use.
+                print(f"config warning: [notify.{name}] {exc}; channel disabled",
+                      file=sys.stderr)
+                self.stats.count("config_errors")
+        return notifiers
+
+    def _new_outbox(
+        self, notifiers: list[Notifier], quiet: QuietHours | None
+    ) -> Outbox:
+        return Outbox(
+            self.conn, notifiers, quiet=quiet,
+            # Terminal remote failures become ordinary self-events on the next
+            # tick, avoiding a recursive notification failure loop.
+            on_terminal=self._record_delivery_failure,
+        )
+
+    def _config_file_stamp(self) -> tuple[int, int, int] | None:
+        try:
+            info = self.paths.config_file.stat()
+        except OSError:
+            return None
+        # Atomic replacement can preserve timestamp/size; inode closes that
+        # otherwise-real missed-reload window without hashing every 5-second tick.
+        return info.st_ino, info.st_mtime_ns, info.st_size
+
+    def _reload_channels(self) -> None:
+        """NO-10: apply changed channel config at a delivery-attempt boundary."""
+        if not self._reload_global_config:
+            return
+        stamp = self._config_file_stamp()
+        if stamp == self._config_stamp:
+            return
+        self._config_stamp = stamp
+        if stamp is None:
+            print("config warning: config.toml removed; keeping loaded channels",
+                  file=sys.stderr)
+            return
+        config, warnings = load_config(self.paths.config_file)
+        for warning in warnings:
+            print(f"config warning: {warning}", file=sys.stderr)
+        if any(warning.startswith("config.toml unreadable") for warning in warnings):
+            # A half-written/manual syntax error must not replace working remote
+            # delivery with desktop defaults. Atomic writers avoid this, but
+            # keeping the last good snapshot makes hand edits safe too.
+            return
+        notifiers = self._build_notifiers(config)
+        available = {notifier.name for notifier in notifiers}
+        if self.dispatch_worker is not None:
+            self.dispatch_worker.reconfigure(notifiers, config.quiet)
+        self.writer.set_delivery_channels({
+            name: channel.min_severity
+            for name, channel in config.channels
+            if channel.enabled and name in available
+        })
+        self.outbox = self._new_outbox(notifiers, config.quiet)
+        self.config = config
 
     def _start_events(self) -> None:
         """DM-15: resume from the persisted cursor; rebuild open episodes so
@@ -321,6 +419,7 @@ class DaemonCore:
             self.stats.count("clock_gaps")
         if mono - self._last_rescan >= _RESCAN_EVERY_S:
             self._last_rescan = mono
+            self._reload_channels()
             self._load_definitions()
             self._refresh_acks()
         cache: dict = {}
@@ -347,6 +446,13 @@ class DaemonCore:
             self._clear_gone(monitor, entity_id, wall)
         for ev in self.pipeline.drain_self_events():
             self.writer.add_event(ev)
+        while not self._delivery_failures.empty():
+            channel, reason, ts = self._delivery_failures.get()
+            self.writer.add_event(EventRecord(
+                ts=ts, ingest_ts=ts, source="self", provider="ftmon.notify",
+                event_id=None, severity=2,
+                message=f"notification channel {channel} failed: {reason}",
+            ))
         self.stats.ring_mem_bytes = self.rings.mem_bytes()
         self.rings.evict_if_over(self._is_protected, self.stats.count)
         self.writer.set_meta("last_tick_ts", repr(wall))
@@ -355,7 +461,10 @@ class DaemonCore:
         # extend the daemon's single tick transaction (PM-03).
         self.actions.run_pending(self.executor.drain_actions(), wall)
         # NO-04: delivery strictly after the transition committed.
-        self.outbox.flush(wall)
+        if self.dispatch_worker is None:
+            self.outbox.flush(wall)
+        else:
+            self.dispatch_worker.wake()
         if mono - self._last_retention >= _RETENTION_EVERY_S:
             self._last_retention = mono
             self._run_retention(wall)
@@ -374,6 +483,10 @@ class DaemonCore:
                 ts=wall, ingest_ts=wall, source="self", provider="ftmon.retention",
                 event_id=None, severity=1, message=note,
             ))
+
+    def _record_delivery_failure(self, channel: str, reason: str) -> None:
+        """NO-07: expose terminal delivery failure without recursive notify."""
+        self._delivery_failures.put((channel, reason, self.clock.now()))
 
     def _step_incidents(self, outcomes: list[EvalOutcome], wall: float) -> None:
         grouped: dict[IncidentKey, dict[str, inc.RungEval]] = {}
@@ -449,6 +562,7 @@ def run(args) -> int:
         paths=paths,
         clock=clock,
         event_source=event_source,
+        background_dispatch=not isinstance(clock, ControlledClock),
     )
 
     if scn is not None:
@@ -469,8 +583,14 @@ def run(args) -> int:
     tick_s = core.config.tick_seconds if core.config else 5.0
     total = len(core.monitors) + len(core.event_monitors)
     print(f"ftmon daemon started ({total} monitors)", file=sys.stderr)
-    core.run_loop(tick_s)
-    if core.events_engine is not None:
-        core.events_engine.stop()  # reap the journalctl reader
+    try:
+        core.run_loop(tick_s)
+    finally:
+        # Network and journal readers own OS resources; an unexpected sampler
+        # error must not leave either background boundary alive during teardown.
+        if core.dispatch_worker is not None:
+            core.dispatch_worker.stop()
+        if core.events_engine is not None:
+            core.events_engine.stop()  # reap the journalctl reader
     print("ftmon daemon stopped", file=sys.stderr)
     return 0

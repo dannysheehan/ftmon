@@ -99,6 +99,10 @@ class Notification:  # NO-01
     title: str
     body: str
     created_ts: float
+    # Persisted dispatch reconstructs these routing-neutral context fields for
+    # remote payloads. Defaults keep pure incident-engine values lightweight.
+    monitor: str = ""
+    entity_id: str = ""
 
 
 # --- incident engine I/O (IN-06, DESIGN 10.4) ---

@@ -446,9 +446,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Inspect database/config health and optionally create a live backup (CL-05)."""
-    import tomllib
-
     from ftmon.clock import SystemClock
+    from ftmon.config import load_config
     from ftmon.definitions import loader
     from ftmon.store.db import connect
     from ftmon.store.doctor import backup, inspect
@@ -457,11 +456,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if not paths.db_file.exists():
         print("problem: database does not exist; start the daemon once", file=sys.stderr)
         return 1
-    config_errors = []
-    try:
-        tomllib.loads(paths.config_file.read_text())
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        config_errors.append(f"config.toml: {exc}")
+    config, config_warnings = load_config(paths.config_file)
+    config_errors = list(config_warnings)
+    channel_errors = {
+        warning.split("]", 1)[0].removeprefix("[notify.")
+        for warning in config_warnings if warning.startswith("[notify.")
+    }
+    if any(warning.startswith("config.toml unreadable") for warning in config_warnings):
+        channel_errors.update(name for name, _channel in config.channels)
     _defs, definition_errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
     )
@@ -484,6 +486,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("Orphans: " + ", ".join(f"{k}={v}" for k, v in report["orphans"].items()))
     for cursor in report["cursors"]:
         print(f"Cursor {cursor['source']}: {cursor['age_s']:.0f}s old")
+    print("Notification file: ready")
+    for name, channel in config.channels:
+        # A stable code is useful to automation; resolver prose remains only a
+        # redacted diagnostic and doctor never sends a probe message (NO-10).
+        status = (
+            "error (invalid_config)" if name in channel_errors
+            else "ready" if channel.enabled else "disabled"
+        )
+        if name == "desktop" and status == "ready":
+            from ftmon.notify import DesktopNotifier
+
+            if not DesktopNotifier().available:
+                status = "error (desktop_unavailable)"
+        print(f"Notification {name}: {status}")
     for error in config_errors:
         print(f"Config error: {error}", file=sys.stderr)
     if args.backup:

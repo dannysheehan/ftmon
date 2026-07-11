@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 from ftmon.model import Notification
-from ftmon.notify.base import NotifyError
+from ftmon.notify.base import DeliveryResult, RetryableDelivery
 
 
 class FileNotifier:
@@ -21,7 +21,7 @@ class FileNotifier:
     def __init__(self, path: Path):
         self._path = path
 
-    def deliver(self, n: Notification) -> None:
+    def deliver(self, n: Notification) -> DeliveryResult:
         line = json.dumps(
             {
                 "ts": n.created_ts,
@@ -38,4 +38,7 @@ class FileNotifier:
             with open(self._path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except OSError as e:
-            raise NotifyError(str(e)) from e
+            # File audit retries indefinitely; the path/OS message does not
+            # need to enter persistent delivery diagnostics.
+            raise RetryableDelivery("file_io") from e
+        return DeliveryResult()

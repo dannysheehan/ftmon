@@ -73,7 +73,8 @@ def test_valid_enabled_channels_validate_references_without_retaining_values(
         "[notify.ntfy]\nenabled=true\ntopic='host'\ntoken_env='MISSING_NOW'\n"
         "[notify.webhook]\nenabled=true\nurl_env='WEBHOOK_URL'\n"
         "[notify.smtp]\nenabled=true\nhost='mail.example'\nport=465\n"
-        "tls='implicit'\nto=['ops@example.net']\npassword_env='SMTP_PASSWORD'\n"
+        "tls='implicit'\nusername='ftmon'\nfrom='ftmon@example.net'\n"
+        "to=['ops@example.net']\npassword_env='SMTP_PASSWORD'\n"
     )
     cfg, warnings = load_config(config)
     assert warnings == []

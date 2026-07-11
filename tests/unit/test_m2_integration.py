@@ -1,6 +1,6 @@
 """[NO-01][NO-02][NO-04][IN-02][IN-04][DM-11][DM-12][DM-14] M2 integration:
-leak fires -> outbox -> file notifier -> recovery; ack via SmallWrites;
-outbox retry/stale semantics."""
+leak fires -> durable file delivery -> recovery; ack via SmallWrites; retry
+debt survives restarts under the current policy."""
 
 from __future__ import annotations
 
@@ -157,24 +157,25 @@ def _outbox_db(tmp_path, rows):
     return conn
 
 
-def test_outbox_failed_channel_retries_next_flush(tmp_path):
-    """[NO-04] a down channel leaves rows undelivered; they deliver on the
-    next flush once a channel accepts them (no loss)."""
+def test_outbox_failed_channel_retries_when_due(tmp_path):
+    """[NO-04][NO-07] A down channel remains durable and observes the fixed
+    first retry delay instead of hot-looping on every daemon tick."""
     conn = _outbox_db(tmp_path, [(1, "open", 3, 1000)])
     broken = Outbox(conn, [BrokenNotifier()])
     assert broken.flush(now=1001) == 0
     ok = ListNotifier()
     working = Outbox(conn, [BrokenNotifier(), ok])  # one dead channel is fine
-    assert working.flush(now=1002) == 1
+    assert working.flush(now=1002) == 0
+    assert working.flush(now=1031) == 1
     assert len(ok.delivered) == 1
     assert conn.execute(
         "SELECT COUNT(*) FROM notification_deliveries WHERE state='pending'"
     ).fetchone()[0] == 0
 
 
-def test_outbox_recover_stale_vs_must_deliver(tmp_path):
-    """[NO-04] startup: old warning-level rows go stale silently; an old
-    error-opening row is delivered with a (delayed) prefix."""
+def test_outbox_recover_preserves_all_committed_delivery_debt(tmp_path):
+    """[NO-04][NO-07] Startup no longer drops old low-severity debt: only
+    the explicit per-channel retry lifetime may terminate remote delivery."""
     conn = _outbox_db(
         tmp_path,
         [(1, "renotify", 2, 1000),  # old warning renotify -> stale
@@ -183,9 +184,8 @@ def test_outbox_recover_stale_vs_must_deliver(tmp_path):
     )
     ok = ListNotifier()
     delivered, stale = Outbox(conn, [ok]).recover(now=10000)
-    assert (delivered, stale) == (2, 1)
-    bodies = [n.body for n in ok.delivered]
-    assert any(b.startswith("(delayed) ") for b in bodies)
+    assert (delivered, stale) == (3, 0)
+    assert [n.body for n in ok.delivered] == ["b", "b", "b"]
     assert conn.execute(
         "SELECT COUNT(*) FROM notification_deliveries WHERE state='failed'"
-    ).fetchone()[0] == 1
+    ).fetchone()[0] == 0

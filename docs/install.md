@@ -47,9 +47,47 @@ mode 0600). Symlinks, oversized files, literal secret keys, missing references,
 and unsafe permissions disable only that channel and produce a redacted config
 warning (SE-05, NO-10).
 
-The file notification audit remains mandatory. Remote delivery adapters and
-their independent retry worker arrive in WP27; WP26 establishes the safe config
-and durable database boundary first.
+The file notification audit remains mandatory. Enabled channels receive
+independent durable delivery records, so success in one cannot hide failure in
+another. Remote failures retry after 30 seconds, 2 minutes, 10 minutes, 1 hour,
+then every 6 hours, with a 24-hour limit; file audit failures keep retrying.
+HTTP 408/429/5xx and SMTP 4xx responses retry, while other HTTP 4xx and SMTP
+5xx responses fail permanently (NO-07).
+
+The generic webhook receives the versioned `ftmon.notify.v1` JSON document.
+Its full URL is a secret because many messenger services embed credentials in
+the path or query:
+
+```toml
+[notify.webhook]
+enabled = true
+min_severity = "error"
+url_env = "FTMON_WEBHOOK_URL"
+```
+
+SMTP always establishes STARTTLS or implicit TLS before authentication:
+
+```toml
+[notify.smtp]
+enabled = true
+min_severity = "warning"
+host = "smtp.example.net"
+port = 587
+tls = "starttls"
+username = "ftmon@example.net"
+from = "ftmon@example.net"
+to = ["operator@example.net"]
+password_file = "/run/credentials/ftmon.service/smtp-password"
+```
+
+Notification bodies sent through ntfy, a webhook, or SMTP leave the monitored
+host. Keep rule messages concise and avoid sensitive command lines or journal
+content. The public ntfy service may retain messages temporarily; self-host ntfy
+when that data-egress policy is unsuitable (NO-09).
+
+`ftmon doctor` reports each channel as `ready`, `disabled`, or with a stable
+error code. It resolves references and checks local readiness but deliberately
+does not send a test notification or print credential values (NO-10).
 
 ## Run the daemon with systemd
 

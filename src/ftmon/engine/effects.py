@@ -2,8 +2,8 @@
 (IN-06's other half — all I/O the state machine refused to do).
 
 Everything here lands in the tick's single transaction via TickWriter;
-notification *delivery* is not here at all — effects only enqueue outbox
-rows (NO-04), and the daemon flushes the outbox after commit.
+notification *delivery* is not here at all — effects only enqueue immutable
+notifications and channel debt (NO-04/DM-18); dispatch runs after commit.
 
 Actions are queued with their committed incident id and drained by the daemon
 after commit. Running a subprocess inside the tick transaction would violate

@@ -2,6 +2,8 @@
 
 import sqlite3
 
+from ftmon.cli import main
+from ftmon.paths import get_paths
 from ftmon.store.db import connect, migrate
 from ftmon.store.doctor import backup, inspect
 
@@ -42,3 +44,26 @@ def test_backup_uses_sqlite_snapshot_vc_03(tmp_path):
     snap.close()
     assert destination.stat().st_mode & 0o777 == 0o600
     conn.close()
+
+
+def test_doctor_reports_redacted_channel_readiness_no_10(tmp_path, monkeypatch, capsys):
+    """[NO-10][SE-05] Readiness has stable states and never sends or leaks."""
+    for name in ("CONFIG", "DATA", "STATE", "RUNTIME"):
+        monkeypatch.setenv(f"FTMON_{name}_DIR", str(tmp_path / name.lower()))
+    paths = get_paths()
+    paths.ensure()
+    paths.config_file.write_text(
+        "[notify.desktop]\nenabled=false\n"
+        "[notify.ntfy]\nenabled=true\ntopic='host'\n"
+        "token_env='ABSENT_PRIVATE_TOKEN'\n"
+    )
+    conn = connect(paths.db_file)
+    migrate(conn)
+    conn.close()
+
+    assert main(["doctor"]) == 1
+    captured = capsys.readouterr()
+    assert "Notification desktop: disabled" in captured.out
+    assert "Notification ntfy: error (invalid_config)" in captured.out
+    assert "Notification webhook: disabled" in captured.out
+    assert "ABSENT_PRIVATE_TOKEN" not in captured.out + captured.err

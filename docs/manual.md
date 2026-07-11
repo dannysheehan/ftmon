@@ -243,8 +243,10 @@ the web UI. An audit trail of every notification is kept at
 `~/.local/state/ftmon/notifications.jsonl`. Desktop popups are enabled by the
 desktop initialization profile and disabled by the server profile. Remote
 ntfy, webhook, and SMTP delivery is configured with protected external secret
-references; see `docs/install.md`. Secret values are never valid directly in
-`config.toml` (SE-05).
+references; see `docs/install.md`. Delivery is independent per channel and
+honestly at-least-once, so the one in-flight channel attempt may be duplicated
+after a crash but another channel's success cannot conceal its failure. Secret
+values are never valid directly in `config.toml` (SE-05).
 
 Quiet hours are set in `config.toml`:
 

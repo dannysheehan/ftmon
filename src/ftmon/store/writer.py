@@ -55,9 +55,17 @@ class TickWriter:
         self,
         conn: sqlite3.Connection,
         on_reject: Callable[[str], None] = lambda _reason: None,
+        delivery_channels: Mapping[str, int] | None = None,
     ) -> None:
         self._conn = conn
         self._on_reject = on_reject
+        # File is an invariant, not configuration: it is the durable local
+        # audit proof required by NO-04.  Optional channels are frozen here so
+        # a later config edit cannot mutate delivery obligations already
+        # committed with an incident transition (DM-18).
+        self._delivery_channels = {"file": 0}
+        if delivery_channels is not None:
+            self._delivery_channels.update(delivery_channels)
 
         self._series_cache: dict[tuple[str, str, str], int] = {}
         self._next_series_id: int | None = None
@@ -78,6 +86,17 @@ class TickWriter:
         self._next_incident_id: int | None = None
         self._next_outbox_id: int | None = None
         self._history_seq: dict[int, int] = {}
+
+    def set_delivery_channels(self, channels: Mapping[str, int]) -> None:
+        """Replace optional fan-out policy before notifications are buffered.
+
+        Daemon composition resolves channel readiness after constructing the
+        writer. Refusing a mid-tick change keeps one notification's frozen set
+        internally consistent across a configuration reload.
+        """
+        if self._pending_outbox:
+            raise RuntimeError("cannot change delivery channels with pending notifications")
+        self._delivery_channels = {"file": 0, **channels}
 
     # -- id allocation -----------------------------------------------
 
@@ -231,11 +250,13 @@ class TickWriter:
     def add_outbox(self, incident_id: int, kind: str, body: Mapping, created_ts: float) -> int:
         """NO-04: committed in the same transaction as the incident
         transition that caused it; delivery happens post-commit."""
-        if self._next_outbox_id is None:
-            (max_id,) = self._conn.execute(
-                "SELECT COALESCE(MAX(id), 0) FROM notifications"
-            ).fetchone()
-            self._next_outbox_id = max_id + 1
+        # The dispatcher may atomically materialize a quiet-hours digest on
+        # its own connection between ticks. Refreshing the floor prevents its
+        # durable notification id from colliding with this writer's cache.
+        (max_id,) = self._conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM notifications"
+        ).fetchone()
+        self._next_outbox_id = max(max_id + 1, self._next_outbox_id or 1)
         new_id = self._next_outbox_id
         self._next_outbox_id += 1
         rendered = dict(body)
@@ -358,12 +379,19 @@ class TickWriter:
                     "monitor, entity_id, created_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     self._pending_outbox,
                 )
-                # Freezing the mandatory compatibility channel atomically is
-                # what prevents a crash from losing a committed notification.
+                deliveries = [
+                    (row[0], channel, row[8])
+                    for row in self._pending_outbox
+                    for channel, min_severity in self._delivery_channels.items()
+                    if row[3] >= min_severity
+                ]
+                # Fan-out eligibility is deliberately evaluated while the
+                # notification is still buffered: the complete immutable set
+                # is therefore committed in the incident transaction.
                 cur.executemany(
                     "INSERT INTO notification_deliveries(notification_id, channel, state, "
-                    "next_attempt_ts) VALUES (?, 'file', 'pending', ?)",
-                    [(row[0], row[8]) for row in self._pending_outbox],
+                    "next_attempt_ts) VALUES (?, ?, 'pending', ?)",
+                    deliveries,
                 )
             if self._pending_monitor_loads:
                 cur.executemany(
