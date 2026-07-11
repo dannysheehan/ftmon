@@ -31,6 +31,9 @@ class SeriesResult:
     entity_id: str
     resolution: str  # "raw" | "5m" | "1h"
     points: list[SeriesPoint]
+    statistic: str = "avg"
+    lower: list[SeriesPoint] | None = None
+    upper: list[SeriesPoint] | None = None
 
 
 def lttb(points: list[SeriesPoint], n: int) -> list[SeriesPoint]:
@@ -105,7 +108,17 @@ class Query:
         end: float,
         entity_id: str | None = None,
         max_points: int = 2000,
+        statistic: str = "avg",
+        include_envelope: bool = False,
     ) -> list[SeriesResult]:
+        """Read a tier-transparent series with optional rollup extrema (DM-17).
+
+        Column selection precedes LTTB. Envelopes are sampled at the exact
+        timestamps selected for the center line so browser code cannot
+        accidentally align unrelated buckets.
+        """
+        if statistic not in {"avg", "min", "max", "last"}:
+            raise ValueError("statistic must be avg, min, max, or last")
         sql = "SELECT id, entity_id FROM series WHERE monitor=? AND metric=?"
         params: list[object] = [monitor, metric]
         if entity_id is not None:
@@ -126,21 +139,32 @@ class Query:
                     (sid, istart, iend),
                 ).fetchall()
                 points = [SeriesPoint(ts=r["ts"], value=r["value"]) for r in rows]
+                envelope = {p.ts: (p.value, p.value) for p in points}
             else:
                 table = "rollup5m" if resolution == "5m" else "rollup1h"
                 rows = self._conn.execute(
-                    f"SELECT bucket, avg FROM {table} "  # noqa: S608 - table is a fixed literal
+                    f"SELECT bucket, {statistic} AS value, min, max FROM {table} "  # noqa: S608
                     "WHERE series_id=? AND bucket>=? AND bucket<=? ORDER BY bucket",
                     (sid, istart, iend),
                 ).fetchall()
                 points = [
-                    SeriesPoint(ts=r["bucket"], value=r["avg"])
+                    SeriesPoint(ts=r["bucket"], value=r["value"])
                     for r in rows
-                    if r["avg"] is not None
+                    if r["value"] is not None
                 ]
+                envelope = {
+                    r["bucket"]: (r["min"], r["max"])
+                    for r in rows if r["min"] is not None and r["max"] is not None
+                }
 
             if len(points) > max_points:
                 points = lttb(points, max_points)
+            lower = upper = None
+            if include_envelope:
+                lower = [SeriesPoint(p.ts, envelope[p.ts][0]) for p in points
+                         if p.ts in envelope]
+                upper = [SeriesPoint(p.ts, envelope[p.ts][1]) for p in points
+                         if p.ts in envelope]
 
             results.append(
                 SeriesResult(
@@ -149,9 +173,137 @@ class Query:
                     entity_id=row["entity_id"],
                     resolution=resolution,
                     points=points,
+                    statistic=statistic,
+                    lower=lower,
+                    upper=upper,
                 )
             )
         return results
+
+    def disk_trend(
+        self,
+        entity_id: str,
+        *,
+        now: float,
+        start: float,
+        end: float,
+        filling_frac: float = 0.85,
+        max_points: int = 2000,
+    ) -> dict:
+        """Build the honest three-panel disk contract (CA-09/UI-10/UI-11).
+
+        Projection is derived from persisted pre-downsampling rate and
+        confidence. Missing timestamps remain absent; the client aligns them
+        as null gaps rather than inventing observations (DM-17).
+        """
+        max_points = max(3, max_points)
+
+        def one(
+            metric: str, *, statistic: str = "avg", envelope: bool = False,
+            working_points: int = 10_000,
+        ):
+            rows = self.series(
+                "disk", metric, now=now, start=start, end=end,
+                entity_id=entity_id, max_points=working_points,
+                statistic=statistic, include_envelope=envelope,
+            )
+            return rows[0] if rows else None
+
+        # Inputs stay at the validated 10k history ceiling until projection is
+        # qualified. Independently downsampling rate/confidence/free first can
+        # choose different timestamps and manufacture missing intersections.
+        used_pct = one("used_pct", envelope=True, working_points=max_points)
+        used_bytes = one("used_bytes", statistic="last")
+        free_bytes = one("free_bytes", statistic="last")
+        rate = one("fill_rate_bph")
+        confidence = one("filling")
+        rate_map = {p.ts: p.value for p in rate.points} if rate else {}
+        confidence_map = {p.ts: p.value for p in confidence.points} if confidence else {}
+        free_map = {p.ts: p.value for p in free_bytes.points} if free_bytes else {}
+        projection = []
+        for ts in sorted(set(rate_map) & set(confidence_map) & set(free_map)):
+            qualified = rate_map[ts] > 0 and confidence_map[ts] >= filling_frac
+            projection.append([ts, free_map[ts] / rate_map[ts] if qualified else None])
+
+        def cap_nullable(points: list[list[float | None]]) -> list[list[float | None]]:
+            """Cap projection while retaining endpoints and gap boundaries."""
+            if len(points) <= max_points:
+                return points
+            stride = math.ceil((len(points) - 2) / (max_points - 2))
+            indexes = {0, len(points) - 1, *range(1, len(points) - 1, stride)}
+            indexes.update(
+                i for i in range(1, len(points))
+                if (points[i - 1][1] is None) != (points[i][1] is None)
+            )
+            selected = sorted(indexes)
+            if len(selected) > max_points:
+                selected = selected[::math.ceil(len(selected) / max_points)][:max_points - 1]
+                selected.append(len(points) - 1)
+            return [points[i] for i in selected]
+
+        projection = cap_nullable(projection)
+
+        incidents = []
+        for row in self._conn.execute(
+            "SELECT id,state,severity,opened_ts,last_change_ts,cleared_ts,grp "
+            "FROM incidents WHERE monitor='disk' AND entity_id=? "
+            "AND last_change_ts>=? AND opened_ts<=? ORDER BY opened_ts",
+            (entity_id, round(start), round(end)),
+        ):
+            incidents.append(dict(row))
+
+        def pairs(result: SeriesResult | None) -> list[list[float]]:
+            if result is None:
+                return []
+            points = result.points
+            if len(points) > max_points:
+                points = lttb(points, max_points)
+            return [[p.ts, p.value] for p in points]
+
+        current_pct = used_pct.points[-1].value if used_pct and used_pct.points else None
+        change_bytes = None
+        if used_bytes and len(used_bytes.points) >= 2:
+            change_bytes = used_bytes.points[-1].value - used_bytes.points[0].value
+        latest_ts = max(set(rate_map) & set(confidence_map) & set(free_map), default=None)
+        latest_qualified = (
+            latest_ts is not None
+            and rate_map[latest_ts] > 0
+            and confidence_map[latest_ts] >= filling_frac
+        )
+        summary = {
+            "current_used_pct": current_pct,
+            "change_bytes": change_bytes,
+            "fill_rate_bph": rate_map.get(latest_ts) if latest_qualified else None,
+            "filling_confidence": confidence_map.get(latest_ts) if latest_ts else None,
+            "projected_full_ts": (
+                latest_ts + free_map[latest_ts] / rate_map[latest_ts] * 3600
+                if latest_qualified else None
+            ),
+            "projection_reason": None if latest_qualified else (
+                "no reliable projection: growth is non-positive, irregular, or insufficient"
+            ),
+        }
+        resolution = next((x.resolution for x in
+                           (used_pct, rate, confidence, free_bytes) if x), "raw")
+        return {
+            "entity": entity_id,
+            "range": {"start": start, "end": end},
+            "resolution": resolution,
+            "units": {"capacity": "%", "rate": "bytes/hour",
+                      "confidence": "fraction", "projection": "hours"},
+            "capacity": {
+                "points": pairs(used_pct),
+                "lower": pairs(None) if used_pct is None or used_pct.lower is None else
+                         [[p.ts, p.value] for p in used_pct.lower],
+                "upper": pairs(None) if used_pct is None or used_pct.upper is None else
+                         [[p.ts, p.value] for p in used_pct.upper],
+            },
+            "rate": pairs(rate),
+            "confidence": pairs(confidence),
+            "projection": projection,
+            "incidents": incidents,
+            "summary": summary,
+        }
 
     def entities(self, monitor: str, *, alive_only: bool = False) -> list[sqlite3.Row]:
         sql = "SELECT * FROM entities WHERE monitor=?"

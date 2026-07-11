@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tomllib
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from urllib.parse import parse_qs
 
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -12,12 +13,13 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
 from ftmon.clock import SystemClock
 from ftmon.definitions import loader, manage
+from ftmon.expr import ExprError, parse_duration
 from ftmon.model import severity_name
 from ftmon.paths import Paths, get_paths
 from ftmon.store.db import connect
@@ -50,7 +52,11 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
 
 def _render(name: str, request: Request, **context) -> HTMLResponse:
-    context.update(request=request, severity_name=severity_name)
+    context.update(
+        request=request,
+        severity_name=severity_name,
+        utc_iso=lambda ts: datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d %H:%M UTC"),
+    )
     return HTMLResponse(_jinja.get_template(name).render(**context))
 
 
@@ -149,6 +155,82 @@ async def metrics(request: Request):
                    series=series, series_json=json.dumps(series), params=p)
 
 
+def _disk_request(request: Request) -> tuple[str | None, float, float, str] | Response:
+    """Normalize shareable disk range state in one place (UI-10)."""
+    entity = request.path_params.get("entity") or request.query_params.get("entity")
+    range_text = request.query_params.get("range", "24h")
+    try:
+        seconds = parse_duration(range_text)
+    except ExprError:
+        return Response("Invalid range; use values such as 6h, 7d, or 30d", status_code=400)
+    if not 900 <= seconds <= 400 * 86400:
+        return Response("Range must be between 15m and 400d", status_code=400)
+    now = request.app.state.clock.now()
+    return entity, now - seconds, now, range_text
+
+
+def _disk_definition(paths: Paths):
+    """Return active disk thresholds; charts must match the rule configuration."""
+    try:
+        return loader.load_file(
+            paths.monitors_dir / "disk.toml",
+            actions_dir=paths.actions_dir,
+            require_actions=True,
+        )
+    except (OSError, loader.ValidationError):
+        return None
+
+
+async def disk_trend_api(request: Request):
+    """JSON contract for synchronized historical disk panels (UI-10/DM-17)."""
+    parsed = _disk_request(request)
+    if isinstance(parsed, Response):
+        return parsed
+    entity, start, end, range_text = parsed
+    if not entity:
+        return Response("entity is required", status_code=400)
+    mdef = _disk_definition(request.app.state.paths)
+    filling_frac = mdef.parameters.get("filling_frac", 0.85) if mdef else 0.85
+    with _query(request) as q:
+        if q is None:
+            return Response("Database not found", status_code=404)
+        trend = q.disk_trend(
+            entity, now=end, start=start, end=end, filling_frac=filling_frac,
+        )
+    trend["range"]["label"] = range_text
+    trend["thresholds"] = {
+        key: value for key, value in (mdef.parameters.items() if mdef else ())
+        if key.startswith("space_") or key == "filling_frac"
+    }
+    return JSONResponse(trend)
+
+
+async def disks(request: Request):
+    """Server-render the accessible disk trend shell and summary (UI-10/11)."""
+    parsed = _disk_request(request)
+    if isinstance(parsed, Response):
+        return parsed
+    entity, start, end, range_text = parsed
+    with _query(request) as q:
+        entities = [] if q is None else [row["entity_id"] for row in q.entities("disk")]
+        entity = entity or (entities[0] if entities else None)
+        mdef = _disk_definition(request.app.state.paths)
+        filling_frac = mdef.parameters.get("filling_frac", 0.85) if mdef else 0.85
+        trend = None if q is None or entity is None else q.disk_trend(
+            entity, now=end, start=start, end=end, filling_frac=filling_frac,
+        )
+    if trend is not None:
+        trend["range"]["label"] = range_text
+        trend["thresholds"] = {
+            key: value for key, value in (mdef.parameters.items() if mdef else ())
+            if key.startswith("space_") or key == "filling_frac"
+        }
+    return _render(
+        "disks.html", request, title="Disk trends", entities=entities,
+        entity=entity, range_text=range_text, trend=trend,
+    )
+
+
 async def events(request: Request):
     now = request.app.state.clock.now()
     p = request.query_params
@@ -220,6 +302,8 @@ def create_app(paths: Paths | None = None, clock=None, port: int = 8420) -> Star
         Route("/incidents/{id:int}", incident_detail),
         Route("/incidents/{id:int}/ack", ack, methods=["POST"]),
         Route("/metrics", metrics), Route("/events", events),
+        Route("/disks", disks), Route("/disks/{entity:path}", disks),
+        Route("/api/disk-trend", disk_trend_api),
         Route("/monitors", monitors),
         Route("/monitors/{name:str}/{action:str}", monitor_action, methods=["POST"]),
         Route("/self", self_page),

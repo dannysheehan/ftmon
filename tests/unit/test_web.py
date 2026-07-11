@@ -76,3 +76,43 @@ def test_metrics_chart_has_text_alternative_ui_05_ui_09(tmp_path):
     assert page.status_code == 200
     assert "Current value 3.0; trend rising" in page.text
     assert "role=\"img\"" in page.text
+
+
+def test_disk_trend_api_and_accessible_page_ui_10_ui_11_ts_09(tmp_path):
+    """[UI-10][UI-11][TS-09] Shareable disk state exposes panels and honest text."""
+    client, paths = _client(tmp_path)
+    builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/disk.toml"
+    (paths.monitors_dir / "disk.toml").write_text(builtin.read_text())
+    conn = connect(paths.db_file)
+    metrics = ["used_pct", "used_bytes", "free_bytes", "fill_rate_bph", "filling"]
+    for sid, metric in enumerate(metrics, 1):
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES(?,'disk','/data<script>',?,1)", (sid, metric)
+        )
+    vals = {1: 72.0, 2: 720.0, 3: 280.0, 4: 10.0, 5: 0.9}
+    for sid, value in vals.items():
+        conn.execute("INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)",
+                     (sid, 1000, value))
+    conn.execute(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,attrs) "
+        "VALUES('disk','/data<script>',1,1000,'{}')"
+    )
+    conn.commit()
+    conn.close()
+    headers = {"host": "localhost:8420"}
+    api = client.get(
+        "/api/disk-trend?entity=/data%3Cscript%3E&range=6h", headers=headers
+    )
+    assert api.status_code == 200
+    payload = api.json()
+    assert payload["units"]["rate"] == "bytes/hour"
+    assert payload["thresholds"]["space_warn_pct"] == 92
+    page = client.get(
+        "/disks?entity=/data%3Cscript%3E&range=6h", headers=headers
+    )
+    assert page.status_code == 200
+    assert "/data&lt;script&gt;" in page.text
+    assert "no reliable projection" not in page.text
+    assert 'data-panel="capacity"' in page.text
+    assert "vendor/uPlot.iife.min.js" in page.text

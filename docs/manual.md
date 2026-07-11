@@ -180,6 +180,20 @@ alerts when my VPN drops" works without pasting docs.
 `ftmon monitor enable <name>` / `disable <name>` flip a monitor's
 `enabled` line in place — comments and formatting in your file survive.
 
+### Historical disk trends
+
+The **Disk trends** page separates capacity, signed growth rate/confidence,
+and qualified time remaining into synchronized charts. This avoids mixing
+percent, bytes/hour, and hours on one misleading axis. Long ranges use stored
+5-minute or hourly rollups with min/max envelopes, while missing observations
+remain visible gaps.
+
+A projected-full date appears only when the 70-minute rate is positive and
+the disk grew consistently enough to pass its configured filling confidence.
+Flat, shrinking, sparse, or irregular history says why no reliable projection
+is available instead of showing an enormous artificial number. The selected
+filesystem and range stay in the URL so a view can be bookmarked or shared.
+
 ## 7. Writing your own monitors
 
 See the definitions reference (`docs/definitions.md`) — the complete TOML

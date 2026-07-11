@@ -71,7 +71,7 @@ def test_sampler_state_in_force_and_t0_anchor(tmp_path):
 def test_named_library_and_unknown(tmp_path):
     assert set(SCENARIO_NAMES) == {
         "steady", "firefox-leak-2mb-min", "entity-vanishes-mid-incident",
-        "oom-event-burst", "disk-ladder-updown", "service-flap",
+        "oom-event-burst", "disk-ladder-updown", "disk-filling-linear", "service-flap",
         "proc-churn-300"}
     for name in SCENARIO_NAMES:
         assert scenario(name).sources() <= {"process", "disk", "unit"}

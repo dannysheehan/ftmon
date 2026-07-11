@@ -9,9 +9,13 @@ import signal
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+from starlette.testclient import TestClient
 
+from ftmon.clock import FakeClock
+from ftmon.web.app import create_app
 from tests.e2e.harness import DaemonHarness
 from tests.unit.test_engine import LEAKDEF
 
@@ -218,5 +222,36 @@ def test_action_runs_through_real_daemon_once_e2e_ac_02(tmp_path):
             "SELECT kind,detail FROM incident_history WHERE kind='action_run'"
         ).fetchone()
         assert row is not None and '"exit_code": 0' in row["detail"]
+    finally:
+        h.stop()
+
+
+def test_disk_fill_rate_persisted_before_query_downsampling_ts_09_ca_09(tmp_path):
+    """[TS-09][CA-09] Tier-1 disk fixture produces the signed persisted rate."""
+    disk_def = (
+        Path(__file__).parents[2] / "src/ftmon/definitions/builtins/disk.toml"
+    ).read_text()
+    h = DaemonHarness(tmp_path, {"disk": disk_def}, "disk-filling-linear")
+    try:
+        h.start()
+        h.step_until(
+            lambda: h.paths.db_file.exists() and _db(h).execute(
+                "SELECT COUNT(*) FROM series WHERE metric='fill_rate_bph'"
+            ).fetchone()[0] > 0,
+            max_steps=100,
+        )
+        conn = _db(h)
+        row = conn.execute(
+            "SELECT s.value FROM samples s JOIN series se ON se.id=s.series_id "
+            "WHERE se.metric='fill_rate_bph' ORDER BY s.ts DESC LIMIT 1"
+        ).fetchone()
+        assert row["value"] > 0
+        web = TestClient(create_app(h.paths, FakeClock(wall=1_700_001_000)))
+        response = web.get(
+            "/api/disk-trend?entity=/data&range=6h",
+            headers={"host": "localhost:8420"},
+        )
+        assert response.status_code == 200
+        assert response.json()["rate"][-1][1] > 0
     finally:
         h.stop()

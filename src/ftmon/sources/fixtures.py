@@ -269,6 +269,34 @@ def _disk_ladder() -> Scenario:
     return _build(lines)
 
 
+def _disk_filling_linear() -> Scenario:
+    """One ext4 mount grows 1 GiB/min for 90 minutes (CA-09/TS-09).
+
+    A point every monitor interval matters here: slope and monotonic confidence
+    must be evaluated from the original observations, not sparse plateaus or
+    display-downsampled history.
+    """
+    total = float(200 * 2**30)
+    lines = []
+    for minute in range(91):
+        used = float((50 + minute) * 2**30)
+        lines.append({
+            "at": minute * 60.0,
+            "source": "disk",
+            "entities": [{
+                "entity_id": "/data",
+                "attrs": {"fstype": "ext4", "device": "/dev/sdb1"},
+                "metrics": {
+                    "total_bytes": total,
+                    "used_bytes": used,
+                    "free_bytes": total - used,
+                    "used_pct": 100.0 * used / total,
+                },
+            }],
+        })
+    return _build(lines)
+
+
 def _service_flap() -> Scenario:
     """present flips 1 -> 0 every 2 minutes for 20 minutes, then holds up:
     five quick open/clear cycles. The later re-opens land within IN-05's
@@ -314,6 +342,7 @@ _LIBRARY = {
     "entity-vanishes-mid-incident": _entity_vanishes,
     "oom-event-burst": _oom_burst,
     "disk-ladder-updown": _disk_ladder,
+    "disk-filling-linear": _disk_filling_linear,
     "service-flap": _service_flap,
     "proc-churn-300": _proc_churn,
 }

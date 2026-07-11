@@ -1,6 +1,6 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{ title }} · FTMON</title><link rel="stylesheet" href="{{ request.url_for('static', path='ftmon.css') }}">
-<script src="{{ request.url_for('static', path='ftmon.js') }}" defer></script></head><body{% if refresh_ms is defined %} data-refresh-ms="{{ refresh_ms }}"{% endif %}>
-<header><a class="brand" href="/">FTMON</a><nav aria-label="Primary"><a href="/">Dashboard</a><a href="/incidents">Incidents</a><a href="/metrics">Metrics</a><a href="/events">Events</a><a href="/monitors">Monitors</a><a href="/self">Self</a></nav></header>
+<title>{{ title }} · FTMON</title><link rel="stylesheet" href="{{ request.url_for('static', path='vendor/uPlot.min.css') }}"><link rel="stylesheet" href="{{ request.url_for('static', path='ftmon.css') }}">
+<script src="{{ request.url_for('static', path='vendor/uPlot.iife.min.js') }}" defer></script><script src="{{ request.url_for('static', path='ftmon.js') }}" defer></script></head><body{% if refresh_ms is defined %} data-refresh-ms="{{ refresh_ms }}"{% endif %}>
+<header><a class="brand" href="/">FTMON</a><nav aria-label="Primary"><a href="/">Dashboard</a><a href="/incidents">Incidents</a><a href="/metrics">Metrics</a><a href="/disks">Disk trends</a><a href="/events">Events</a><a href="/monitors">Monitors</a><a href="/self">Self</a></nav></header>
 <main>{% if status is defined and status.daemon_stale %}<div class="stale" role="alert">⚠ Daemon data is stale{% if status.last_tick_age_s is not none %} ({{ '%.0f'|format(status.last_tick_age_s) }} seconds old){% endif %}</div>{% endif %}{% block content %}{% endblock %}</main>
 </body></html>

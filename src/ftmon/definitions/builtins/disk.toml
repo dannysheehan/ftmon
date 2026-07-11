@@ -10,7 +10,7 @@ exempt = [ 'matches(fstype, "^(tmpfs|iso9660|squashfs|overlay)$")' ]
 [monitor]
 name = "disk"
 description = "Disk space thresholds, inode thresholds, and filling-rate detection"
-version = 1
+version = 2
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -28,6 +28,12 @@ filling_frac = { value = 0.85, doc = "Fraction of consecutive growth samples (70
 [[derived]]
 name = "filling"
 expr = 'monot(used_bytes, "70m")'
+
+[[derived]]
+# Signed rate is stored before display downsampling so historical cleanup is
+# not misrepresented as growth and long-range forecasts remain honest (CA-09).
+name = "fill_rate_bph"
+expr = 'slope(used_bytes, "70m") * 3600'
 
 [[derived]]
 # Hours until full at the current 70m growth rate; huge when not growing.
