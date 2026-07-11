@@ -57,8 +57,10 @@ explicit settings with desktop popups disabled; remote ntfy, webhook, and SMTP
 channels use environment or protected-file credential references and maintain
 independent durable retry state.
 
-For a user-level installation and systemd service, follow the
-[installation guide](docs/install.md).
+For a user-level service or a hardened dedicated `ftmon` server account,
+follow the [installation guide](docs/install.md). The operational dashboard
+stays on loopback; reach it remotely with an SSH tunnel rather than exposing
+the unauthenticated UI through a public reverse proxy.
 
 ## Documentation
 

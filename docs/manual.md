@@ -80,10 +80,10 @@ Directories FTMON uses (Linux):
 
 | Path | Purpose |
 | --- | --- |
-| `~/.config/ftmon/config.toml` | global settings (tick rate, quiet hours, privacy, web port) |
+| `~/.config/ftmon/config.toml` | global settings |
 | `~/.config/ftmon/monitors/*.toml` | your monitor definitions |
-| `~/.config/ftmon/monitors/drafts/` | AI-proposed definitions awaiting your approval |
-| `~/.config/ftmon/actions/` | scripts rules may run (you create these by hand, on purpose) |
+| `~/.config/ftmon/monitors/drafts/` | definitions awaiting approval |
+| `~/.config/ftmon/actions/` | operator-created action scripts |
 | `~/.local/share/ftmon/ftmon.db` | metric/event/incident history (SQLite) |
 | `~/.local/state/ftmon/` | daemon log + notification audit trail (JSONL) |
 
@@ -248,6 +248,14 @@ honestly at-least-once, so the one in-flight channel attempt may be duplicated
 after a crash but another channel's success cannot conceal its failure. Secret
 values are never valid directly in `config.toml` (SE-05).
 
+On a server, `ftmon doctor` is the safe readiness check: it validates each
+channel and credential reference but sends nothing. Delivery failures and
+retry debt remain visible independently per channel, while the mandatory local
+JSONL audit is the durable record. The installation guide explains protected
+credential files, systemd credentials, and an offline loopback webhook smoke
+test. This separation exists so an operator can diagnose configuration without
+leaking a token or surprising recipients.
+
 Quiet hours are set in `config.toml`:
 
 ```toml
@@ -275,8 +283,11 @@ status, timeout, or rate-limit suppression is retained in incident history.
 
 ## 9. Privacy
 
-Everything stays on your machine: no telemetry, no network listeners
-except the localhost web page, MCP only over stdio to a client you run.
+There is no telemetry. Operational listeners remain limited to the localhost
+web page and MCP remains stdio-only. When you explicitly enable ntfy, webhook,
+or SMTP, the rendered notification leaves the machine; raw incident attributes
+and credential values do not. Review the destination's retention policy before
+enabling it.
 Process command lines are recorded (truncated) because they're usually
 exactly what identifies a culprit; set `collect_cmdline = false` in
 `config.toml` to keep only program names. Data files are private to your
@@ -286,11 +297,11 @@ user (0600).
 
 | Symptom | Look at |
 | --- | --- |
-| "no data - is the daemon running?" | `ftmon daemon` running? `systemctl --user status ftmon` (M6) |
-| a monitor stopped working after an edit | `ftmon check` — the daemon keeps the last good version and reports a config error in `ftmon status` |
-| too many notifications from one rule | raise `confirm_cycles`, add an `exempt`, or ack the incident |
-| FTMON itself flagged over budget | the `self` monitor fired — see the Self page or `ftmon incident` for which resource |
-| database concerns | `ftmon doctor`; create a consistent live backup with `ftmon doctor --backup PATH` |
+| No data | Start `ftmon daemon`; check the service status. |
+| Monitor failed after an edit | Run `ftmon check`; inspect `ftmon status`. |
+| Too many notifications | Raise `confirm_cycles`, add an `exempt`, or ack. |
+| FTMON over budget | Open the Self page or inspect the incident. |
+| Database concerns | Run `ftmon doctor`; use its `--backup PATH` option. |
 
 Never copy the live `ftmon.db` file directly: SQLite may have committed data
 in its WAL file. `ftmon doctor --backup PATH` uses SQLite's snapshot API and

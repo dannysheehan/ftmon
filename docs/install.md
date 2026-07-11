@@ -91,6 +91,8 @@ does not send a test notification or print credential values (NO-10).
 
 ## Run the daemon with systemd
 
+### Desktop or workstation user service
+
 The wheel contains `ftmon/systemd/ftmon.service`. With the repository checkout:
 
 ```sh
@@ -105,6 +107,129 @@ The packaged unit expects uv's default `~/.local/bin/ftmon` installation. If
 you installed elsewhere, copy the unit and change only `ExecStart`. FTMON is a
 user service because running as root would give monitor definitions and actions
 authority they neither need nor should have.
+
+### Dedicated single-server service
+
+On a headless server, use a dedicated system account rather than an
+administrator's login account. A real home directory is intentional: FTMON's
+configuration, SQLite database, notification audit, and optional action
+allow-list need one private, predictable ownership boundary (PM-09, DO-06).
+
+```sh
+sudo useradd --system --create-home --home-dir /var/lib/ftmon \
+  --shell /usr/sbin/nologin ftmon
+sudo env UV_TOOL_DIR=/opt/ftmon UV_TOOL_BIN_DIR=/usr/local/bin \
+  uv tool install .
+sudo -u ftmon -H /usr/local/bin/ftmon init --profile server
+sudo install -m 0644 src/ftmon/systemd/ftmon-server.service \
+  /etc/systemd/system/ftmon.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now ftmon.service
+sudo systemctl status ftmon.service
+```
+
+Root owns `/opt/ftmon` and `/usr/local/bin/ftmon`, so the service account cannot
+replace the program systemd starts. The example copies the unit from a source
+checkout. Installed packages also contain `ftmon/systemd/ftmon-server.service`;
+inspect it before installation and adjust `ExecStart` if the executable is
+elsewhere. The unit fixes `User` and `Group` to `ftmon`, grants no capabilities
+or unit-defined supplementary groups, makes the host filesystem read-only to
+the process, and permits writes only below `/var/lib/ftmon`. These controls
+limit the impact of a bad definition or action; they do not turn user-authored
+actions into untrusted sandboxed code. A start is refused if server-profile
+`config.toml` is absent, preventing an apparently healthy empty deployment.
+
+The unit deliberately does not use `ProtectProc=invisible`. FTMON cannot
+truthfully report other users' processes if systemd hides them. Linux may
+still restrict individual process details through `/proc` mount options or
+Yama; FTMON records unavailable optional fields as unavailable rather than
+requiring root.
+
+Journal visibility is also an explicit operator choice. With no extra group,
+FTMON normally sees only records available to its account. If system-wide
+journal monitoring matters more than that isolation, grant the narrow
+platform-specific journal ACL or group (commonly `systemd-journal`) and record
+that decision in the server's security documentation:
+
+```sh
+sudo usermod -aG systemd-journal ftmon
+sudo systemctl restart ftmon.service
+```
+
+Group membership exposes potentially sensitive messages from unrelated
+services. Do not add `ftmon` to `sudo`, `adm`, container-engine, or application
+groups as a shortcut. Prefer a targeted journal ACL where the platform permits
+one.
+
+#### Credentials with systemd
+
+For a system service, protected files or systemd credentials are preferred to
+environment variables: environment values may be visible to service-management
+tools and are easy to copy into diagnostics. Create an administrator-owned
+source outside the repository and map it into the service's private credential
+directory:
+
+```sh
+sudo install -d -m 0700 /etc/ftmon/credentials
+sudo install -m 0600 /dev/stdin /etc/ftmon/credentials/ntfy-token
+sudo systemctl edit ftmon.service
+```
+
+```ini
+[Service]
+LoadCredential=ntfy-token:/etc/ftmon/credentials/ntfy-token
+```
+
+Then configure `token_file = "/run/credentials/ftmon.service/ntfy-token"`.
+Use the same pattern for `webhook-url` and `smtp-password`. `LoadCredential=`
+copies each value into a service-private, read-only location; the source still
+needs administrator-only permissions. Never put a token in `ExecStart`, an
+`Environment=` line, the unit itself, or Git (SE-05).
+
+#### Operations and remote dashboard access
+
+```sh
+sudo -u ftmon -H /usr/local/bin/ftmon doctor
+sudo journalctl -u ftmon.service
+```
+
+The daemon does not serve the dashboard. Start the loopback-only web process
+separately when interactive access is required:
+
+```sh
+sudo -u ftmon -H /usr/local/bin/ftmon web
+```
+
+From the administrator's workstation, create the tunnel while that process is
+running:
+
+```sh
+ssh -N -L 8420:127.0.0.1:8420 server.example.net
+```
+
+After opening the tunnel, browse to <http://127.0.0.1:8420/> locally. Keep the
+operational dashboard bound to loopback: it has no login boundary and includes
+write operations, so publishing it through a reverse proxy is unsupported.
+The separate synthetic demo application is the only FTMON mode designed for a
+public proxy.
+
+Actions remain disabled unless a monitor explicitly names an executable that
+the administrator placed in `/var/lib/ftmon/.config/ftmon/actions/`. Run such
+scripts as `ftmon` during review and keep them unable to invoke privileged
+helpers. The service hardening may intentionally prevent scripts that write
+outside FTMON's state directories.
+
+#### Test notification configuration without sending secrets externally
+
+`ftmon check` validates channel shape and `ftmon doctor` resolves credential
+references and reports readiness without sending a message. For an end-to-end
+smoke test, point the generic webhook temporarily at a loopback-only HTTP
+receiver, trigger a test incident from a temporary definition, and verify both
+the received `ftmon.notify.v1` document and
+`~ftmon/.local/state/ftmon/notifications.jsonl`. This tests fan-out and the
+durable audit without contacting the Internet. Restore the real reference and
+restart the service afterwards. Do not use production tokens in test fixtures
+or paste request bodies into issue reports (TS-13).
 
 ## Web dashboard
 

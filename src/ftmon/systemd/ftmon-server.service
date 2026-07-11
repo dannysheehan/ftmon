@@ -1,0 +1,51 @@
+[Unit]
+Description=FTMON single-server systems monitor
+Documentation=https://github.com/dsheehan/ftmon
+After=local-fs.target network.target
+# Refuse a deceptively healthy empty daemon when the required server-profile
+# initialization step was skipped.
+ConditionPathExists=/var/lib/ftmon/.config/ftmon/config.toml
+
+[Service]
+Type=simple
+User=ftmon
+Group=ftmon
+
+# The server account has no login session, so explicit locations avoid relying
+# on XDG_RUNTIME_DIR and make the writable sandbox visible to administrators.
+Environment=FTMON_CONFIG_DIR=/var/lib/ftmon/.config/ftmon
+Environment=FTMON_DATA_DIR=/var/lib/ftmon/.local/share/ftmon
+Environment=FTMON_STATE_DIR=/var/lib/ftmon/.local/state/ftmon
+Environment=FTMON_RUNTIME_DIR=/run/ftmon
+StateDirectory=ftmon
+StateDirectoryMode=0700
+RuntimeDirectory=ftmon
+RuntimeDirectoryMode=0700
+UMask=0077
+
+# The executable lives outside every service-writable path so a compromised
+# daemon cannot replace itself and persist across a restart.
+ExecStart=/usr/local/bin/ftmon daemon
+Restart=on-failure
+RestartSec=5s
+
+# FTMON needs only its own directories. The config tree remains writable because
+# approved drafts and definition management share the PM-06 atomic-write contract.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/ftmon /run/ftmon
+
+# Capabilities are empty and the unit adds no groups. Account-level membership
+# remains an explicit admin choice for optional journal visibility.
+CapabilityBoundingSet=
+AmbientCapabilities=
+SupplementaryGroups=
+RestrictSUIDSGID=yes
+
+# ProtectProc=invisible is intentionally absent: hiding other users' processes
+# would silently turn process metrics into incomplete monitoring data.
+
+[Install]
+WantedBy=multi-user.target

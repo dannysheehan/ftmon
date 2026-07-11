@@ -37,7 +37,7 @@ packages = ["src/ftmon"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 120
-markers = ["realsystem: tests that require a live Linux desktop (excluded by default)"]
+markers = ["realsystem: opt-in tests of live Linux/systemd surfaces (excluded by default)"]
 addopts = "-m 'not realsystem'"
 
 [tool.ruff]
