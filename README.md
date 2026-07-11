@@ -11,10 +11,14 @@
 </p>
 <!-- markdownlint-enable MD033 -->
 
-FTMON is a lightweight, local systems monitor for Linux desktops and
-workstations. It detects problems such as memory leaks, CPU hogs, disks filling,
-service failures, and notable journal events while keeping metric history on
-your machine.
+FTMON is a lightweight, local systems monitor for Linux desktops, workstations,
+and standalone servers. It detects problems such as memory leaks, CPU hogs,
+disks filling, service failures, and notable journal events while keeping
+bounded metric history on the monitored machine.
+
+It is designed for people who need more history and alerting than `htop` or
+`btop`, but do not need a central monitoring stack such as Nagios, Zabbix, or
+Prometheus and Grafana for one independently managed server.
 
 > **Development status:** FTMON v2 is pre-release software. Interfaces and data
 > formats may change before the first stable release.
@@ -26,13 +30,30 @@ installation.
 
 ## Why FTMON?
 
-- Runs locally as your user, without a monitoring server or cloud account.
+- Runs locally as your user or a dedicated service account, without a central
+  monitoring server or cloud account.
 - Provides a CLI and accessible offline web dashboard with historical charts.
 - Stores metrics and incidents in SQLite with bounded retention.
 - Uses editable, declarative TOML monitor definitions.
+- Sends durable alerts through email, ntfy, generic webhooks, or desktop
+  notifications, with each channel retrying independently.
 - Offers a local stdio MCP server for AI-assisted investigation and definition
   drafting, with explicit user approval for changes.
 - Ships deterministic unit and end-to-end tests for its monitoring behavior.
+
+## A practical monitor for one server
+
+FTMON is suitable for a small hosted server, VPS, home server, or lab machine
+that needs dependable local monitoring without operating a separate monitoring
+platform. The server profile disables desktop popups, runs under a dedicated
+unprivileged account, retains history locally, and can notify an administrator
+through remote channels when an incident opens or recovers.
+
+The operational dashboard remains bound to loopback and is reached through an
+SSH tunnel. This keeps the unauthenticated management interface off the public
+Internet while still making it useful on a remote headless host. A hardened
+systemd unit and complete single-server installation procedure are provided in
+the [installation guide](docs/install.md#dedicated-single-server-service).
 
 ## Quick start
 
