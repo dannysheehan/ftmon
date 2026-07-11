@@ -281,11 +281,9 @@ class TestNotImplemented:
     @pytest.mark.parametrize(
         "cmd",
         [
-            "web",
             "top",
             "query",
             "monitors",
-            "doctor",
         ]
     )
     def test_not_implemented_commands(self, cmd, capsys):

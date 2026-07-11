@@ -406,6 +406,51 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Inspect database/config health and optionally create a live backup (CL-05)."""
+    import tomllib
+
+    from ftmon.clock import SystemClock
+    from ftmon.definitions import loader
+    from ftmon.store.db import connect
+    from ftmon.store.doctor import backup, inspect
+
+    paths = get_paths()
+    if not paths.db_file.exists():
+        print("problem: database does not exist; start the daemon once", file=sys.stderr)
+        return 1
+    config_errors = []
+    try:
+        tomllib.loads(paths.config_file.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        config_errors.append(f"config.toml: {exc}")
+    _defs, definition_errors = loader.load_dir(paths.monitors_dir)
+    config_errors.extend(f"{path}: {error}" for path, error in definition_errors)
+    conn = connect(paths.db_file)
+    try:
+        report = inspect(conn, now=SystemClock().now(), deep=args.deep)
+        if args.backup:
+            backup(conn, Path(args.backup))
+    except Exception as exc:
+        print(f"problem: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"{report['check']}: {', '.join(report['integrity'])}")
+    print(f"WAL checkpoint: busy={report['checkpoint'][0]} "
+          f"log={report['checkpoint'][1]} checkpointed={report['checkpoint'][2]}")
+    print(f"Database: {report['db_bytes'] / 2**20:.1f} MB")
+    print("Tables: " + ", ".join(f"{k}={v}" for k, v in report["tables"].items()))
+    print("Orphans: " + ", ".join(f"{k}={v}" for k, v in report["orphans"].items()))
+    for cursor in report["cursors"]:
+        print(f"Cursor {cursor['source']}: {cursor['age_s']:.0f}s old")
+    for error in config_errors:
+        print(f"Config error: {error}", file=sys.stderr)
+    if args.backup:
+        print(f"Backup: {Path(args.backup).expanduser().resolve()}")
+    return 0 if report["ok"] and not config_errors else 1
+
+
 def cmd_not_implemented(cmd_name: str) -> int:
     """Stub: print not-implemented message and return 2."""
     def handler(args: argparse.Namespace) -> int:
@@ -607,9 +652,9 @@ def main(argv: list[str] | None = None) -> int:
 
         return mcp_run(args)
     elif args.command == "web":
-        print("web: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        from ftmon.web.app import run as web_run
+
+        return web_run(args)
     elif args.command == "top":
         print("top: not implemented yet (arrives in a later milestone)",
               file=sys.stderr)
@@ -637,9 +682,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "baseline":
         return cmd_baseline(args)
     elif args.command == "doctor":
-        print("doctor: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        return cmd_doctor(args)
     else:
         parser.print_help()
         return 1

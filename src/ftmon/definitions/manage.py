@@ -20,7 +20,7 @@ from pathlib import Path
 from ftmon.definitions import loader
 from ftmon.paths import Paths, atomic_write, reject_symlink
 
-__all__ = ["ManageError", "write_draft", "approve_draft", "set_enabled"]
+__all__ = ["ManageError", "write_draft", "approve_draft", "delete_draft", "set_enabled"]
 
 
 @dataclass(frozen=True)
@@ -90,6 +90,21 @@ def approve_draft(paths: Paths, name: str) -> Path:
         )
     draft.rename(target)
     return target
+
+
+def delete_draft(paths: Paths, name: str) -> None:
+    """Delete only an unapproved draft (UI-03, PM-06c).
+
+    The name is deliberately constrained before constructing the path.  This
+    operation never removes an active monitor definition.
+    """
+    if not re.fullmatch(r"[a-z][a-z0-9_]{1,31}", name):
+        raise ManageError("invalid_params", f"invalid monitor name {name!r}")
+    draft = paths.drafts_dir / f"{name}.toml"
+    if not draft.exists():
+        raise ManageError("not_found", f"no draft named {name!r}")
+    reject_symlink(draft)
+    draft.unlink()
 
 
 _ENABLED_LINE = re.compile(r"^(\s*enabled\s*=\s*)(true|false)(\s*(#.*)?)$",

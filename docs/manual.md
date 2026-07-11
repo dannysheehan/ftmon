@@ -152,7 +152,7 @@ nothing until you name targets in their TOML —
 working hours (a backup service *should* be dead at noon). Connection
 totals are baselined, so `net` learns your normal before it warns.
 
-## 5. The web UI *(arrives with M5)*
+## 5. The web UI
 
 `ftmon web` serves a local page at `http://127.0.0.1:8420`: status
 dashboard, incident browser with full explanations, metric charts, event
@@ -224,5 +224,9 @@ user (0600).
 | "no data - is the daemon running?" | `ftmon daemon` running? `systemctl --user status ftmon` (M6) |
 | a monitor stopped working after an edit | `ftmon check` — the daemon keeps the last good version and reports a config error in `ftmon status` |
 | too many notifications from one rule | raise `confirm_cycles`, add an `exempt`, or ack the incident |
-| FTMON itself flagged over budget | the `self` monitor fired — see the Self page (M5) / `ftmon incident` for which resource |
-| database concerns | `ftmon doctor`, backups via `ftmon doctor --backup` (M6) |
+| FTMON itself flagged over budget | the `self` monitor fired — see the Self page or `ftmon incident` for which resource |
+| database concerns | `ftmon doctor`; create a consistent live backup with `ftmon doctor --backup PATH` |
+
+Never copy the live `ftmon.db` file directly: SQLite may have committed data
+in its WAL file. `ftmon doctor --backup PATH` uses SQLite's snapshot API and
+checks the resulting backup before reporting success.

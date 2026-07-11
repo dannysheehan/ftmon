@@ -1,0 +1,2 @@
+{% if incidents is defined %}{% set items=incidents %}{% else %}{% set items=rows %}{% endif %}
+<table><thead><tr><th>Severity</th><th>Monitor</th><th>Entity</th><th>State</th></tr></thead><tbody>{% for row in items %}<tr><td><span class="sev sev-{{ severity_name(row.severity) }}">▲ {{ severity_name(row.severity) }}</span></td><td><a href="/incidents/{{ row.id }}">{{ row.monitor }}/{{ row.grp }}</a></td><td>{{ row.entity_id }}</td><td>{{ row.state }}</td></tr>{% else %}<tr><td colspan="4">No incidents</td></tr>{% endfor %}</tbody></table>

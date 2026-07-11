@@ -1,0 +1,5 @@
+{% extends "base.html" %}{% block content %}<h1>Dashboard</h1>
+<section class="health" aria-label="Daemon health"><strong>Database</strong> {{ '%.1f'|format(status.db_bytes / 1048576) }} MB · <strong>Open incidents</strong> {{ status.open_incidents }}</section>
+<h2>Monitors</h2><div class="tiles">{% for m in monitors %}<article><h3>{{ m.name }}</h3><span>{{ 'enabled' if m.enabled else 'disabled' }}</span><p>{{ m.description }}</p></article>{% else %}<p>No monitors configured.</p>{% endfor %}</div>
+{% if config_errors %}<h2>Configuration errors</h2><ul>{% for path,error in config_errors %}<li>{{ path.name }}: {{ error }}</li>{% endfor %}</ul>{% endif %}
+<h2>Open incidents</h2>{% include "incident_rows.html" %}{% endblock %}
