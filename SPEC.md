@@ -1,9 +1,10 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.10** — v0.10 specifies administrator-registered external
-checks, including a bounded Nagios-compatible adapter whose declared
-performance data becomes ordinary FTMON history and Trends. All §19 open
-questions are resolved.
+Status: **DRAFT v0.12** — v0.12 adds the release-readiness gates from the
+2026-07-12 repository review: a recorded real-time soak (TS-17), a
+zero-pending traceability gate with security IDs burned down first (TS-18),
+and a documentation-drift audit (DO-09), all collected in milestone M10.
+All §19 open questions are resolved.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -901,6 +902,32 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   any repository-maintained script tests. Default CI remains offline and
   unprivileged; network, hardware and installed-plugin checks are opt-in only.
 
+### 16.6 Release readiness gates (pre-v1.0)
+
+Deterministic CI proves the logic; it cannot prove longevity. The entire v2
+implementation landed in days, so the slow failures a monitor exists to catch
+(leaks, unbounded growth, retry storms, cursor drift) have never had time to
+occur. These gates convert the resource-budget and durability *claims*
+(RB-01/RB-02, DM-05, NO-04) into recorded evidence before the first stable tag.
+
+- **TS-17** Before the v1.0 tag, FTMON MUST complete a recorded **soak**: at
+  least 30 consecutive days of the real daemon on at least two real hosts, one
+  `desktop` and one `server` profile, with (a) no unexplained daemon restarts;
+  (b) RB-01 budgets held, verified from the `self` monitor's own stored
+  history, not external observation; (c) DB size within DM-05 after retention
+  has cycled; (d) the notification outbox draining (no unbounded
+  `notification_deliveries` growth); (e) zero unexplained `self`-monitor
+  incidents; and (f) a clean `ftmon doctor` at the end. The evidence (exported
+  self-metric series, doctor output, incident list) is attached to the release
+  notes. A soak restarts its clock only for daemon-crash fixes, not for
+  unrelated commits.
+- **TS-18** `tests/traceability_pending.json` MUST be empty at the v1.0 tag,
+  and it may only shrink (the existing ratchet). Burn-down order is
+  risk-first: `SE-*` IDs first (a security requirement may not remain untested
+  across more than one further milestone), then `UI-*`/`PL-*`, then the rest.
+  A pending ID that proves untestable is resolved by amending this document
+  (mark exempt or retire with rationale), never by silent deletion.
+
 ## 17. Documentation deliverables (v1)
 
 - **DO-01** `docs/definitions.md`: complete monitor-definition reference (schema, every function with examples, the EX-06 truth table, cookbook: "watch this log pattern", "alert when X grows"). Written to be pasted into an AI context and exposed as the MCP resource (MC-05) — the primary consumer is `define_monitor` authors, human or model.
@@ -925,6 +952,17 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   contribution structure and offline validation; each recipe documents why,
   installation, configuration, testing, security/permissions, upstream and
   licence.
+- **DO-09** Documentation-drift audit. TS-01 traceability covers SPEC↔tests
+  only; nothing machine-checks `docs/manual.md`, `docs/install.md`,
+  `docs/definitions.md`, or `README.md` against behavior. Each milestone that
+  changes user-visible behavior therefore ends with a recorded audit pass:
+  every documented command is executed as written, every documented default is
+  compared to code, and every **external claim** (repository clone URL, live
+  demo URL, published package names) is verified to resolve. Review artifacts
+  (AI or human) are not documentation: they live outside `docs/` (or in a
+  clearly labelled `docs/history/`), and `CLAUDE.md`/`AGENTS.md` are checked
+  for staleness as part of the audit — a repo-guidance file that describes a
+  previous architecture is a defect.
 
 ---
 
@@ -970,10 +1008,27 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M8.1** | Synthetic read-only public demo mode and deployment (UI-15/16, SE-06, TS-14, DO-06) | safe `demo.ftmon.org` experience |
 | **M9** | Administrator check registry, external subprocess source, FTMON JSON and Nagios adapters, declared perfdata history/Trends (EC-*, MD-11, SE-07, TS-15, DO-07) | bring-your-own checks without a monitoring stack |
 | **M9.1** | Curated `extra-monitors/` recipe contract, offline validator, HTTP/TLS, SMART/NVMe and native JSON examples (XR-*, TS-16, DO-08) | a tested integration cookbook without vendoring an ecosystem |
+| **M10** | Release readiness: 30-day two-host soak with recorded evidence (TS-17), traceability pending burn-down to zero, security IDs first (TS-18), documentation-drift and external-claim audit (DO-09), repo hygiene (review artifacts out of `docs/`, root kept to living documents), dependency-deprecation sweep | a v1.0 whose operational claims are evidence, not assertion |
 
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.12 (2026-07-12)** — incorporates the 2026-07-12 whole-repository review.
+The review found the code, tests and traceability strong but the operational
+claims unweathered: the implementation landed in three days, security
+requirements SE-01..03 sat in the pending list, nothing checked the prose docs
+or README's external claims against reality, and repo guidance (`CLAUDE.md`)
+still described the retired Perl architecture. Accepted as requirements: TS-17
+(recorded ≥30-day two-host soak gating v1.0), TS-18 (pending list empty at
+v1.0, SE-* burned down first), DO-09 (per-milestone documentation-drift and
+external-claim audit; review artifacts are not documentation), and milestone
+M10 collecting them. Fixed directly rather than specified: CLAUDE.md rewritten
+for v2, and the review-artifact hygiene applied immediately — the historical
+`CODEX-SPEC-REVIEW.md` and ad-hoc repository reviews were removed from the
+tree (their content survives in git history and in this changelog's
+dispositions). Noted, not specified: the starlette TestClient deprecation
+warning (dependency sweep folded into M10).
 
 **v0.11 (2026-07-12)** — specifies a curated, testable extra-monitor cookbook.
 Human-readable articles are paired with bounded metadata, example registry and
@@ -1011,6 +1066,6 @@ execution authority.
 
 **v0.3 (2026-07-10)** — design-phase capacity amendments (DESIGN.md §9 worksheet, per DM-16): DM-04 hourly-rollup retention split (400 d durable series / 90 d process series); DM-09 event store-filter (severity ≥ notice or rule-matching; full journal volume cannot fit DM-05). No other changes.
 
-**v0.2 (2026-07-10)** — incorporates the external review (`CODEX-SPEC-REVIEW.md`). Accepted and specified: ladder-group incident model (IN-03, owner decision); episode semantics + msg_hash for event rules (§7.7.3, IN-08); expression-language reconciliation (severity constants, no kwargs, EX-06 truth table, numeric/regex edges, derived-metric ordering); TOML example completed (`schema`, `enabled`, integer `version`, `source_options`) and MD-07 built-ins-must-validate gate; source-once-per-tick pipeline (SA-06) and honest timeout semantics (SA-02); capacity worksheet + degradation order + caps (DM-16, DM-05, DM-03, DM-13, CA-04); event cursor/queue/durability (DM-15, SA-08); config-file coordination (PM-06, PM-07); notification outbox with explicit at-least-once bound (NO-04, DM-14); reproducible baseline algorithm (CA-05 = EW mean, half-life 3 d); privacy posture (SE-04, owner decision: collect truncated); loopback hardening (UI-08); clock discipline (SA-07); entity disappearance (CA-08); removal/rename semantics (MD-09); `self` as explicit eighth built-in (§7.7); `ftmon doctor` + backup-API-only backups (CL-05, VC-03); accessibility (UI-09); delivery milestones (§20). Owner decisions this round: ladder groups; **MIT license**; cmdline collect-truncated; adopt reviewer positions on OPEN-2..6; OPEN-1 defaults accepted as-shipped (tunable in installed files). Deliberately rejected/deferred: baseline seasonality (NG-07), secret-pattern redaction (NG-08), SSE (UI-04), per-process net attribution (NG-06).
+**v0.2 (2026-07-10)** — incorporates the external review (`CODEX-SPEC-REVIEW.md`, removed from the tree in v0.12 per DO-09; see git history). Accepted and specified: ladder-group incident model (IN-03, owner decision); episode semantics + msg_hash for event rules (§7.7.3, IN-08); expression-language reconciliation (severity constants, no kwargs, EX-06 truth table, numeric/regex edges, derived-metric ordering); TOML example completed (`schema`, `enabled`, integer `version`, `source_options`) and MD-07 built-ins-must-validate gate; source-once-per-tick pipeline (SA-06) and honest timeout semantics (SA-02); capacity worksheet + degradation order + caps (DM-16, DM-05, DM-03, DM-13, CA-04); event cursor/queue/durability (DM-15, SA-08); config-file coordination (PM-06, PM-07); notification outbox with explicit at-least-once bound (NO-04, DM-14); reproducible baseline algorithm (CA-05 = EW mean, half-life 3 d); privacy posture (SE-04, owner decision: collect truncated); loopback hardening (UI-08); clock discipline (SA-07); entity disappearance (CA-08); removal/rename semantics (MD-09); `self` as explicit eighth built-in (§7.7); `ftmon doctor` + backup-API-only backups (CL-05, VC-03); accessibility (UI-09); delivery milestones (§20). Owner decisions this round: ladder groups; **MIT license**; cmdline collect-truncated; adopt reviewer positions on OPEN-2..6; OPEN-1 defaults accepted as-shipped (tunable in installed files). Deliberately rejected/deferred: baseline seasonality (NG-07), secret-pattern redaction (NG-08), SSE (UI-04), per-process net attribution (NG-06).
 
 **v0.1 (2026-07-10)** — initial draft from grilling rounds 1–3.

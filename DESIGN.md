@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.8**. Companion to `SPEC.md` v0.10 — every design element
+Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.12 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -880,6 +880,15 @@ uPlot remains D4's renderer: its small vendorable footprint, temporal scales, cu
   are tested together. A packaging smoke may invoke an administrator-supplied
   plugin only under `realsystem` and is never required for compatibility.
 - **Lint tests**: grep-tests for direct `time.time|datetime.now|time.monotonic` outside `clock.py` (TS-03) and for forbidden imports in `expr/` (EX-04) / layering (§1).
+- **Soak evidence** (TS-17): no new instrumentation — the daemon already
+  records everything the gate needs (RB-02 self metrics, incidents,
+  `notification_deliveries`, DB size). A small `tools/soak_report.py` reads a
+  live or copied-via-backup-API DB and emits one markdown report: budget
+  percentiles from `self` history, retention-cycle DB-size curve, outbox
+  drain lag, restart count from daemon-start self events, unexplained
+  `self` incidents, and the closing `ftmon doctor` output. The report file is
+  the release-notes artifact; asserting from stored history (not external
+  top/ps sampling) is deliberate — it exercises the same query path users trust.
 
 ---
 
@@ -939,6 +948,8 @@ plugin remains under its own license (EC-01/02/07/09, SE-07).
 | D21 | Registered subprocess checks, not an in-process plugin API | reuses user scripts and the Nagios ecosystem while crashes, dependencies and licenses remain outside the daemon |
 | D22 | Explicit perfdata mappings before persistence | prevents output-driven schema growth/high cardinality and makes units, counter semantics, expressions and Trends honest |
 | D23 | Registry authority separate from monitor definitions | AI/user drafts can compose rules around an approved check but cannot introduce executable paths, argv or credentials |
+| D24 | v1.0 gated on recorded soak + empty pending list (TS-17/18) | the codebase was built in days; deterministic CI proves logic, not longevity — a monitor's core claims (bounded RSS/DB, durable retry, quiet operation) are only credible after real wall-clock time, and untested SE-* requirements are the riskiest kind of pending |
+| D25 | Doc-drift audit is a manual recorded pass, not tooling (DO-09) | prose docs can't be regex-traced like requirement IDs; a per-milestone checklist executed and recorded costs less than building doc-testing machinery for four documents |
 
 ---
 
@@ -969,5 +980,11 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
 - **M9.1**: WP36 recipe schema/template + discovery validator · WP37 HTTP/TLS
   and constrained SMART/NVMe Nagios recipes · WP38 maintained native JSON
   script, direct tests, catalogue/user-documentation links.
+- **M10**: WP39 `tools/soak_report.py` + soak procedure/evidence template
+  (TS-17) · WP40 pending-traceability burn-down, SE-* first, then UI-*/PL-*,
+  then the remainder; each ID gains a test or a documented spec amendment
+  (TS-18) · WP41 doc-drift + external-claim audit checklist, repo hygiene
+  (review artifacts out of `docs/`, root limited to living documents),
+  dependency-deprecation sweep (DO-09).
 
 Each WP names its FROZEN interfaces from §4–5; an implementing model receives: SPEC excerpt, this document's relevant sections, the WP's test files, and the interface stubs — nothing else is in scope for it.

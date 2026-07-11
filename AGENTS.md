@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+> **Note to AI Agents:** The comprehensive, up-to-date instructions, architecture, and workflow for this repository are maintained in [CLAUDE.md](CLAUDE.md). Please read `CLAUDE.md` before proceeding with any code changes.
+
 ## Project Structure & Module Organization
 
 This repository contains FTMON v2. The original Perl implementation remains
@@ -7,7 +9,7 @@ separately published at <https://sourceforge.net/projects/ftmon/> and must not
 be added to this repository.
 
 - `SPEC.md` is the authoritative product and architecture specification for new work. Requirements have stable IDs and tests should reference them.
-- `CLAUDE.md` summarizes legacy architecture and caveats.
+- `CLAUDE.md` summarizes the v2 architecture, commands, and the spec/traceability workflow for AI coding agents.
 - `README.md` gives users and contributors the repository entry point.
 - `docs/` contains the install guide, user manual, and definition reference.
 
@@ -27,11 +29,9 @@ uv run pytest -q
 
 For v2, follow `SPEC.md`: Python 3.11+, `uv`, `ruff`, `pytest`, SQLite, and TOML monitor definitions. Keep platform-specific logic behind the specified adapters.
 
-
 ## Testing Guidelines
 
 Add pytest coverage for all v2 behavior. Name tests by behavior, and include requirement IDs from `SPEC.md` where relevant, for example `test_daemon_rejects_second_instance_pm_02`. Prefer fixture-driven deterministic tests; keep real-system smoke tests opt-in.
-
 
 ## Commit & Pull Request Guidelines
 
