@@ -1,6 +1,6 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.5** — v0.5 generalizes M7's disk visualization into declarative monitor trend profiles. All §19 open questions are resolved.
+Status: **DRAFT v0.6** — v0.6 unifies Metrics and Trends on one chart/data contract while preserving their distinct diagnostic and interpretive roles. All §19 open questions are resolved.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -448,6 +448,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ---
 
 - **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
+- **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. It additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric.
 
 ## 13. Resource budget (self-enforced)
 
@@ -513,6 +514,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ---
 
 - **TS-10** Generic trend tests MUST cover profile schema and cross-reference errors, optional-panel `null` semantics, disk compatibility, leak value/rate/confidence history, profile-aware thresholds and incident groups, contextual links, `/disks` redirect preservation, and one real-daemon-to-HTTP leak journey. Tests assert data and accessibility contracts, not chart pixels.
+- **TS-11** Metrics visualization tests MUST cover the `/api/series` contract, catalog selectors, all rollup statistics, aligned min/max envelopes, missing-data gaps, incident filtering, unit discovery/fallback, the 2 000-point cap, hostile labels, accessible summary, matching-Trend links, and absence of invented panels. Browser-library behavior remains tested at the HTTP/data boundary rather than by pixel snapshots.
 
 ## 17. Documentation deliverables (v1)
 
@@ -560,10 +562,13 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M6** | Actions (AC-*), `doctor` (CL-05), tier-2 suite, docs (DO-*), packaging polish | v1.0 |
 | **M7** | Historical disk trends (DM-17, CA-09, UI-10/11, TS-09) | honest capacity forecasting |
 | **M7.1** | Generic trend profiles (MD-10, CA-10, UI-12, TS-10) | reusable growth investigation |
+| **M7.2** | Shared Metrics/Trends chart foundation (UI-13, TS-11) | consistent single-series diagnostics |
 
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.6 (2026-07-11)** — keeps Metrics Explorer as the arbitrary single-series diagnostic surface but replaces its temporary SVG with the same uPlot foundation and historical semantics as Trends. The two pages share rendering and data contracts without conflating their purposes: Metrics reports observations; Trends adds only definition-declared interpretation.
 
 **v0.5 (2026-07-11)** — generalizes M7 through declarative `[[trend]]` profiles, with disk capacity and process RSS growth as reference implementations. Panels are optional by meaning rather than fabricated from whatever metrics happen to exist. One Trends explorer and contextual links replace monitor-specific chart implementations; `/disks` remains compatible.
 

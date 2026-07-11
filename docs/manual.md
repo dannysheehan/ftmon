@@ -205,6 +205,11 @@ database, including historical series no longer in the current definition. Use
 it to inspect one metric that has no curated profile, or follow an “Underlying
 series” link from a Trend panel. Range and rollup value (`avg`, `min`, `max`, or
 `last`) stay in the URL, so the exact diagnostic view can be bookmarked.
+Metrics uses the same interactive time axis, zoom/cursor, min/max rollup
+envelope, missing-data gaps, and incident markers as Trends. It remains
+intentionally one series at a time and never invents rate, confidence, or
+forecast meaning; when a definition declares such meaning, **Open Trend**
+moves to that curated view.
 
 ## 7. Writing your own monitors
 

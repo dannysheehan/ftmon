@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.3**. Companion to `SPEC.md` v0.5 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
+Status: **DRAFT v0.4**. Companion to `SPEC.md` v0.6 — every design element cites the requirement(s) it satisfies. Where this document says FROZEN, implementers MUST NOT alter names, signatures, or semantics; changes go through this document first.
 
 Design-phase artifacts:
 
@@ -431,7 +431,15 @@ The generic view uses up to four synchronized panels: required value and signed-
 
 Routes: `GET /trends[/{monitor}/{profile}]?entity=…&range=…` and `GET /api/trend?monitor=…&profile=…&entity=…&range=…`. `/disks` redirects to `/trends/disk/space_growth`. Dashboard, monitor and incident links all target this same explorer rather than creating alternate render/query paths.
 
-Reference profiles prove both shapes: disk `space_growth` supplies all four panels; leak `rss_growth` supplies value/rate/confidence and explicit `projection: null`. A process has no single honest capacity ceiling because host memory, swap, cgroups and the OOM killer differ, so FTMON refuses to invent one.
+Reference profiles prove both shapes: disk `space-growth` supplies all four panels; leak `rss-growth` supplies value/rate/confidence and explicit `projection: null`. A process has no single honest capacity ceiling because host memory, swap, cgroups and the OOM killer differ, so FTMON refuses to invent one.
+
+### 15.2 Metrics versus Trends (M7.2, UI-13)
+
+Metrics and Trends share one uPlot adapter, series-envelope JSON shape, cursor/time-axis behavior, incident-marker plugin, and server-rendered text-summary rules. Sharing is a correctness decision, not merely visual consistency: two renderers previously disagreed about time axes, gaps, long-range rollups, and interaction, making the diagnostic view a poor way to verify a Trend.
+
+Their semantics remain deliberately separate. `/metrics` selects one persisted `(monitor, entity, metric)` and a rollup statistic; it reports observations and never infers that a name containing `slope`, `pct`, or `rate` has special meaning. `/trends` joins only definition-declared panels and may qualify confidence or projection. A matching-profile link is navigation, not automatic interpretation inside Metrics.
+
+`GET /api/series?monitor=…&entity=…&metric=…&range=…&statistic=…` returns `{monitor, entity, metric, unit, statistic, resolution, points, lower, upper, incidents, summary, matching_trends}`. Raw metric units come from `SourceDecl`; derived units come from explicit trend-profile use when available, otherwise the neutral label `value`. Server-side Query remains authoritative for tier selection, envelopes, incident filtering, and the 2 000-point cap.
 
 #### M7 disk reference profile
 
@@ -495,6 +503,7 @@ Jinja autoescape + CSP (SE-02); notification bodies strip control chars; CLI out
 | D11 | Three synchronized disk panels | preserves distinct units/scales while keeping temporal correlation (UI-10) |
 | D12 | Declarative trend profiles, not name inference | names cannot establish units, limits, confidence meaning, or honest projection semantics (MD-10) |
 | D13 | One explorer plus contextual links | supports discovery and incident investigation without duplicate query/render paths (UI-12) |
+| D14 | Shared uPlot adapter, distinct page semantics | one historical rendering truth while preventing arbitrary metrics from acquiring invented trend meaning (UI-13) |
 
 ---
 
@@ -508,5 +517,6 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
 - **M4**: WP15 MCP server. **M5**: WP16 web UI. **M6**: WP17 actions+doctor+tier-2+docs.
 - **M7**: WP18 historical query envelopes + signed disk rate · WP19 uPlot disk views/API + Tier-1 visualization contract tests.
 - **M7.1**: WP20 trend-profile schema/loader + generic query · WP21 Trends explorer, leak reference profile, contextual links + Tier-1 contract tests.
+- **M7.2**: WP22 generic series API + shared chart adapter · WP23 Metrics uPlot view, incident markers, summaries, Trend links + tests.
 
 Each WP names its FROZEN interfaces from §4–5; an implementing model receives: SPEC excerpt, this document's relevant sections, the WP's test files, and the interface stubs — nothing else is in scope for it.
