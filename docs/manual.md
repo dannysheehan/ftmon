@@ -163,6 +163,15 @@ journal (that's what `journalctl` is for). A matching entry opens an
 and the episode closes itself after 30 quiet minutes without a popup. A
 log-spamming app is automatically collapsed after 100 stored events/minute.
 
+For applications that write only to non-standard log files, use Fluent Bit's
+`tail` input and send its selected records to standard output. When Fluent Bit
+runs as a systemd service, systemd records that output in journald, where
+FTMON's existing `events` monitor can match it. This keeps file rotation,
+multiline parsing, restart offsets, and backpressure in Fluent Bit instead of
+duplicating a log shipper inside FTMON. See the
+[Fluent Bit recipe](definitions.md#monitor-a-non-standard-log-file-with-fluent-bit)
+for a minimal configuration and event rule.
+
 **Services and sockets** (`service`, `net`) are watchlist-driven: they do
 nothing until you name targets in their TOML —
 `{ unit = "syncthing.service" }`, `{ process = "^ssh-agent$" }`,

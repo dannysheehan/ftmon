@@ -194,11 +194,87 @@ message = "OOM killer fired: {message}"
 
 ## 4. Cookbook
 
-**Alert when a log pattern appears** — the rule above; adjust `provider`
-and the `contains`/`matches` test. For a specific platform event id:
-`when = 'event_id == "6008"'`.
+### Alert when a log pattern appears
 
-**Alert when anything grows steadily (memory leak)**
+Use the rule above; adjust `provider` and the `contains`/`matches` test. For a
+specific platform event id: `when = 'event_id == "6008"'`.
+
+### Monitor a non-standard log file with Fluent Bit
+
+FTMON deliberately does not implement arbitrary file tailing. Rotation,
+truncation, persistent offsets, multiline records, long lines, encodings, and
+backpressure are a separate reliability problem already handled by Fluent
+Bit's [`tail` input](https://docs.fluentbit.io/manual/data-pipeline/inputs/tail).
+The recommended arrangement is:
+
+```text
+application log file -> Fluent Bit tail/parser -> service stdout -> journald
+                                                              -> FTMON events
+```
+
+The following classic Fluent Bit configuration is a starting point. Replace
+the path and tag, use a separate `DB` file for each tail input, and add a
+documented multiline parser when the application emits stack traces:
+
+```ini
+[SERVICE]
+    Flush              1
+    Log_Level          info
+    Parsers_File       parsers.conf
+
+[INPUT]
+    Name               tail
+    Tag                ftmon.myapp
+    Path               /var/log/myapp/*.log
+    Exclude_Path       /var/log/myapp/*.gz
+    DB                 /var/lib/fluent-bit/ftmon-myapp-tail.db
+    Read_From_Head     Off
+    Refresh_Interval   10
+    Rotate_Wait        30
+    Skip_Long_Lines    On
+    Mem_Buf_Limit      5MB
+
+[OUTPUT]
+    Name               stdout
+    Match              ftmon.myapp
+    Format             json_lines
+```
+
+The stdout output is intentional: the packaged Fluent Bit systemd service has
+its stdout captured by journald. It is not a claim that Fluent Bit has a native
+journald output plugin. Confirm the resulting journal identity and message
+before writing the FTMON rule:
+
+```sh
+sudo systemctl restart fluent-bit
+journalctl -u fluent-bit.service -n 20 -o json-pretty
+```
+
+The provider is commonly `fluent-bit`, but use the actual
+`SYSLOG_IDENTIFIER` or `_SYSTEMD_UNIT` shown by `journalctl`. The JSON record is
+the event `message`, so an episode rule can select only the application pattern
+that matters even though the journal priority of service stdout is normally
+`info`:
+
+```toml
+[[rule]]
+id = "myapp-database-errors"
+when = 'provider == "fluent-bit" and contains(message, "database unavailable")'
+severity = "error"
+cooldown = "10m"
+clear_after = "30m"
+message = "My application reported a database failure: {message}"
+```
+
+Event rules are evaluated before FTMON's severity store-filter, so a matching
+info-level forwarded record is retained automatically; do not lower
+`store_min_severity` merely to make this recipe work. Grant Fluent Bit only the
+group or ACL access needed for the selected files, exclude rotated archives to
+avoid duplicate reads, and keep sensitive fields out of the emitted record.
+FTMON does not configure, supervise, or test Fluent Bit—the integration is an
+operator-recommended path for logs that are not already in journald.
+
+### Alert when anything grows steadily (memory leak)
 
 ```toml
 [[rule]]
@@ -209,7 +285,7 @@ confirm_cycles = 5
 message = "{entity} rss rising {growth_bph:.0f} B/h for 15m+"
 ```
 
-**A severity ladder (one incident, not three)**
+### A severity ladder (one incident, not three)
 
 ```toml
 [[rule]]
@@ -227,7 +303,7 @@ severity = "critical"
 message = "{entity} nearly full: {used_pct:.0f}%"
 ```
 
-**Compare against learned normal instead of a magic number**
+### Compare against learned normal instead of a magic number
 
 ```toml
 when = 'conn_total > baseline(conn_total) * 4'
@@ -235,14 +311,14 @@ when = 'conn_total > baseline(conn_total) * 4'
 
 Silent for the first day (baseline unknown), then tuned to *your* machine.
 
-**Watch a service, but only during working hours**
+### Watch a service, but only during working hours
 
 ```toml
 [source_options]
 watchlist = [ { unit = "backup.service", during = "09:00-18:00" } ]
 ```
 
-**Exempt the legitimate heavy hitters**
+### Exempt the legitimate heavy hitters
 
 ```toml
 exempt = [ 'matches(name, "^(gcc|clang|cargo|ffmpeg)$")',
