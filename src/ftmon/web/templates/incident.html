@@ -1,3 +1,4 @@
 {% extends "base.html" %}{% block content %}<h1>Incident #{{ row.id }}</h1><p><span class="sev sev-{{ severity_name(row.severity) }}">▲ {{ severity_name(row.severity) }}</span> {{ row.monitor }}/{{ row.grp }} · {{ row.entity_id }} · {{ row.state }}</p>
 {% if row.state == 'open' %}<form method="post" action="/incidents/{{ row.id }}/ack"><label>Note <input name="note"></label><button>Acknowledge</button></form>{% endif %}
+{% if trend_profile %}<p><a href="/trends/{{ row.monitor }}/{{ trend_profile.id }}?entity={{ row.entity_id|urlencode }}&range=24h">View {{ trend_profile.title }} around this incident</a></p>{% endif %}
 <h2>History</h2><ol>{% for h in history %}<li><time>{{ h.ts }}</time> {{ h.kind }} — {{ h.detail }}</li>{% else %}<li>No history</li>{% endfor %}</ol>{% endblock %}

@@ -238,6 +238,7 @@ class SmallWrites:
 | `parameters.*` | `{value: num, doc: str}` | all |
 | `promotion.expr` | expression (bool) — SA-05(c) heuristic | process |
 | `derived[].name/expr` | metric name / expression | sampler sources |
+| `trend[]` | declarative value/rate/confidence/projection presentation profile (MD-10) | sampler sources |
 | `exempt[]` | expression (bool) over entity ns (CA-07) | sampler sources |
 | `rule[].id` | `[a-z0-9-]{1,32}`, unique in monitor | all |
 | `rule[].group` | id-syntax; default = rule id (IN-03) | sampler sources |

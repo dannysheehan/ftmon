@@ -10,6 +10,7 @@ import json
 import math
 import sqlite3
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 __all__ = ["SeriesPoint", "SeriesResult", "Query", "lttb"]
 
@@ -180,21 +181,23 @@ class Query:
             )
         return results
 
-    def disk_trend(
+    def trend(
         self,
+        monitor: str,
         entity_id: str,
+        profile,
         *,
         now: float,
         start: float,
         end: float,
-        filling_frac: float = 0.85,
+        parameters: dict[str, float],
         max_points: int = 2000,
     ) -> dict:
-        """Build the honest three-panel disk contract (CA-09/UI-10/UI-11).
+        """Build generic declared panels without inventing semantics (CA-10).
 
-        Projection is derived from persisted pre-downsampling rate and
-        confidence. Missing timestamps remain absent; the client aligns them
-        as null gaps rather than inventing observations (DM-17).
+        ``profile`` is intentionally structural rather than imported from the
+        definitions package: the store layer stays independent of config I/O.
+        Projection uses persisted pre-downsampling inputs and gaps remain gaps.
         """
         max_points = max(3, max_points)
 
@@ -203,7 +206,7 @@ class Query:
             working_points: int = 10_000,
         ):
             rows = self.series(
-                "disk", metric, now=now, start=start, end=end,
+                monitor, metric, now=now, start=start, end=end,
                 entity_id=entity_id, max_points=working_points,
                 statistic=statistic, include_envelope=envelope,
             )
@@ -212,18 +215,30 @@ class Query:
         # Inputs stay at the validated 10k history ceiling until projection is
         # qualified. Independently downsampling rate/confidence/free first can
         # choose different timestamps and manufacture missing intersections.
-        used_pct = one("used_pct", envelope=True, working_points=max_points)
-        used_bytes = one("used_bytes", statistic="last")
-        free_bytes = one("free_bytes", statistic="last")
-        rate = one("fill_rate_bph")
-        confidence = one("filling")
+        value = one(profile.value_metric, envelope=True, working_points=max_points)
+        rate = one(profile.rate_metric)
+        confidence = one(profile.confidence_metric) if profile.confidence_metric else None
+        remaining = one(profile.remaining_metric, statistic="last") \
+            if profile.remaining_metric else None
         rate_map = {p.ts: p.value for p in rate.points} if rate else {}
         confidence_map = {p.ts: p.value for p in confidence.points} if confidence else {}
-        free_map = {p.ts: p.value for p in free_bytes.points} if free_bytes else {}
+        remaining_map = {p.ts: p.value for p in remaining.points} if remaining else {}
+        confidence_threshold = (
+            parameters[profile.confidence_threshold_param]
+            if profile.confidence_threshold_param else None
+        )
         projection = []
-        for ts in sorted(set(rate_map) & set(confidence_map) & set(free_map)):
-            qualified = rate_map[ts] > 0 and confidence_map[ts] >= filling_frac
-            projection.append([ts, free_map[ts] / rate_map[ts] if qualified else None])
+        projection_ts = set(rate_map) & set(remaining_map)
+        if profile.confidence_metric:
+            projection_ts &= set(confidence_map)
+        for ts in sorted(projection_ts):
+            qualified = rate_map[ts] > 0 and (
+                confidence_threshold is None
+                or confidence_map[ts] >= confidence_threshold
+            )
+            projection.append([
+                ts, remaining_map[ts] / rate_map[ts] if qualified else None
+            ])
 
         def cap_nullable(points: list[list[float | None]]) -> list[list[float | None]]:
             """Cap projection while retaining endpoints and gap boundaries."""
@@ -243,13 +258,18 @@ class Query:
 
         projection = cap_nullable(projection)
 
-        incidents = []
-        for row in self._conn.execute(
+        incident_sql = (
             "SELECT id,state,severity,opened_ts,last_change_ts,cleared_ts,grp "
-            "FROM incidents WHERE monitor='disk' AND entity_id=? "
-            "AND last_change_ts>=? AND opened_ts<=? ORDER BY opened_ts",
-            (entity_id, round(start), round(end)),
-        ):
+            "FROM incidents WHERE monitor=? AND entity_id=? "
+            "AND last_change_ts>=? AND opened_ts<=?"
+        )
+        incident_params: list[object] = [monitor, entity_id, round(start), round(end)]
+        if profile.incident_group:
+            incident_sql += " AND grp=?"
+            incident_params.append(profile.incident_group)
+        incident_sql += " ORDER BY opened_ts"
+        incidents = []
+        for row in self._conn.execute(incident_sql, incident_params):
             incidents.append(dict(row))
 
         def pairs(result: SeriesResult | None) -> list[list[float]]:
@@ -260,49 +280,114 @@ class Query:
                 points = lttb(points, max_points)
             return [[p.ts, p.value] for p in points]
 
-        current_pct = used_pct.points[-1].value if used_pct and used_pct.points else None
-        change_bytes = None
-        if used_bytes and len(used_bytes.points) >= 2:
-            change_bytes = used_bytes.points[-1].value - used_bytes.points[0].value
-        latest_ts = max(set(rate_map) & set(confidence_map) & set(free_map), default=None)
+        current_value = value.points[-1].value if value and value.points else None
+        change_value = None
+        if value and len(value.points) >= 2:
+            change_value = value.points[-1].value - value.points[0].value
+        latest_candidates = set(rate_map)
+        if profile.confidence_metric:
+            latest_candidates &= set(confidence_map)
+        if profile.remaining_metric:
+            latest_candidates &= set(remaining_map)
+        latest_ts = max(latest_candidates, default=None)
         latest_qualified = (
             latest_ts is not None
             and rate_map[latest_ts] > 0
-            and confidence_map[latest_ts] >= filling_frac
+            and (
+                confidence_threshold is None
+                or confidence_map[latest_ts] >= confidence_threshold
+            )
         )
         summary = {
-            "current_used_pct": current_pct,
-            "change_bytes": change_bytes,
-            "fill_rate_bph": rate_map.get(latest_ts) if latest_qualified else None,
-            "filling_confidence": confidence_map.get(latest_ts) if latest_ts else None,
-            "projected_full_ts": (
-                latest_ts + free_map[latest_ts] / rate_map[latest_ts] * 3600
-                if latest_qualified else None
+            "current_value": current_value,
+            "change_value": change_value,
+            "current_rate": rate_map.get(latest_ts) if latest_ts else None,
+            "confidence": confidence_map.get(latest_ts) if latest_ts else None,
+            "projected_limit_ts": (
+                latest_ts + remaining_map[latest_ts] / rate_map[latest_ts] * 3600
+                if latest_qualified and profile.remaining_metric else None
             ),
             "projection_reason": None if latest_qualified else (
                 "no reliable projection: growth is non-positive, irregular, or insufficient"
-            ),
+            ) if profile.remaining_metric else None,
         }
         resolution = next((x.resolution for x in
-                           (used_pct, rate, confidence, free_bytes) if x), "raw")
+                           (value, rate, confidence, remaining) if x), "raw")
+        value_thresholds = [
+            {"parameter": name, "value": parameters[name]}
+            for name in profile.value_threshold_params
+        ]
+        rate_thresholds = [
+            {"parameter": name, "value": parameters[name]}
+            for name in profile.rate_threshold_params
+        ]
         return {
+            "monitor": monitor,
+            "profile": {"id": profile.id, "kind": profile.kind, "title": profile.title},
             "entity": entity_id,
             "range": {"start": start, "end": end},
             "resolution": resolution,
-            "units": {"capacity": "%", "rate": "bytes/hour",
-                      "confidence": "fraction", "projection": "hours"},
-            "capacity": {
-                "points": pairs(used_pct),
-                "lower": pairs(None) if used_pct is None or used_pct.lower is None else
-                         [[p.ts, p.value] for p in used_pct.lower],
-                "upper": pairs(None) if used_pct is None or used_pct.upper is None else
-                         [[p.ts, p.value] for p in used_pct.upper],
+            "panels": {
+                "value": {
+                    "metric": profile.value_metric, "unit": profile.value_unit,
+                    "points": pairs(value),
+                    "lower": [] if value is None or value.lower is None else
+                             [[p.ts, p.value] for p in value.lower],
+                    "upper": [] if value is None or value.upper is None else
+                             [[p.ts, p.value] for p in value.upper],
+                    "thresholds": value_thresholds,
+                },
+                "rate": {
+                    "metric": profile.rate_metric, "unit": profile.rate_unit,
+                    "points": pairs(rate), "thresholds": rate_thresholds,
+                },
+                "confidence": ({
+                    "metric": profile.confidence_metric, "unit": "fraction",
+                    "points": pairs(confidence), "threshold": confidence_threshold,
+                } if profile.confidence_metric else None),
+                "projection": ({"unit": "hours", "points": projection}
+                               if profile.remaining_metric else None),
             },
-            "rate": pairs(rate),
-            "confidence": pairs(confidence),
-            "projection": projection,
             "incidents": incidents,
             "summary": summary,
+        }
+
+    def disk_trend(
+        self, entity_id: str, *, now: float, start: float, end: float,
+        filling_frac: float = 0.85, max_points: int = 2000,
+    ) -> dict:
+        """Compatibility adapter for the pre-M7.1 disk JSON contract."""
+        profile = SimpleNamespace(
+            id="space-growth", kind="capacity", title="Disk capacity growth",
+            value_metric="used_pct", value_unit="percent",
+            rate_metric="fill_rate_bph", rate_unit="bytes/hour",
+            confidence_metric="filling", confidence_threshold_param="filling_frac",
+            remaining_metric="free_bytes", value_threshold_params=(),
+            rate_threshold_params=(), incident_group=None,
+        )
+        generic = self.trend(
+            "disk", entity_id, profile, now=now, start=start, end=end,
+            parameters={"filling_frac": filling_frac}, max_points=max_points,
+        )
+        panels = generic["panels"]
+        summary = generic["summary"]
+        return {
+            "entity": entity_id, "range": generic["range"],
+            "resolution": generic["resolution"],
+            "units": {"capacity": "%", "rate": "bytes/hour",
+                      "confidence": "fraction", "projection": "hours"},
+            "capacity": panels["value"], "rate": panels["rate"]["points"],
+            "confidence": panels["confidence"]["points"],
+            "projection": panels["projection"]["points"],
+            "incidents": generic["incidents"],
+            "summary": {
+                "current_used_pct": summary["current_value"],
+                "change_bytes": None,
+                "fill_rate_bph": summary["current_rate"],
+                "filling_confidence": summary["confidence"],
+                "projected_full_ts": summary["projected_limit_ts"],
+                "projection_reason": summary["projection_reason"],
+            },
         }
 
     def entities(self, monitor: str, *, alive_only: bool = False) -> list[sqlite3.Row]:

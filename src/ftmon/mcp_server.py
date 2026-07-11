@@ -426,7 +426,9 @@ class McpApi:
         for d in defs:
             out.append({"name": d.name, "state": "enabled" if d.enabled
                         else "disabled", "source": d.source,
-                        "description": d.description, "version": d.version})
+                        "description": d.description, "version": d.version,
+                        "trends": [{"id": p.id, "kind": p.kind, "title": p.title}
+                                   for p in d.trends]})
         for path, e in errors:
             out.append({"name": Path(path).stem, "state": "config_error",
                         "error": str(e)[:300]})
@@ -455,6 +457,10 @@ class McpApi:
                 entry["state"] = (state if d.enabled or state == "draft"
                                   else "disabled")
                 entry["valid"] = True
+                entry["trends"] = [
+                    {"id": p.id, "kind": p.kind, "title": p.title}
+                    for p in d.trends
+                ]
             except loader.ValidationError as e:
                 entry["state"] = state
                 entry["valid"] = False

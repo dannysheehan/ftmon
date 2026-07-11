@@ -255,3 +255,37 @@ def test_disk_fill_rate_persisted_before_query_downsampling_ts_09_ca_09(tmp_path
         assert response.json()["rate"][-1][1] > 0
     finally:
         h.stop()
+
+
+def test_leak_profile_real_daemon_to_generic_http_ts_10(tmp_path):
+    """[TS-10] Real samples become the generic leak value/rate/confidence panels."""
+    leak_def = (
+        Path(__file__).parents[2] / "src/ftmon/definitions/builtins/leak.toml"
+    ).read_text()
+    h = DaemonHarness(tmp_path, {"leak": leak_def}, "firefox-leak-2mb-min")
+    try:
+        h.start()
+        h.step_until(
+            lambda: h.paths.db_file.exists() and _db(h).execute(
+                "SELECT COUNT(*) FROM series WHERE metric IN "
+                "('rss_growth_confidence','rss_slope_mbph')"
+            ).fetchone()[0] == 2,
+            max_steps=250,
+        )
+        conn = _db(h)
+        entity = conn.execute(
+            "SELECT entity_id FROM series WHERE metric='rss_growth_confidence' LIMIT 1"
+        ).fetchone()[0]
+        web = TestClient(create_app(h.paths, FakeClock(wall=1_700_002_000)))
+        response = web.get(
+            "/api/trend?monitor=leak&profile=rss-growth&"
+            f"entity={entity}&range=6h",
+            headers={"host": "localhost:8420"},
+        )
+        assert response.status_code == 200
+        panels = response.json()["panels"]
+        assert panels["rate"]["points"]
+        assert panels["confidence"]["points"]
+        assert panels["projection"] is None
+    finally:
+        h.stop()

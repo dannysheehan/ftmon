@@ -21,6 +21,7 @@ __all__ = [
     "RULE_KEYS_EVENT",
     "RULE_REQUIRED",
     "DERIVED_KEYS",
+    "TREND_KEYS",
     "PARAM_KEYS",
     "PLATFORMS",
     "RULE_SEVERITIES",
@@ -57,7 +58,10 @@ RULE_SEVERITIES = ("notice", "warning", "error", "critical")
 
 # --- top-level keys ---
 TOP_LEVEL_KEYS = frozenset(
-    {"schema", "monitor", "source_options", "parameters", "promotion", "derived", "exempt", "rule"}
+    {
+        "schema", "monitor", "source_options", "parameters", "promotion",
+        "derived", "exempt", "rule", "trend",
+    }
 )
 
 # --- [monitor] ---
@@ -82,6 +86,13 @@ PARAM_KEYS = frozenset({"value", "doc"})
 
 # --- [[derived]] ---
 DERIVED_KEYS = frozenset({"name", "expr"})
+
+# --- [[trend]] (MD-10) ---
+TREND_KEYS = frozenset({
+    "id", "kind", "title", "value_metric", "value_unit", "rate_metric", "rate_unit",
+    "confidence_metric", "confidence_threshold_param", "remaining_metric",
+    "value_threshold_params", "rate_threshold_params", "incident_group",
+})
 
 # --- [[rule]] ---
 RULE_KEYS_COMMON = frozenset(

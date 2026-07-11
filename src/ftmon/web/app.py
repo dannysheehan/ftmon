@@ -6,7 +6,7 @@ import json
 import tomllib
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.applications import Starlette
@@ -94,6 +94,7 @@ async def dashboard(request: Request):
         incidents = [r for r in incidents if r["state"] != "cleared"][:10]
     return _render("dashboard.html", request, title="Dashboard", status=status,
                    monitors=defs, config_errors=errors, incidents=incidents,
+                   trend_profiles={d.name: d.trends for d in defs},
                    refresh_ms=5000)
 
 
@@ -116,8 +117,14 @@ async def incident_detail(request: Request):
         status = _status(request, q)
     if row is None:
         return Response("Incident not found", status_code=404)
+    trend_profile = next((
+        profile for mdef, profile in _trend_catalog(request.app.state.paths)
+        if mdef.name == row["monitor"]
+        and (profile.incident_group is None or profile.incident_group == row["grp"])
+    ), None)
     return _render("incident.html", request, title=f"Incident #{iid}", row=row,
-                   history=history, status=status, refresh_ms=5000)
+                   history=history, status=status, trend_profile=trend_profile,
+                   refresh_ms=5000)
 
 
 async def ack(request: Request):
@@ -155,9 +162,9 @@ async def metrics(request: Request):
                    series=series, series_json=json.dumps(series), params=p)
 
 
-def _disk_request(request: Request) -> tuple[str | None, float, float, str] | Response:
-    """Normalize shareable disk range state in one place (UI-10)."""
-    entity = request.path_params.get("entity") or request.query_params.get("entity")
+def _trend_request(request: Request) -> tuple[str | None, float, float, str] | Response:
+    """Normalize shareable trend range state in one place (UI-10/UI-12)."""
+    entity = request.query_params.get("entity")
     range_text = request.query_params.get("range", "24h")
     try:
         seconds = parse_duration(range_text)
@@ -169,27 +176,32 @@ def _disk_request(request: Request) -> tuple[str | None, float, float, str] | Re
     return entity, now - seconds, now, range_text
 
 
-def _disk_definition(paths: Paths):
-    """Return active disk thresholds; charts must match the rule configuration."""
-    try:
-        return loader.load_file(
-            paths.monitors_dir / "disk.toml",
-            actions_dir=paths.actions_dir,
-            require_actions=True,
-        )
-    except (OSError, loader.ValidationError):
-        return None
+def _trend_catalog(paths: Paths):
+    """Load profile owners together so cross-monitor IDs never collide."""
+    defs, _errors = loader.load_dir(
+        paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+    )
+    return [(mdef, profile) for mdef in defs for profile in mdef.trends]
+
+
+def _selected_profile(paths: Paths, monitor: str | None, profile_id: str | None):
+    catalog = _trend_catalog(paths)
+    if monitor and profile_id:
+        return next(((m, p) for m, p in catalog
+                     if m.name == monitor and p.id == profile_id), None)
+    return catalog[0] if catalog else None
 
 
 async def disk_trend_api(request: Request):
     """JSON contract for synchronized historical disk panels (UI-10/DM-17)."""
-    parsed = _disk_request(request)
+    parsed = _trend_request(request)
     if isinstance(parsed, Response):
         return parsed
     entity, start, end, range_text = parsed
     if not entity:
         return Response("entity is required", status_code=400)
-    mdef = _disk_definition(request.app.state.paths)
+    selected = _selected_profile(request.app.state.paths, "disk", "space-growth")
+    mdef = selected[0] if selected else None
     filling_frac = mdef.parameters.get("filling_frac", 0.85) if mdef else 0.85
     with _query(request) as q:
         if q is None:
@@ -205,29 +217,69 @@ async def disk_trend_api(request: Request):
     return JSONResponse(trend)
 
 
-async def disks(request: Request):
-    """Server-render the accessible disk trend shell and summary (UI-10/11)."""
-    parsed = _disk_request(request)
+async def trend_api(request: Request):
+    """Generic declared-panel JSON contract (CA-10/UI-12)."""
+    parsed = _trend_request(request)
     if isinstance(parsed, Response):
         return parsed
     entity, start, end, range_text = parsed
+    monitor = request.query_params.get("monitor")
+    profile_id = request.query_params.get("profile")
+    selected = _selected_profile(request.app.state.paths, monitor, profile_id)
+    if not entity or selected is None:
+        return Response("monitor, profile, and entity are required", status_code=400)
+    mdef, profile = selected
     with _query(request) as q:
-        entities = [] if q is None else [row["entity_id"] for row in q.entities("disk")]
-        entity = entity or (entities[0] if entities else None)
-        mdef = _disk_definition(request.app.state.paths)
-        filling_frac = mdef.parameters.get("filling_frac", 0.85) if mdef else 0.85
-        trend = None if q is None or entity is None else q.disk_trend(
-            entity, now=end, start=start, end=end, filling_frac=filling_frac,
+        if q is None:
+            return Response("Database not found", status_code=404)
+        trend = q.trend(
+            mdef.name, entity, profile, now=end, start=start, end=end,
+            parameters=mdef.parameters,
         )
-    if trend is not None:
+    trend["range"]["label"] = range_text
+    return JSONResponse(trend)
+
+
+async def trends(request: Request):
+    """Explore any declared trend profile through one SSR path (UI-12)."""
+    parsed = _trend_request(request)
+    if isinstance(parsed, Response):
+        return parsed
+    entity, start, end, range_text = parsed
+    monitor = request.path_params.get("monitor") or request.query_params.get("monitor")
+    profile_id = request.path_params.get("profile") or request.query_params.get("profile")
+    selection = request.query_params.get("selection", "")
+    if "/" in selection:
+        monitor, profile_id = selection.split("/", 1)
+    catalog = _trend_catalog(request.app.state.paths)
+    selected = _selected_profile(request.app.state.paths, monitor, profile_id)
+    mdef, profile = selected if selected else (None, None)
+    with _query(request) as q:
+        entities = [] if q is None or mdef is None else [
+            row["entity_id"] for row in q.entities(mdef.name)
+        ]
+        entity = entity or (entities[0] if entities else None)
+        trend = None if q is None or entity is None or profile is None else q.trend(
+            mdef.name, entity, profile, now=end, start=start, end=end,
+            parameters=mdef.parameters,
+        )
+    if trend:
         trend["range"]["label"] = range_text
-        trend["thresholds"] = {
-            key: value for key, value in (mdef.parameters.items() if mdef else ())
-            if key.startswith("space_") or key == "filling_frac"
-        }
     return _render(
-        "disks.html", request, title="Disk trends", entities=entities,
+        "trends.html", request, title="Trends", catalog=catalog,
+        selected_monitor=mdef, selected_profile=profile, entities=entities,
         entity=entity, range_text=range_text, trend=trend,
+    )
+
+
+async def disks_redirect(request: Request):
+    """Preserve M7 bookmarks while making Trends canonical (UI-12)."""
+    entity = request.path_params.get("entity") or request.query_params.get("entity")
+    params = {"range": request.query_params.get("range", "24h")}
+    if entity:
+        params["entity"] = entity
+    return RedirectResponse(
+        "/trends/disk/space-growth?" + urlencode(params), status_code=307
     )
 
 
@@ -302,7 +354,9 @@ def create_app(paths: Paths | None = None, clock=None, port: int = 8420) -> Star
         Route("/incidents/{id:int}", incident_detail),
         Route("/incidents/{id:int}/ack", ack, methods=["POST"]),
         Route("/metrics", metrics), Route("/events", events),
-        Route("/disks", disks), Route("/disks/{entity:path}", disks),
+        Route("/trends", trends), Route("/trends/{monitor:str}/{profile:str}", trends),
+        Route("/api/trend", trend_api),
+        Route("/disks", disks_redirect), Route("/disks/{entity:path}", disks_redirect),
         Route("/api/disk-trend", disk_trend_api),
         Route("/monitors", monitors),
         Route("/monitors/{name:str}/{action:str}", monitor_action, methods=["POST"]),

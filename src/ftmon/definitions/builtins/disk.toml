@@ -10,7 +10,7 @@ exempt = [ 'matches(fstype, "^(tmpfs|iso9660|squashfs|overlay)$")' ]
 [monitor]
 name = "disk"
 description = "Disk space thresholds, inode thresholds, and filling-rate detection"
-version = 2
+version = 3
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -39,6 +39,19 @@ expr = 'slope(used_bytes, "70m") * 3600'
 # Hours until full at the current 70m growth rate; huge when not growing.
 name = "full_in_h"
 expr = 'free_bytes / clamp(slope(used_bytes, "70m") * 3600, 1, 1000000000000000)'
+
+[[trend]]
+id = "space-growth"
+kind = "capacity"
+title = "Disk capacity growth"
+value_metric = "used_pct"
+value_unit = "percent"
+rate_metric = "fill_rate_bph"
+rate_unit = "bytes/hour"
+confidence_metric = "filling"
+confidence_threshold_param = "filling_frac"
+remaining_metric = "free_bytes"
+value_threshold_params = ["space_notice_pct", "space_warn_pct", "space_crit_pct"]
 
 # --- space ladder (one incident per mount, IN-03) ---
 [[rule]]

@@ -46,6 +46,8 @@ ftmon web
 Open <http://127.0.0.1:8420/>. The service binds only to loopback and uses no
 remote assets. Keep the hostname consistent (`127.0.0.1` or `localhost`) so
 the write-operation Origin check can protect against DNS rebinding and CSRF.
+The **Trends** page graphs declared growth profiles such as disk capacity and
+process memory growth; monitor and incident pages link into the same explorer.
 
 ## MCP registration
 

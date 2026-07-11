@@ -38,6 +38,7 @@ from ftmon.sources.base import SOURCE_DECLS
 
 __all__ = [
     "RuleDef",
+    "TrendProfile",
     "MonitorDef",
     "ValidationError",
     "load_text",
@@ -64,6 +65,25 @@ class RuleDef:
 
 
 @dataclass(frozen=True)
+class TrendProfile:
+    """Validated presentation metadata over persisted metrics (MD-10)."""
+
+    id: str
+    kind: str
+    title: str
+    value_metric: str
+    value_unit: str
+    rate_metric: str
+    rate_unit: str
+    confidence_metric: str | None
+    confidence_threshold_param: str | None
+    remaining_metric: str | None
+    value_threshold_params: tuple[str, ...]
+    rate_threshold_params: tuple[str, ...]
+    incident_group: str | None
+
+
+@dataclass(frozen=True)
 class MonitorDef:
     name: str
     description: str
@@ -78,6 +98,7 @@ class MonitorDef:
     derived: tuple[tuple[str, CompiledExpr], ...]  # topologically ordered (MD-08)
     exempt: tuple[CompiledExpr, ...]
     rules: tuple[RuleDef, ...]
+    trends: tuple[TrendProfile, ...]
     windows: tuple[tuple[str, float], ...]  # union of all expressions' .windows (CA-04)
     normalized_toml: str
     content_hash: str  # sha256 hex of normalized_toml
@@ -734,6 +755,136 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
             )
         )
 
+    # --- [[trend]] (MD-10) ----------------------------------------------------
+    # Profiles are parsed after rules/deriveds so every cross-reference can be
+    # checked once here. They never compile expressions or expand collection.
+    trend_raw = parsed.get("trend", [])
+    trends: list[TrendProfile] = []
+    seen_trends: set[str] = set()
+    if trend_raw and is_events:
+        errors.append(_err("trend", "unknown_key", "[[trend]] is sampler-only"))
+        trend_raw = []
+    elif trend_raw and not isinstance(trend_raw, list):
+        errors.append(_err("trend", "invalid_type", "[[trend]] must be an array of tables"))
+        trend_raw = []
+
+    available_metrics = decl_metrics | derived_names
+    available_groups = {rule.group for rule in rules}
+    for i, item in enumerate(trend_raw):
+        path = f"trend[{i}]"
+        if not isinstance(item, dict):
+            errors.append(_err(path, "invalid_type", f"{path} must be a table"))
+            continue
+        _check_unknown_keys(item, schema.TREND_KEYS, path, errors)
+        for key in ("id", "kind", "title", "value_metric", "value_unit",
+                    "rate_metric", "rate_unit"):
+            if key not in item:
+                errors.append(_err(f"{path}.{key}", "missing_key", f"missing {path}.{key}"))
+
+        profile_id = item.get("id")
+        if not schema.valid_id(profile_id):
+            errors.append(_err(f"{path}.id", "invalid_value",
+                               f"trend id {profile_id!r} must match {schema.ID_RE.pattern}"))
+            profile_id = None
+        elif profile_id in seen_trends:
+            errors.append(_err(f"{path}.id", "duplicate_id",
+                               f"duplicate trend id {profile_id!r}"))
+            profile_id = None
+        if profile_id:
+            seen_trends.add(profile_id)
+
+        kind = item.get("kind")
+        if kind not in {"growth", "capacity"}:
+            errors.append(_err(f"{path}.kind", "invalid_value",
+                               "trend kind must be growth or capacity"))
+            kind = None
+        title = item.get("title")
+        if not isinstance(title, str) or not title or len(title) > 80:
+            errors.append(_err(f"{path}.title", "invalid_value",
+                               "trend title must be 1..80 characters"))
+            title = None
+
+        def metric(
+            key: str, *, optional: bool = False, _item=item, _path=path
+        ) -> str | None:
+            value = _item.get(key)
+            if value is None and optional:
+                return None
+            if not isinstance(value, str) or value not in available_metrics:
+                errors.append(_err(f"{_path}.{key}", "unknown_name",
+                                   f"{key} must name a persisted raw or derived metric"))
+                return None
+            return value
+
+        def unit(key: str, *, _item=item, _path=path) -> str | None:
+            value = _item.get(key)
+            if not isinstance(value, str) or not value or len(value) > 32:
+                errors.append(_err(f"{_path}.{key}", "invalid_value",
+                                   f"{key} must be 1..32 characters"))
+                return None
+            return value
+
+        value_metric = metric("value_metric")
+        rate_metric = metric("rate_metric")
+        value_unit = unit("value_unit")
+        rate_unit = unit("rate_unit")
+        confidence_metric = metric("confidence_metric", optional=True)
+        confidence_param = item.get("confidence_threshold_param")
+        if confidence_param is not None and (
+            not isinstance(confidence_param, str) or confidence_param not in param_names
+        ):
+            errors.append(_err(f"{path}.confidence_threshold_param", "unknown_name",
+                               "confidence threshold must name a parameter"))
+            confidence_param = None
+        if (confidence_metric is None) != (confidence_param is None):
+            errors.append(_err(path, "invalid_value",
+                               "confidence_metric and confidence_threshold_param are paired"))
+
+        remaining_metric = metric("remaining_metric", optional=True)
+        if kind == "capacity" and remaining_metric is None:
+            errors.append(_err(f"{path}.remaining_metric", "missing_key",
+                               "capacity trends require remaining_metric"))
+        if kind == "growth" and remaining_metric is not None:
+            errors.append(_err(f"{path}.remaining_metric", "invalid_value",
+                               "growth trends do not project a capacity"))
+            remaining_metric = None
+
+        def param_list(key: str, *, _item=item, _path=path) -> tuple[str, ...]:
+            value = _item.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+                errors.append(_err(f"{_path}.{key}", "invalid_type",
+                                   f"{key} must be an array of parameter names"))
+                return ()
+            unknown = [name for name in value if name not in param_names]
+            if unknown:
+                errors.append(_err(f"{_path}.{key}", "unknown_name",
+                                   f"unknown parameters: {unknown}"))
+                return ()
+            return tuple(value)
+
+        value_thresholds = param_list("value_threshold_params")
+        rate_thresholds = param_list("rate_threshold_params")
+        incident_group = item.get("incident_group")
+        if incident_group is not None and incident_group not in available_groups:
+            errors.append(_err(f"{path}.incident_group", "unknown_name",
+                               f"unknown incident group {incident_group!r}"))
+            incident_group = None
+
+        if all(x is not None for x in (
+            profile_id, kind, title, value_metric, value_unit, rate_metric, rate_unit
+        )):
+            trends.append(TrendProfile(
+                id=profile_id, kind=kind, title=title,
+                value_metric=value_metric, value_unit=value_unit,
+                rate_metric=rate_metric, rate_unit=rate_unit,
+                confidence_metric=confidence_metric,
+                confidence_threshold_param=confidence_param,
+                remaining_metric=remaining_metric,
+                value_threshold_params=value_thresholds,
+                rate_threshold_params=rate_thresholds,
+                incident_group=incident_group,
+            ))
+
     # --- windows (CA-04) -----------------------------------------------------
     all_windows: set[tuple[str, float]] = set()
     if promotion is not None:
@@ -779,6 +930,7 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
         derived=tuple(derived_ordered),
         exempt=exempt,
         rules=tuple(rules),
+        trends=tuple(trends),
         windows=windows,
         normalized_toml=normalized_toml,
         content_hash=content_hash,

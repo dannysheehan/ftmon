@@ -5,7 +5,7 @@ schema = 1
 [monitor]
 name = "leak"
 description = "Detects processes whose memory grows steadily (memory leaks)"
-version = 1
+version = 2
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -15,11 +15,12 @@ source = "process"
 warn_mb_per_h = { value = 32, doc = "Warn when RSS grows faster than this (MB/hour), sustained" }
 crit_mb_per_h = { value = 128, doc = "Error when RSS grows faster than this (MB/hour)" }
 promote_mb = { value = 16, doc = "Growth over 15m that makes a process worth tracking long-term" }
+growth_confidence = { value = 0.8, doc = "Fraction of rising samples that indicates sustained growth" }
 
 # Which processes get long-term history (SA-05c). Evaluated over the short
 # all-process window every cycle.
 [promotion]
-expr = 'monot(rss_bytes, "15m") >= 0.8 and delta(rss_bytes, "15m") > promote_mb * MB'
+expr = 'monot(rss_bytes, "15m") >= growth_confidence and delta(rss_bytes, "15m") > promote_mb * MB'
 
 # Browsers leak by design; exempt them here if the noise annoys you.
 # exempt = [ 'matches(name, "^(firefox|chrome|chromium)$")' ]
@@ -47,3 +48,20 @@ expr = 'slope(rss_bytes, "45m") * 3600 / MB'
 [[derived]]
 name = "rss_mb"
 expr = 'rss_bytes / MB'
+
+[[derived]]
+name = "rss_growth_confidence"
+expr = 'monot(rss_bytes, "15m")'
+
+[[trend]]
+id = "rss-growth"
+kind = "growth"
+title = "Process memory growth"
+value_metric = "rss_mb"
+value_unit = "MiB"
+rate_metric = "rss_slope_mbph"
+rate_unit = "MiB/hour"
+confidence_metric = "rss_growth_confidence"
+confidence_threshold_param = "growth_confidence"
+rate_threshold_params = ["warn_mb_per_h", "crit_mb_per_h"]
+incident_group = "leak"

@@ -114,5 +114,61 @@ def test_disk_trend_api_and_accessible_page_ui_10_ui_11_ts_09(tmp_path):
     assert page.status_code == 200
     assert "/data&lt;script&gt;" in page.text
     assert "no reliable projection" not in page.text
-    assert 'data-panel="capacity"' in page.text
+    assert 'data-panel="value"' in page.text
     assert "vendor/uPlot.iife.min.js" in page.text
+
+    redirect = client.get("/disks?entity=/data%3Cscript%3E&range=6h",
+                          headers=headers, follow_redirects=False)
+    assert redirect.status_code == 307
+    assert redirect.headers["location"].startswith("/trends/disk/space-growth?")
+
+    generic = client.get(
+        "/api/trend?monitor=disk&profile=space-growth&"
+        "entity=/data%3Cscript%3E&range=6h", headers=headers,
+    ).json()
+    assert generic["panels"]["value"]["metric"] == "used_pct"
+    assert generic["panels"]["projection"] is not None
+
+
+def test_generic_leak_trend_and_context_links_ui_12_ts_10(tmp_path):
+    """[UI-12][TS-10] Leak uses the shared explorer with no projection panel."""
+    client, paths = _client(tmp_path)
+    builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/leak.toml"
+    (paths.monitors_dir / "leak.toml").write_text(builtin.read_text())
+    entity = "firefox:7:1"
+    conn = connect(paths.db_file)
+    for sid, (metric, value) in enumerate({
+        "rss_mb": 512.0,
+        "rss_slope_mbph": 48.0,
+        "rss_growth_confidence": 0.9,
+    }.items(), 1):
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES(?,'leak',?,?,0)", (sid, entity, metric)
+        )
+        conn.execute("INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)",
+                     (sid, 1000, value))
+    conn.execute(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,attrs) "
+        "VALUES('leak',?,1,1000,'{}')", (entity,)
+    )
+    conn.execute(
+        "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+        "opened_ts,last_change_ts,notify_count,occurrences) "
+        "VALUES(2,'leak','leak',?,'open',2,'leak-warn',900,900,1,1)", (entity,)
+    )
+    conn.commit()
+    conn.close()
+    headers = {"host": "localhost:8420"}
+    page = client.get(
+        f"/trends/leak/rss-growth?entity={entity}&range=6h", headers=headers
+    )
+    assert page.status_code == 200
+    assert "Process memory growth" in page.text
+    assert 'data-panel="confidence"' in page.text
+    assert 'data-panel="projection"' not in page.text
+    assert "Latest signed rate +48.00 MiB/hour" in page.text
+    dashboard = client.get("/", headers=headers).text
+    assert 'href="/trends/leak/rss-growth"' in dashboard
+    incident = client.get("/incidents/2", headers=headers).text
+    assert "/trends/leak/rss-growth?entity=firefox%3A7%3A1" in incident

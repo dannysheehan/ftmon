@@ -1,4 +1,4 @@
-"""Monitor definition schema and loader (DESIGN.md section 7, MD-01..09).
+"""Monitor definition schema and loader (DESIGN.md section 7, MD-01..10).
 
 Public API re-exported from `loader.py`:
 
@@ -13,6 +13,7 @@ eight normative built-in monitor definitions (MD-07), shipped as package data.
 from ftmon.definitions.loader import (
     MonitorDef,
     RuleDef,
+    TrendProfile,
     ValidationError,
     load_dir,
     load_file,
@@ -22,6 +23,7 @@ from ftmon.definitions.loader import (
 __all__ = [
     "MonitorDef",
     "RuleDef",
+    "TrendProfile",
     "ValidationError",
     "load_text",
     "load_file",

@@ -62,6 +62,62 @@ def test_leak_builtin_has_promotion():
     assert md.source == "process"
 
 
+def test_builtin_trend_profiles_are_explicit_and_valid_md_10():
+    """[MD-10][TS-10] Disk projects capacity; leak explicitly stops at confidence."""
+    disk = load_file(BUILTINS_DIR / "disk.toml").trends[0]
+    leak = load_file(BUILTINS_DIR / "leak.toml").trends[0]
+    assert (disk.id, disk.kind, disk.remaining_metric) == (
+        "space-growth", "capacity", "free_bytes"
+    )
+    assert (leak.id, leak.kind, leak.remaining_metric) == (
+        "rss-growth", "growth", None
+    )
+    assert leak.confidence_metric == "rss_growth_confidence"
+
+
+@pytest.mark.parametrize(
+    ("addition", "path"),
+    [
+        ('''
+[[trend]]
+id = "bad"
+kind = "growth"
+title = "Bad"
+value_metric = "missing"
+value_unit = "bytes"
+rate_metric = "used_bytes"
+rate_unit = "bytes/hour"
+''', "trend[0].value_metric"),
+        ('''
+[[trend]]
+id = "bad"
+kind = "capacity"
+title = "Bad"
+value_metric = "used_pct"
+value_unit = "percent"
+rate_metric = "used_bytes"
+rate_unit = "bytes/hour"
+''', "trend[0].remaining_metric"),
+        ('''
+[[trend]]
+id = "bad"
+kind = "growth"
+title = "Bad"
+value_metric = "used_pct"
+value_unit = "percent"
+rate_metric = "used_bytes"
+rate_unit = "bytes/hour"
+confidence_metric = "used_pct"
+''', "trend[0]"),
+    ],
+)
+def test_trend_profile_cross_references_fail_validation_md_10(addition, path):
+    """[MD-10] Invalid semantics fail during check, never in browser code."""
+    with pytest.raises(ValidationError) as exc:
+        load_text(VALID_SAMPLER + addition)
+    assert any(error["path"] == path for error in exc.value.errors)
+
+
 def test_events_builtin_has_no_interval_and_event_rules():
     md = load_file(BUILTINS_DIR / "events.toml")
     assert md.interval_s == 0.0
