@@ -220,7 +220,7 @@ The separate file contains:
 
 ```toml
 [check.website_https]
-argv = ["/usr/lib/nagios/plugins/check_http", "-H", "example.org", "-S"]
+argv = ["/usr/lib/nagios/plugins/check_http", "-H", "example.org", "-S", "--sni", "-E"]
 protocol = "nagios"
 timeout = "10s"
 ```

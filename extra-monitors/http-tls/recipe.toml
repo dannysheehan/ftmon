@@ -1,0 +1,32 @@
+schema = 1
+
+[recipe]
+id = "http-tls"
+title = "HTTPS availability and response time"
+summary = "Check a public HTTPS endpoint and retain connection and latency trends."
+kind = "nagios"
+platforms = ["linux"]
+upstream = "https://www.monitoring-plugins.org/doc/man/check_http.html"
+license = "GPL-3.0-or-later with OpenSSL exception"
+status = "real-system-verified"
+privilege = "none"
+network = true
+last_verified_version = "Monitoring Plugins 2.3.5 on Ubuntu 24.04; 2026-07-12"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = ["time", "size", "time_connect", "time_ssl", "time_headers", "time_firstbyte", "time_transfer"]
+
+[[fixtures]]
+path = "fixtures/critical.txt"
+exit_code = 2
+state = 2
+labels = []
+
+[[fixtures]]
+path = "fixtures/unknown.txt"
+exit_code = 3
+state = 3
+labels = []

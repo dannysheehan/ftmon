@@ -284,7 +284,7 @@ path, where the file and parent directory are root-owned:
 argv = [
   "/usr/lib/nagios/plugins/check_http",
   "-H", "example.org",
-  "-S", "-C", "14", "-t", "8",
+  "-S", "--sni", "-E", "-w", "1", "-c", "3", "-t", "8",
 ]
 protocol = "nagios"
 timeout = "9s"
@@ -296,7 +296,7 @@ prepared to accept:
 ```toml
 [monitor]
 name = "website"
-description = "Public website availability and TLS"
+description = "Public website availability and response time"
 version = 1
 enabled = true
 platforms = ["linux"]

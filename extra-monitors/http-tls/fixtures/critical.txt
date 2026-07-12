@@ -1,0 +1,1 @@
+CRITICAL - Cannot make SSL connection.

@@ -21,7 +21,7 @@ empty registry by `ftmon init`:
 argv = [
   "/usr/lib/nagios/plugins/check_http",
   "-H", "example.org",
-  "-S", "-C", "14", "-t", "8",
+  "-S", "--sni", "-E", "-w", "1", "-c", "3", "-t", "8",
 ]
 protocol = "nagios"
 timeout = "9s"
@@ -57,7 +57,7 @@ performance data, but only explicitly mapped labels become metrics:
 ```toml
 [monitor]
 name = "website"
-description = "Public website availability and certificate health"
+description = "Public website availability and response time"
 version = 1
 enabled = true
 platforms = ["linux"]
@@ -93,6 +93,13 @@ so a plugin upgrade cannot silently grow the database schema.
 Mapped metrics are ordinary FTMON metrics. They can be used in derived
 expressions and explicit Trends—for example, response-time slope and monotonic
 growth confidence—without FTMON inferring meaning from a plugin label.
+
+The tested [`check_http` recipe](../extra-monitors/http-tls/) explains the SNI,
+timeout and threshold choices and includes deterministic plugin-output
+fixtures. Certificate expiry should use a separate invocation: Monitoring
+Plugins 2.3.5 emits certificate status and HTTP performance data on separate
+lines when `-C --continue-after-certificate` is used, while FTMON deliberately
+accepts Nagios performance data only from the first line.
 
 ## Write an FTMON JSON check
 

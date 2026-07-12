@@ -1,0 +1,13 @@
+[check.demo_ftmon_https]
+# SNI is explicit because name-based TLS hosts can reject a handshake without it.
+# Extended perfdata exposes phase timings so FTMON can retain useful history.
+argv = [
+  "/usr/lib/nagios/plugins/check_http",
+  "-H", "demo.ftmon.org",
+  "-S", "--sni", "-E",
+  "-w", "1", "-c", "3", "-t", "8",
+]
+protocol = "nagios"
+# Keep FTMON's deadline just beyond the plugin's own timeout so check_http can
+# return its diagnostic before the outer process-group deadline intervenes.
+timeout = "9s"

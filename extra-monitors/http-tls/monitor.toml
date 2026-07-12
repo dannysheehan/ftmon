@@ -1,0 +1,105 @@
+schema = 1
+
+[monitor]
+name = "demo_ftmon_https"
+description = "HTTPS availability and response-time history for demo.ftmon.org"
+version = 1
+enabled = false
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "demo_ftmon_https"
+entity = "https://demo.ftmon.org/"
+
+[[source_options.perfdata]]
+label = "time"
+metric = "response_time_s"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "time_connect"
+metric = "connect_time_s"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "time_ssl"
+metric = "tls_time_s"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "time_firstbyte"
+metric = "first_byte_time_s"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "size"
+metric = "response_size_bytes"
+plugin_uom = "B"
+unit = "bytes"
+kind = "gauge"
+
+[parameters]
+latency_growth_sph = { value = 0.25, doc = "Response-time growth per hour before warning" }
+growth_confidence_min = { value = 0.8, doc = "Required fraction of rising response-time samples" }
+
+[[derived]]
+name = "response_time_rate_sph"
+expr = 'slope(response_time_s, "2h") * 3600'
+
+[[derived]]
+name = "response_time_growth_confidence"
+expr = 'monot(response_time_s, "2h")'
+
+[[rule]]
+id = "plugin-warning"
+group = "availability"
+when = "plugin_state == 1"
+severity = "warning"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-critical"
+group = "availability"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-unknown"
+group = "check-health"
+when = "plugin_state == 3"
+severity = "warning"
+confirm_cycles = 2
+message = "HTTPS check is unknown: {plugin_message}"
+
+[[rule]]
+id = "latency-degrading"
+group = "latency-growth"
+when = "response_time_rate_sph > latency_growth_sph and response_time_growth_confidence >= growth_confidence_min"
+severity = "warning"
+confirm_cycles = 3
+message = "HTTPS response time is steadily increasing"
+
+[[trend]]
+id = "response-time"
+kind = "growth"
+title = "HTTPS response-time trend"
+value_metric = "response_time_s"
+value_unit = "seconds"
+rate_metric = "response_time_rate_sph"
+rate_unit = "seconds/hour"
+confidence_metric = "response_time_growth_confidence"
+confidence_threshold_param = "growth_confidence_min"
+rate_threshold_params = ["latency_growth_sph"]

@@ -121,6 +121,8 @@ Never expose an operational FTMON database as a demo.
   language, and examples.
 - [External checks](docs/external-checks.md) — scripts, Nagios plugins,
   performance-data mappings, privileges, and security boundaries.
+- [Extra monitors](extra-monitors/) — tested integration recipes for
+  separately installed checks.
 - [Product specification](SPEC.md) and [technical design](DESIGN.md) — normative
   behavior, rationale, architecture, and requirement IDs.
 - [Contributing guide](CONTRIBUTING.md) — development and documentation
