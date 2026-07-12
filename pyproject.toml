@@ -46,6 +46,7 @@ dev = [
     "pytest-timeout>=2",
     "hypothesis>=6",
     "ruff>=0.8",
+    "httpx2>=2",
 ]
 
 [build-system]

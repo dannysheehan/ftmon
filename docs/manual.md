@@ -48,6 +48,15 @@ incident silences it without pretending it's fixed. Rules that form a
 severity ladder (disk at 85/92/97%) share one incident that moves up and
 down the ladder instead of stacking three.
 
+**Restart and confirmation.** Confirm/clear cycle counters live in daemon
+memory only (DESIGN D3). After a restart, open incidents are rebuilt from the
+database with the owning rule marked confirmed — conservative, so an incident
+never vanishes just because the daemon restarted, but a brief false positive
+that cleared right before restart may need its full `confirm_cycles` again.
+
+For how the daemon, CLI, web UI, and MCP fit together, see the
+[architecture overview](../README.md#architecture) in the README.
+
 **Episode.** The event-log flavor of an incident: a matching journal entry
 opens it, repeats refresh it (with a cooldown), and it closes itself after
 a quiet period. You get "OOM killer fired (12x in the last hour)", not
@@ -102,8 +111,8 @@ ftmon incidents         # open/acked problems (--all includes cleared)
 ftmon ack 42            # stop re-notifying, keep watching
 ftmon baseline reset leak         # forget learned "normal" (e.g. after an upgrade)
 ftmon events --min-severity error   # stored journal events (--provider, --hours)
-ftmon incident 42       # full story of one incident        (soon)
-ftmon top rss --range 3h  # what was eating memory          (soon)
+ftmon incident 42       # full story of one incident
+ftmon top rss --range 3h  # what was eating memory
 ftmon doctor            # database integrity, WAL, orphans and config
 ```
 

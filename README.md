@@ -176,6 +176,8 @@ Never expose an operational FTMON database as a demo.
   behavior, rationale, architecture, and requirement IDs.
 - [Contributing guide](CONTRIBUTING.md) — development and documentation
   standards.
+- [Documentation drift audit (M10)](docs/drift-audit-m10.md) — recorded DO-09
+  pass for the pre-v1.0 release window.
 - [Exchange publishing guide](docs/exchange.md) — local preview, GitHub Pages,
   custom-domain verification and rollback.
 - [Shared AI skills](docs/ai-skills.md) — reviewed contribution workflows,

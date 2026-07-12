@@ -232,7 +232,17 @@ ssh -N -L 8420:127.0.0.1:8420 server.example.net
 
 After opening the tunnel, browse to <http://127.0.0.1:8420/> locally. Keep the
 operational dashboard bound to loopback: it has no login boundary and includes
-write operations, so publishing it through a reverse proxy is unsupported.
+write operations (ack, approve draft, enable/disable monitor), so publishing it
+through a reverse proxy is unsupported.
+
+On a **shared-login** host — several administrators using one Unix account, or
+a desktop where untrusted local processes may run — anyone who can reach the
+loopback port can perform those writes. Bind the SSH forward to `127.0.0.1` on
+your workstation (`ssh -L 127.0.0.1:8420:127.0.0.1:8420 …`), not `0.0.0.0`, and
+treat an open tunnel like temporary root on the monitored host. This is deliberate
+(NG-05): FTMON is a single-user, loopback-only management surface, not a
+multi-tenant console.
+
 The separate synthetic demo application is the only FTMON mode designed for a
 public proxy.
 
@@ -253,6 +263,15 @@ the received `ftmon.notify.v1` document and
 durable audit without contacting the Internet. Restore the real reference and
 restart the service afterwards. Do not use production tokens in test fixtures
 or paste request bodies into issue reports (TS-13).
+
+#### Soak evidence (pre-v1.0)
+
+Release readiness (TS-17) requires weekly evidence from long-running hosts. See
+[soak procedure](soak-procedure.md). On a server-profile install, copy
+`tools/capture_soak_evidence.sh` to `/opt/ftmon/bin/`, install
+`ftmon-soak-evidence.service` and `ftmon-soak-evidence.timer` from
+`src/ftmon/systemd/`, and enable the timer. Evidence lands under
+`/var/lib/ftmon/soak/evidence/`; keep host manifests private (not in Git).
 
 ## Web dashboard
 
