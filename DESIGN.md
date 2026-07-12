@@ -26,6 +26,8 @@ PROJECTS/ftmon/                  # monorepo root (git)
 ├── extra-monitors/              # articles + testable external-check recipes (XR-*)
 │   ├── _template/
 │   └── <recipe>/{README.md,recipe.toml,checks.toml.example,monitor.toml,fixtures/}
+├── exchange/                    # static templates/assets; never generated output
+├── tools/build_exchange.py      # deterministic, inert catalogue publisher
 ├── src/ftmon/                   # the package (SPEC §3)
 │   ├── paths.py                 # FS-01: all filesystem paths (platformdirs)
 │   ├── clock.py                 # TS-03: Clock protocol + SystemClock + ControlledClock
@@ -715,6 +717,39 @@ live under their recipe's `scripts/`, carry an explicit licence header, depend
 only on documented platform tools or the Python standard library, and have
 direct behavioral tests in addition to protocol fixtures (XR-05).
 
+### 10.10 Static Exchange publisher (XR-06..10, TS-19)
+
+`tools/build_exchange.py --output dist/exchange` reads only regular files from
+non-underscore recipe directories, validates the same bounded metadata used by
+TS-16, then writes into a newly created destination. It refuses a destination
+inside `extra-monitors/`, symlinks anywhere in a recipe, duplicate IDs or
+generated paths, unsafe URL schemes and unsupported Markdown. The builder does
+not import recipe modules, invoke commands, inspect executables or access the
+network. This keeps a catalogue contribution a data-review problem rather than
+a CI code-execution boundary.
+
+The renderer uses Python's HTML escaping plus a deliberately small Markdown
+subset (headings, paragraphs, fenced code, lists, inline code and HTTPS links).
+Raw HTML is text, not markup. Templates are repository-owned constants rather
+than contributor-selectable files. Output is ordered by recipe ID and JSON uses
+sorted keys and fixed separators, so two builds of one tree are byte-identical.
+
+The artifact contains `index.html`, `recipes/<id>/index.html`,
+`search-index.v1.json`, repository-owned `assets/exchange.css` and
+`assets/exchange.js`, plus `404.html`, `.nojekyll` and `CNAME`. The index renders
+all cards and filter links in HTML; JavaScript only narrows that existing list
+from the versioned search document. Detail pages show compatibility and trust
+metadata before the safely rendered article, and link to reviewed source on
+GitHub rather than copying or offering a third-party executable.
+
+`.github/workflows/exchange.yml` builds and tests on pull requests and pushes.
+The deploy job additionally requires `github.ref == refs/heads/main` and a push
+event, depends on the build artifact, targets the protected `github-pages`
+environment, and alone receives `pages: write` plus `id-token: write`. Workflow
+actions are pinned to immutable revisions because a documentation publisher is
+still a software supply-chain boundary. Pages terminates TLS for the verified
+`exchange.ftmon.org` custom domain; DNS and rollback remain operator steps.
+
 ---
 
 ## 11. Event pipeline (SA-03/08, DM-07..10, DM-15)
@@ -950,6 +985,9 @@ plugin remains under its own license (EC-01/02/07/09, SE-07).
 | D23 | Registry authority separate from monitor definitions | AI/user drafts can compose rules around an approved check but cannot introduce executable paths, argv or credentials |
 | D24 | v1.0 gated on recorded soak + empty pending list (TS-17/18) | the codebase was built in days; deterministic CI proves logic, not longevity — a monitor's core claims (bounded RSS/DB, durable retry, quiet operation) are only credible after real wall-clock time, and untested SE-* requirements are the riskiest kind of pending |
 | D25 | Doc-drift audit is a manual recorded pass, not tooling (DO-09) | prose docs can't be regex-traced like requirement IDs; a per-milestone checklist executed and recorded costs less than building doc-testing machinery for four documents |
+| D26 | Recipe authority and Exchange publisher stay in one repository | monitor-schema changes and compatible recipes merge atomically; a second repository would create version skew before independent governance is needed |
+| D27 | Exchange is generated static documentation, not a submission application | pull requests provide identity, review and history without accounts, uploads, moderation storage or an executable marketplace attack surface |
+| D28 | Safe subset renderer with deterministic output | contributor prose cannot inject active content and byte-identical artifacts make review, caching and rollback auditable |
 
 ---
 
@@ -980,6 +1018,9 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
 - **M9.1**: WP36 recipe schema/template + discovery validator · WP37 HTTP/TLS
   and constrained SMART/NVMe Nagios recipes · WP38 maintained native JSON
   script, direct tests, catalogue/user-documentation links.
+- **M9.2**: WP42 publication metadata + safe deterministic generator · WP43
+  catalogue/detail/search/security tests · WP44 Pages workflow, custom-domain
+  runbook, local preview and rollback documentation.
 - **M10**: WP39 `tools/soak_report.py` + soak procedure/evidence template
   (TS-17) · WP40 pending-traceability burn-down, SE-* first, then UI-*/PL-*,
   then the remainder; each ID gains a test or a documented spec amendment

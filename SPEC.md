@@ -469,6 +469,29 @@ third-party acquisition, trust and licensing decisions with the operator.
 - **XR-05** A script may ship inside a recipe only when FTMON is its original
   maintainer, its licence is explicit, it follows the bounded FTMON JSON or
   Nagios convention, and direct tests cover success and failure behavior.
+- **XR-06** Publication metadata adds one bounded category, zero or more
+  lowercase tags, and a minimum compatible FTMON version. These fields are the
+  catalogue's search and compatibility authority; generated pages MUST NOT
+  infer them from prose, executable output, popularity or filenames.
+- **XR-07** `exchange.ftmon.org` is a deterministic static rendering of the
+  committed recipe catalogue. It provides an HTML index, one stable page per
+  recipe and a versioned JSON search index. Every recipe remains usable without
+  JavaScript; client-side search and filters are progressive enhancement only.
+- **XR-08** The publisher treats every recipe byte as untrusted data: it never
+  imports or executes recipe scripts or commands, follows symlinks, accepts raw
+  HTML, emits active URL schemes, or writes outside its fresh destination.
+  Markdown is rendered through an explicit safe subset and all other values
+  are escaped. A malformed recipe fails the build rather than producing a
+  partial catalogue.
+- **XR-09** Pull requests and ordinary CI build and test the site without
+  deployment authority. Only a push to protected `main` may deploy the tested
+  artifact through GitHub Pages with `contents: read`, `pages: write` and
+  `id-token: write`; recipe changes never execute contributor-controlled code.
+- **XR-10** Publication is curated documentation, not an executable
+  marketplace or endorsement. The site links to upstream acquisition and the
+  reviewed repository recipe, does not host third-party binaries, accounts,
+  ratings, comments or uploads, and identifies confidence, privilege, network,
+  licence and compatibility on every recipe page.
 
 The initial catalogue proves three distinct paths: an unprivileged networked
 HTTP/TLS Nagios plugin, a read-only SMART/NVMe check with constrained privilege,
@@ -927,6 +950,12 @@ occur. These gates convert the resource-budget and durability *claims*
   across more than one further milestone), then `UI-*`/`PL-*`, then the rest.
   A pending ID that proves untestable is resolved by amending this document
   (mark exempt or retire with rationale), never by silent deletion.
+- **TS-19** Exchange tests build twice for byte-identical output and cover
+  metadata bounds, stable paths, complete catalogue/detail/search output,
+  no-JavaScript navigation, HTML/script/URL escaping, symlink and traversal
+  rejection, inert command examples, broken local links and workflow trigger,
+  permission and deploy-job boundaries. Tests never contact the network or
+  execute a recipe command.
 
 ## 17. Documentation deliverables (v1)
 
@@ -963,6 +992,10 @@ occur. These gates convert the resource-budget and durability *claims*
   clearly labelled `docs/history/`), and `CLAUDE.md`/`AGENTS.md` are checked
   for staleness as part of the audit — a repo-guidance file that describes a
   previous architecture is a defect.
+- **DO-10** Documentation explains Exchange contribution, local preview,
+  generated-file policy, GitHub Pages environment and custom-domain DNS setup,
+  deployment verification and rollback. It states that catalogue publication
+  is compatibility evidence, not endorsement or a security audit.
 
 ---
 
@@ -1008,11 +1041,19 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M8.1** | Synthetic read-only public demo mode and deployment (UI-15/16, SE-06, TS-14, DO-06) | safe `demo.ftmon.org` experience |
 | **M9** | Administrator check registry, external subprocess source, FTMON JSON and Nagios adapters, declared perfdata history/Trends (EC-*, MD-11, SE-07, TS-15, DO-07) | bring-your-own checks without a monitoring stack |
 | **M9.1** | Curated `extra-monitors/` recipe contract, offline validator, HTTP/TLS, SMART/NVMe and native JSON examples (XR-*, TS-16, DO-08) | a tested integration cookbook without vendoring an ecosystem |
+| **M9.2** | Deterministic safe Exchange generator, searchable static catalogue, Pages/custom-domain deployment and publication tests (XR-06..10, TS-19, DO-10) | discoverable curated integrations at `exchange.ftmon.org` |
 | **M10** | Release readiness: 30-day two-host soak with recorded evidence (TS-17), traceability pending burn-down to zero, security IDs first (TS-18), documentation-drift and external-claim audit (DO-09), repo hygiene (review artifacts out of `docs/`, root kept to living documents), dependency-deprecation sweep | a v1.0 whose operational claims are evidence, not assertion |
 
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.13 (2026-07-12)** — specifies `exchange.ftmon.org` as a generated static
+view of the in-repository extra-monitor authority. Keeping recipes beside the
+schema and their contract tests makes compatibility changes atomic; publishing
+only an inert artifact avoids creating a second release boundary or accepting
+unreviewed executable uploads. Search is progressive enhancement, publication
+metadata is explicit, and pull requests can build but never deploy.
 
 **v0.12 (2026-07-12)** — incorporates the 2026-07-12 whole-repository review.
 The review found the code, tests and traceability strong but the operational
