@@ -67,7 +67,8 @@ Traceability is machine-enforced by `tests/unit/test_traceability.py` (TS-01):
   same change, not by re-growing the pending list.
 - SPEC changes must also bump the `Status:` header line and add a §21
   changelog entry, and DESIGN's "Companion to SPEC.md vX.Y" line must follow —
-  this header has drifted from the changelog twice already.
+  this drifted twice before it became machine-checked (TS-19); the gate now
+  fails on mismatch.
 
 When you land a user-visible change, updating the matching docs
 (`docs/manual.md`, `docs/install.md`, `docs/definitions.md`) is part of the

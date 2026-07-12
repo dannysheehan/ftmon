@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.14 — every design element
+Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.15 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -946,6 +946,10 @@ uPlot remains D4's renderer: its small vendorable footprint, temporal scales, cu
   are tested together. A packaging smoke may invoke an administrator-supplied
   plugin only under `realsystem` and is never required for compatibility.
 - **Lint tests**: grep-tests for direct `time.time|datetime.now|time.monotonic` outside `clock.py` (TS-03) and for forbidden imports in `expr/` (EX-04) / layering (§1).
+- **Doc-version coherence** (TS-19): `test_traceability.py` parses the SPEC
+  `Status:` header, the newest §21 entry, and this document's companion
+  reference and fails on any mismatch — regex over the committed files, no
+  new tooling.
 - **Soak evidence** (TS-17): no new instrumentation — the daemon already
   records everything the gate needs (RB-02 self metrics, incidents,
   `notification_deliveries`, DB size). A small `tools/soak_report.py` reads a

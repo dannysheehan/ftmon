@@ -1,11 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.14** — v0.13 specifies the static FTMON Exchange
-publication of the in-repository recipe authority; v0.14 defines the
-repository-owned Agent Skill for adding extra monitors. The v0.12
+Status: **DRAFT v0.15** — v0.15 makes document-version coherence a tested
+invariant (TS-19) and opens OPEN-8 (container monitoring: core source vs
+recipe, to be resolved during the TS-17 soak window). The v0.12
 release-readiness gates (TS-17 soak, TS-18 zero-pending traceability, DO-09
 drift audit; milestone M10) remain in force with the pending list burned down
-to empty. All §19 open questions are resolved.
+to empty. §19 open questions: OPEN-8 is the single open item.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -898,6 +898,13 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 - **TS-01** Every `XX-nn` requirement in this document maps to ≥ 1 test carrying the ID in its name or docstring; `tests/traceability.py` fails CI if a requirement (marked `testable: yes` in the requirements index the design doc will generate) has no test.
 - **TS-02** Implementation work packages will be delivered tests-first where feasible: interfaces + tests frozen before implementation is requested from implementing models.
+- **TS-19** Document-version coherence is machine-checked: this document's
+  `Status:` header version MUST equal the newest §21 changelog entry, the
+  newest entry MUST be the highest version in §21, and DESIGN.md's
+  "Companion to `SPEC.md` vX.Y" reference MUST match. Enforced by a unit
+  test, because the header drifted from the changelog twice during
+  v0.10–v0.14 — both times by AI implementers who appended a changelog entry
+  and forgot the header ("lint rules are enforced as tests").
 
 ### 16.2 Determinism substrate
 
@@ -1062,6 +1069,7 @@ occur. These gates convert the resource-budget and durability *claims*
 | OPEN-5 | Web freshness + chart lib | **RESOLVED v0.2**: 5 s polling (UI-04); smallest vendorable chart lib chosen in design doc (UI-06) |
 | OPEN-6 | Daemon/web coupling | **RESOLVED v0.2**: fully separate services (§3, UI-07) |
 | OPEN-7 | License | **RESOLVED v0.8**: this repository is MIT; the separate original SourceForge project remains GPLv2 (§3) |
+| OPEN-8 | Container monitoring (Docker/Podman): a v1.1 core source behind the PL-01 sampler seam, or an extra-monitor recipe? Core would give per-container entities, restart/OOM tracking and state-change events — the largest capability gap versus Glances/Netdata for the server audience — but adds a socket-permission surface and a new dependency to the frozen daemon. A recipe ships today with no spec change but cannot observe state transitions between check runs. | **OPEN** — owner decision during the TS-17 soak window, before 2.0.0b1, so it cannot become silent scope creep; the deciding factor is whether daemon access to the container socket (group membership or rootless socket) is acceptable within SE-01 |
 
 ---
 
@@ -1092,6 +1100,17 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.15 (2026-07-12)** — process hardening plus one reopened product
+question. TS-19 turns document-version coherence into a machine-checked
+invariant after the `Status:` header drifted from the changelog twice
+(v0.10→v0.11 and v0.12→v0.14), each time caught by a later manual review —
+exactly the class of defect this repository's "lint rules are enforced as
+tests" rule exists to eliminate. OPEN-8 records the container-monitoring
+decision (Docker/Podman as a v1.1 core source versus an extra-monitor
+recipe) with an explicit resolution deadline inside the TS-17 soak window,
+so the largest remaining capability gap is decided deliberately rather than
+implemented impulsively against a frozen daemon.
 
 **v0.14 (2026-07-12)** — defines a repository-owned Agent Skill for adding
 extra monitors. The portable SKILL.md is canonical because recipe work crosses

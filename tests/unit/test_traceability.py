@@ -169,3 +169,67 @@ class TestCoverageScan:
         assert not invalid, (
             f"Coverage scan found invalid/unknown IDs: {sorted(invalid)}"
         )
+
+
+class TestDocVersionCoherence:
+    """[TS-19] SPEC header, newest changelog entry, and DESIGN companion agree.
+
+    The Status header drifted from the changelog twice (v0.10->v0.11,
+    v0.12->v0.14), each time caught only by a later manual review; this
+    encodes the check as a test per the repository lint-rules-are-tests rule.
+    """
+
+    _HEADER_RE = r"^Status: \*\*(?:DRAFT\s+)?v(\d+\.\d+(?:\.\d+)?)\*\*"
+    _ENTRY_RE = r"^\*\*v(\d+\.\d+(?:\.\d+)?) \("
+    _COMPANION_RE = r"Companion to `SPEC\.md` v(\d+\.\d+(?:\.\d+)?)"
+
+    @staticmethod
+    def _as_tuple(version: str) -> tuple:
+        return tuple(int(part) for part in version.split("."))
+
+    def _spec_header_version(self) -> str:
+        import re
+
+        text = SPEC_PATH.read_text(encoding="utf-8")
+        match = re.search(self._HEADER_RE, text, re.MULTILINE)
+        assert match, "SPEC.md Status header version not found"
+        return match.group(1)
+
+    def _changelog_versions(self) -> list:
+        import re
+
+        text = SPEC_PATH.read_text(encoding="utf-8")
+        changelog = text[text.index("## 21."):]
+        versions = re.findall(self._ENTRY_RE, changelog, re.MULTILINE)
+        assert versions, "SPEC.md section 21 has no version entries"
+        return versions
+
+    def test_header_matches_newest_changelog_entry(self):
+        """[TS-19] Status header version equals the first section-21 entry."""
+        header = self._spec_header_version()
+        newest = self._changelog_versions()[0]
+        assert header == newest, (
+            f"SPEC.md Status header v{header} != newest changelog entry "
+            f"v{newest}; bump the header when appending a changelog entry"
+        )
+
+    def test_newest_changelog_entry_is_highest(self):
+        """[TS-19] Section-21 entries are newest-first by version."""
+        versions = self._changelog_versions()
+        highest = max(versions, key=self._as_tuple)
+        assert versions[0] == highest, (
+            f"newest changelog entry v{versions[0]} is not the highest "
+            f"version present (v{highest}); new entries go at the top"
+        )
+
+    def test_design_companion_matches_spec(self):
+        """[TS-19] DESIGN.md companion reference tracks the SPEC version."""
+        import re
+
+        design = (REPO_ROOT / "DESIGN.md").read_text(encoding="utf-8")
+        match = re.search(self._COMPANION_RE, design)
+        assert match, "DESIGN.md companion reference not found"
+        assert match.group(1) == self._spec_header_version(), (
+            f"DESIGN.md says companion to SPEC v{match.group(1)} but SPEC.md "
+            f"header is v{self._spec_header_version()}; update both together"
+        )
