@@ -56,9 +56,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ftmon"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"extra-monitors/http-tls" = "ftmon/recipes/http-tls"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 120

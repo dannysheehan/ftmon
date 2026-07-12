@@ -35,8 +35,23 @@ recipe's check alias into `checks.toml`, writes the monitor TOML into
 (PM-04). Use `--no-enable` to register authority without turning the monitor
 on, or `--force` to replace an existing alias or monitor file.
 
-`ftmon init --profile desktop` installs the `demo_ftmon_https` monitor in the
-disabled state and registers its check when `check_http` is present.
+Recipes are **not** bundled into the FTMON wheel. From a git checkout,
+`ftmon recipe install http-tls` discovers `extra-monitors/` automatically.
+Otherwise set a catalogue root once:
+
+```sh
+export FTMON_EXTRA_MONITORS=/path/to/ftmon/extra-monitors
+ftmon recipe install http-tls
+```
+
+You can also pass the recipe directory directly:
+
+```sh
+ftmon recipe install /path/to/extra-monitors/http-tls
+```
+
+Adding a new recipe is adding a directory under that catalogue — no changes to
+`pyproject.toml` or the core package.
 
 ### Manual registration
 

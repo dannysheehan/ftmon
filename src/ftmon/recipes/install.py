@@ -13,7 +13,7 @@ from ftmon.checks.registry import RegistryError
 from ftmon.checks.registry import load as load_check_registry
 from ftmon.definitions import manage
 from ftmon.paths import Paths, atomic_write
-from ftmon.recipes.catalogue import load_manifest, recipe_dir
+from ftmon.recipes.catalogue import load_manifest, resolve_recipe_path
 
 _REGISTRY_HEADER = (
     "# Administrator-owned external check registry.\n"
@@ -56,22 +56,23 @@ def _read_registry(path: Path) -> dict[str, dict]:
 
 def merge_recipe_checks(
     paths: Paths,
-    recipe_id: str,
+    ref: str,
     *,
     force: bool = False,
 ) -> tuple[str, ...]:
     """Merge a recipe's checks.toml.example into the administrator registry."""
-    example = recipe_dir(recipe_id) / "checks.toml.example"
+    recipe = resolve_recipe_path(ref)
+    example = recipe / "checks.toml.example"
     try:
         document = tomllib.loads(example.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise InstallError(
-            "recipe_invalid", f"{recipe_id}: checks.toml.example unreadable",
+            "recipe_invalid", f"{recipe.name}: checks.toml.example unreadable",
         ) from exc
     incoming = document.get("check")
     if not isinstance(incoming, dict) or not incoming:
         raise InstallError(
-            "recipe_invalid", f"{recipe_id}: checks.toml.example has no [check] entries",
+            "recipe_invalid", f"{recipe.name}: checks.toml.example has no [check] entries",
         )
 
     current = _read_registry(paths.check_registry_file)
@@ -103,19 +104,21 @@ def merge_recipe_checks(
 
 def install_recipe(
     paths: Paths,
-    recipe_id: str,
+    ref: str,
     *,
     force: bool = False,
     enable: bool = True,
 ) -> InstallResult:
     """Install monitor TOML and registry entries for a curated recipe."""
     try:
-        load_manifest(recipe_id)
+        recipe = resolve_recipe_path(ref)
+        load_manifest(ref)
     except FileNotFoundError as exc:
-        raise InstallError("recipe_not_found", f"unknown recipe {recipe_id!r}") from exc
+        raise InstallError("recipe_not_found", str(exc)) from exc
+    recipe_id = recipe.name
 
-    aliases = merge_recipe_checks(paths, recipe_id, force=force)
-    monitor_src = recipe_dir(recipe_id) / "monitor.toml"
+    aliases = merge_recipe_checks(paths, ref, force=force)
+    monitor_src = recipe / "monitor.toml"
     monitor_text = monitor_src.read_text(encoding="utf-8")
     if enable:
         monitor_text = re.sub(

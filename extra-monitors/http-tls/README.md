@@ -37,10 +37,8 @@ This merges `[check.demo_ftmon_https]` from `checks.toml.example` into your
 administrator registry, enables `demo_ftmon_https.toml`, and the daemon
 reloads within ~30 seconds. `ftmon check install http-tls` is the same command.
 
-On a fresh desktop host, `ftmon init --profile desktop` already installs the
-monitor in the disabled state and registers the check when `check_http` is
-present; run `ftmon recipe install http-tls` (or `ftmon monitor enable
-demo_ftmon_https`) to turn it on.
+On a fresh desktop host, run `ftmon recipe install http-tls` from a checkout
+or with `FTMON_EXTRA_MONITORS` pointing at the catalogue.
 
 To configure manually instead, merge the `[check.demo_ftmon_https]` table from
 `checks.toml.example` into the administrator-owned check registry, then copy

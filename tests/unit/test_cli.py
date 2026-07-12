@@ -44,9 +44,8 @@ class TestInit:
         assert cfg_dir.is_dir()
         assert (cfg_dir / "config.toml").exists()
         registry = cfg_dir / "checks.toml"
-        assert registry.exists()
+        assert registry.read_text().endswith("[check]\n")
         assert registry.stat().st_mode & 0o777 == 0o600
-        assert registry.read_text().startswith("# Administrator-owned")
 
         # Check content has the right sections
         content = (cfg_dir / "config.toml").read_text()
@@ -123,7 +122,7 @@ class TestInit:
             core.conn.close()
 
     def test_init_installs_builtin_monitors(self, tmp_path, monkeypatch, capsys):
-        """[FS-02] desktop init installs nine profile monitors including http-tls."""
+        """[FS-02] desktop init installs eight profile monitors."""
         setup_env(tmp_path, monkeypatch)
         rc = main(["init"])
         assert rc == 0
@@ -132,12 +131,11 @@ class TestInit:
         toml_files = sorted(monitors_dir.glob("*.toml"))
 
         names = [f.name for f in toml_files]
-        assert len(toml_files) == 9, (
-            f"Expected 9 desktop profile monitors, got {len(toml_files)}: {names}"
+        assert len(toml_files) == 8, (
+            f"Expected 8 desktop profile monitors, got {len(toml_files)}: {names}"
         )
 
         expected_names = {
-            "demo_ftmon_https.toml",
             "disk.toml", "events.toml", "hog.toml", "leak.toml",
             "load.toml", "net.toml", "self.toml", "service.toml",
         }
@@ -158,7 +156,6 @@ class TestInit:
         assert "warn_mb_per_h = { value = 96" in leak
         assert "confirm_cycles = 9" in leak
         assert "gnome-shell" in leak
-        assert (tmp_path / "cfg" / "monitors" / "demo_ftmon_https.toml").exists()
         disk = (tmp_path / "cfg" / "monitors" / "disk.toml").read_text()
         assert "used_pct > 70" in disk
 

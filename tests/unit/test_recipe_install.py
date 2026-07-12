@@ -18,6 +18,13 @@ def _env(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("FTMON_RUNTIME_DIR", str(tmp_path / "run"))
 
 
+def _recipe_tree(tmp_path: Path) -> Path:
+    catalogue = tmp_path / "catalogue"
+    recipe = catalogue / "http-tls"
+    recipe.mkdir(parents=True)
+    return recipe
+
+
 def _executable(tmp_path: Path) -> Path:
     executable = tmp_path / "check_http"
     executable.write_text("#!/bin/sh\nexit 0\n")
@@ -29,16 +36,8 @@ def test_merge_recipe_checks_writes_protected_registry(tmp_path, monkeypatch):
     """[EC-01] Recipe install merges administrator authority atomically."""
     _env(tmp_path, monkeypatch)
     plugin = _executable(tmp_path)
-    monkeypatch.setattr(
-        "ftmon.recipes.install.recipe_dir",
-        lambda recipe_id: tmp_path / recipe_id,
-    )
-    monkeypatch.setattr(
-        "ftmon.recipes.catalogue.list_recipe_ids",
-        lambda: ["http-tls"],
-    )
-    recipe = tmp_path / "http-tls"
-    recipe.mkdir()
+    recipe = _recipe_tree(tmp_path)
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "checks.toml.example").write_text(
         f'[check.demo_ftmon_https]\n'
         f'argv = ["{plugin}", "-H", "example.test"]\n'
@@ -60,16 +59,8 @@ def test_install_recipe_enables_monitor_without_restart(tmp_path, monkeypatch):
     """[PM-04] Installed recipe lands in monitors/ enabled for daemon rescan."""
     _env(tmp_path, monkeypatch)
     plugin = _executable(tmp_path)
-    monkeypatch.setattr(
-        "ftmon.recipes.install.recipe_dir",
-        lambda recipe_id: tmp_path / recipe_id,
-    )
-    monkeypatch.setattr(
-        "ftmon.recipes.catalogue.list_recipe_ids",
-        lambda: ["http-tls"],
-    )
-    recipe = tmp_path / "http-tls"
-    recipe.mkdir()
+    recipe = _recipe_tree(tmp_path)
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "recipe.toml").write_text(
         'schema = 1\n[recipe]\nid = "http-tls"\ntitle = "t"\n'
     )
@@ -94,20 +85,38 @@ def test_install_recipe_enables_monitor_without_restart(tmp_path, monkeypatch):
     assert "enabled = true" in text
 
 
+def test_install_recipe_accepts_explicit_directory_path(tmp_path, monkeypatch):
+    """[XR-02] Operators can install from a path without catalogue env setup."""
+    _env(tmp_path, monkeypatch)
+    plugin = _executable(tmp_path)
+    recipe = _recipe_tree(tmp_path)
+    (recipe / "recipe.toml").write_text('schema = 1\n[recipe]\nid = "http-tls"\n')
+    (recipe / "checks.toml.example").write_text(
+        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+    )
+    (recipe / "monitor.toml").write_text(
+        'schema = 1\n[monitor]\nname = "demo_ftmon_https"\n'
+        'description = "d"\nversion = 1\nenabled = false\nplatforms = ["linux"]\n'
+        'interval = "60s"\nsource = "external"\n'
+        '[source_options]\ncheck = "demo_ftmon_https"\nentity = "https://example.test/"\n'
+        '[[rule]]\nid = "down"\nwhen = "plugin_state == 2"\n'
+        'severity = "critical"\nconfirm_cycles = 1\nmessage = "down"\n'
+    )
+    paths = get_paths()
+    paths.ensure()
+
+    result = install_recipe(paths, str(recipe))
+
+    assert result.recipe_id == "http-tls"
+    assert (paths.monitors_dir / "demo_ftmon_https.toml").exists()
+
+
 def test_cli_recipe_install_and_check_install_alias(tmp_path, monkeypatch, capsys):
     """[CL-01] recipe install and check install share one implementation."""
     _env(tmp_path, monkeypatch)
     plugin = _executable(tmp_path)
-    monkeypatch.setattr(
-        "ftmon.recipes.install.recipe_dir",
-        lambda recipe_id: tmp_path / recipe_id,
-    )
-    monkeypatch.setattr(
-        "ftmon.recipes.catalogue.list_recipe_ids",
-        lambda: ["http-tls"],
-    )
-    recipe = tmp_path / "http-tls"
-    recipe.mkdir()
+    recipe = _recipe_tree(tmp_path)
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "recipe.toml").write_text('schema = 1\n[recipe]\nid = "http-tls"\n')
     (recipe / "checks.toml.example").write_text(
         f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
