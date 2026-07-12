@@ -28,6 +28,53 @@ Prometheus and Grafana for one independently managed server.
 data and does not monitor the demo server or expose an operational FTMON
 installation.
 
+## Architecture
+
+FTMON runs as separate processes on one host. The daemon samples the system,
+evaluates declarative TOML monitors, and writes to a local SQLite database; the
+CLI, loopback web dashboard, and stdio MCP server read the same store (and
+perform a few narrow writes such as ack and draft approval). Monitor
+definitions are data validated at load time, not code loaded into the daemon.
+
+```mermaid
+flowchart TB
+    subgraph processes [Separate processes]
+        CLI[CLI]
+        DAEMON[Daemon]
+        WEB[Web UI]
+        MCP[MCP server]
+    end
+
+    subgraph engine [Monitoring engine]
+        SCHED[Scheduler]
+        PIPE[Pipeline]
+        INC[Incident engine]
+        WRITER[Store writer]
+    end
+
+    subgraph io [I/O adapters]
+        SRC[Samplers and event sources]
+        CHK[External checks]
+        STORE[(SQLite)]
+        NOTIFY[Notifications]
+    end
+
+    CLI --> STORE
+    WEB --> STORE
+    MCP --> STORE
+    DAEMON --> SCHED
+    SCHED --> SRC
+    SCHED --> CHK
+    SCHED --> PIPE
+    PIPE --> INC
+    INC --> WRITER
+    WRITER --> STORE
+    DAEMON --> NOTIFY
+```
+
+The web UI listens on loopback only; MCP uses stdio. For design detail and
+layering rules, see [DESIGN.md](DESIGN.md).
+
 ## Why FTMON?
 
 - Runs locally as your user or a dedicated service account, without a central
