@@ -49,6 +49,16 @@ Settings under test match `design/profile/desktop/` (now installed by
 | Kernel Bluetooth spam | Suppressed by excluding `kernel` from catch-all `errors` | **TN** |
 | OOM (30d journal scan) | No real OOM on host | rule kept with `confirm_count=2` / `1h` |
 
+## Self monitor
+
+| Signal | Result | Verdict |
+| --- | --- | --- |
+| Steady daemon CPU ~3% (10m avg) on busy desktop | Stock `cpu_budget_pct=1.5` warned constantly | **FP** at stock threshold |
+| RSS ~50 MiB, DB ~35 MiB | Within budgets | **TN** |
+
+**Chosen desktop values:** `cpu_budget_pct=4.0`, `confirm_cycles=6` on `cpu-budget`. RB-01
+design target (1%) is unchanged; soak still reads raw `self` metrics for evidence.
+
 ## Profile promotion
 
 | Profile | Monitor source |

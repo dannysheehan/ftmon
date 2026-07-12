@@ -13,7 +13,7 @@ interval = "60s"
 source = "self"
 
 [parameters]
-cpu_budget_pct = { value = 1.5, doc = "Warn when daemon CPU%% (10m avg) exceeds this (RB-01 is 1.0)" }
+cpu_budget_pct = { value = 4.0, doc = "Warn when daemon CPU%% (10m avg) exceeds this (RB-01 design target is 1.0; desktop track-all is noisier)" }
 rss_budget_mb = { value = 100, doc = "Warn when daemon RSS exceeds this (MB)" }
 db_budget_mb = { value = 200, doc = "Warn when database exceeds this (MB)" }
 stall_s = { value = 600, doc = "Warn when the event reader has been silent this long (s)" }
@@ -23,7 +23,7 @@ id = "cpu-budget"
 group = "budget"
 when = 'avg(cpu_pct, "10m") > cpu_budget_pct'
 severity = "warning"
-confirm_cycles = 3
+confirm_cycles = 6
 message = "FTMON over CPU budget: {cpu_10m:.1f}% (10m avg)"
 
 [[rule]]
