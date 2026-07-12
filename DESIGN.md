@@ -19,6 +19,8 @@ Design-phase artifacts:
 
 ```
 PROJECTS/ftmon/                  # monorepo root (git)
+├── .ai/skills/                  # canonical portable contribution skills (AS-*)
+│   └── ftmon-add-extra-monitor/{SKILL.md,agents/openai.yaml}
 ├── SPEC.md  DESIGN.md  TESTPLAN.md(next)  LICENSE(MIT)
 ├── pyproject.toml  uv.lock      # single Python project at repo root
 ├── design/
@@ -750,6 +752,35 @@ actions are pinned to immutable revisions because a documentation publisher is
 still a software supply-chain boundary. Pages terminates TLS for the verified
 `exchange.ftmon.org` custom domain; DNS and rollback remain operator steps.
 
+### 10.11 Shared contribution skills (AS-*, TS-20)
+
+`.ai/skills/` is a neutral repository namespace rather than a discovery path
+claimed to work automatically in every agent. Each skill follows the common
+filesystem shape with a concise `SKILL.md`; optional `agents/openai.yaml` is UI
+metadata and never changes workflow semantics. No schema, template or plugin
+reference is copied into bundled resources: the skill reads live repository
+files so a SPEC change cannot leave a hidden second contract behind.
+
+`ftmon-add-extra-monitor` is the only initial shared skill because that workflow
+is frequent, externally contributed and crosses the most trust boundaries. It
+branches between an observed Nagios first-line/exit-code adapter and strict
+FTMON JSON, then rejoins for mappings, incidents, Trends, recipe evidence,
+Exchange publication and tests. It does not scaffold files itself; using the
+reviewed `_template` through normal agent edits keeps changes visible in the
+diff and avoids giving a helper script implicit write authority.
+
+`tests/ai_skills/test_shared_skills.py` treats skills as inert UTF-8 text. It
+checks portable frontmatter and bounded structure, resolves backtick repository
+paths, verifies commands name existing tools/test directories, and asserts the
+critical concepts that make the workflow safe. This deliberately avoids a
+vendor SDK: native discovery is smoke-tested by users of that product, while CI
+protects the shared semantic core.
+
+Installation remains explicit. Codex users link/copy the skill directory into
+`${CODEX_HOME:-$HOME/.codex}/skills/`; Claude Code users link/copy it into
+`~/.claude/skills/` or a checkout-local `.claude/skills/`. These are generated
+adapters in ignored/personal locations, never separately committed skills.
+
 ---
 
 ## 11. Event pipeline (SA-03/08, DM-07..10, DM-15)
@@ -988,6 +1019,8 @@ plugin remains under its own license (EC-01/02/07/09, SE-07).
 | D26 | Recipe authority and Exchange publisher stay in one repository | monitor-schema changes and compatible recipes merge atomically; a second repository would create version skew before independent governance is needed |
 | D27 | Exchange is generated static documentation, not a submission application | pull requests provide identity, review and history without accounts, uploads, moderation storage or an executable marketplace attack surface |
 | D28 | Safe subset renderer with deterministic output | contributor prose cannot inject active content and byte-identical artifacts make review, caching and rollback auditable |
+| D29 | Tool-neutral canonical skills with vendor installation adapters | one reviewed workflow serves multiple agents without promising universal auto-discovery or maintaining divergent copies |
+| D30 | Shared skills read live repository authority | avoids freezing schema details in prompt assets; SPEC, templates and tests remain the only behavioral contract |
 
 ---
 
@@ -1021,6 +1054,9 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
 - **M9.2**: WP42 publication metadata + safe deterministic generator · WP43
   catalogue/detail/search/security tests · WP44 Pages workflow, custom-domain
   runbook, local preview and rollback documentation.
+- **M9.3**: WP45 portable skill contract + `ftmon-add-extra-monitor` · WP46
+  structural/semantic skill tests · WP47 Codex/Claude installation and trust
+  documentation.
 - **M10**: WP39 `tools/soak_report.py` + soak procedure/evidence template
   (TS-17) · WP40 pending-traceability burn-down, SE-* first, then UI-*/PL-*,
   then the remainder; each ID gains a test or a documented spec amendment

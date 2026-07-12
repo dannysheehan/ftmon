@@ -497,6 +497,38 @@ The initial catalogue proves three distinct paths: an unprivileged networked
 HTTP/TLS Nagios plugin, a read-only SMART/NVMe check with constrained privilege,
 and an original dependency-light FTMON JSON script whose metric feeds a Trend.
 
+### 6.6 Shared AI contribution skills
+
+Repository-owned skills make repetitive, security-sensitive contribution
+workflows available to different coding agents without making any vendor's
+private configuration authoritative.
+
+- **AS-01** Canonical shared skills live at `.ai/skills/<name>/SKILL.md` and use
+  portable Agent Skills frontmatter containing exactly `name` and `description`.
+  A skill MUST direct an agent to read current repository authority before
+  acting: `AGENTS.md`, SPEC, DESIGN, templates and tests override skill prose
+  whenever they differ.
+- **AS-02** The initial `ftmon-add-extra-monitor` skill covers Nagios and FTMON
+  JSON recipes end to end: evidence level, installed/upstream version and
+  licence, bounded execution authority, privilege and credential boundaries,
+  observed metric/UOM mappings, meaningful rules/Trends, deterministic
+  fixtures, operator article, Exchange metadata, validation and rationale-led
+  commit. It MUST prohibit fabricated live evidence and vendored third-party
+  executables.
+- **AS-03** Shared skills grant no additional authority. They MUST preserve the
+  user's approval boundary, protect unrelated worktree changes, avoid pushing,
+  publishing or changing external systems unless explicitly requested, and
+  never weaken parser/security tests to accommodate surprising plugin output.
+- **AS-04** Vendor adapters are installation links or copies of the canonical
+  skill, not independently edited sources. Documentation covers Codex personal
+  installation and Claude Code personal/project installation while remaining
+  explicit that discovery behavior belongs to those products and can change.
+- **AS-05** CI validates skill naming/frontmatter, bounded size, absence of
+  placeholders, referenced repository paths, documented validation commands,
+  vendor UI metadata when present and the required workflow/security concepts.
+  This structural test supplements realistic use; it cannot prove that every
+  model will follow instructions correctly.
+
 ---
 
 ## 7. Calculations, baselines, and built-in monitors
@@ -956,6 +988,12 @@ occur. These gates convert the resource-budget and durability *claims*
   rejection, inert command examples, broken local links and workflow trigger,
   permission and deploy-job boundaries. Tests never contact the network or
   execute a recipe command.
+- **TS-20** Shared-skill tests discover `.ai/skills/`, validate AS-05 without
+  installing a vendor tool, and assert that the extra-monitor skill names both
+  protocols, evidence states, privilege/secret limits, repository precedence,
+  required recipe artifacts, Exchange generation, targeted/full tests and the
+  no-push boundary. The test reads skill files as inert data and runs none of
+  their example commands.
 
 ## 17. Documentation deliverables (v1)
 
@@ -996,6 +1034,11 @@ occur. These gates convert the resource-budget and durability *claims*
   generated-file policy, GitHub Pages environment and custom-domain DNS setup,
   deployment verification and rollback. It states that catalogue publication
   is compatibility evidence, not endorsement or a security audit.
+- **DO-11** Contributor documentation explains the shared-skill trust model,
+  canonical layout, invocation and optional Codex/Claude installation. It warns
+  users to audit a skill like code, records that native discovery is
+  product-specific, and keeps ordinary manual contribution instructions usable
+  when no skill-aware agent is present.
 
 ---
 
@@ -1042,11 +1085,19 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M9** | Administrator check registry, external subprocess source, FTMON JSON and Nagios adapters, declared perfdata history/Trends (EC-*, MD-11, SE-07, TS-15, DO-07) | bring-your-own checks without a monitoring stack |
 | **M9.1** | Curated `extra-monitors/` recipe contract, offline validator, HTTP/TLS, SMART/NVMe and native JSON examples (XR-*, TS-16, DO-08) | a tested integration cookbook without vendoring an ecosystem |
 | **M9.2** | Deterministic safe Exchange generator, searchable static catalogue, Pages/custom-domain deployment and publication tests (XR-06..10, TS-19, DO-10) | discoverable curated integrations at `exchange.ftmon.org` |
+| **M9.3** | Tool-neutral shared-skill contract, `ftmon-add-extra-monitor`, vendor installation guidance and structural tests (AS-*, TS-20, DO-11) | safer AI-assisted catalogue contributions without vendor lock-in |
 | **M10** | Release readiness: 30-day two-host soak with recorded evidence (TS-17), traceability pending burn-down to zero, security IDs first (TS-18), documentation-drift and external-claim audit (DO-09), repo hygiene (review artifacts out of `docs/`, root kept to living documents), dependency-deprecation sweep | a v1.0 whose operational claims are evidence, not assertion |
 
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.14 (2026-07-12)** — defines a repository-owned Agent Skill for adding
+extra monitors. The portable SKILL.md is canonical because recipe work crosses
+execution, privilege, licensing and evidence boundaries; vendor discovery
+locations remain installation adapters so Codex and Claude instructions cannot
+silently diverge. Structural CI checks drift while repository authority and
+human review remain above any agent workflow.
 
 **v0.13 (2026-07-12)** — specifies `exchange.ftmon.org` as a generated static
 view of the in-repository extra-monitor authority. Keeping recipes beside the
