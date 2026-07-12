@@ -58,8 +58,8 @@ do not commit host-specific results).
 | Startup burst | `--burst-mib 200 --rate-mib-per-hour 0 --duration 1500 --hold` | Tests false positives from warm-up ramps |
 | Benign name | `--process-name chrome …` with exempt list | Should **not** notify when exempted |
 
-Process name defaults to `tuning-leaky` so it is easy to spot in
-`ftmon incidents` and does not collide with real apps.
+Process name defaults to `tuning-leaky` (≤15 characters — Linux `comm` length) so
+it is easy to spot in `ftmon incidents` and does not collide with real apps.
 
 ### CPU (`stress_profile.sh` phases)
 

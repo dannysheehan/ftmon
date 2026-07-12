@@ -108,13 +108,13 @@ snapshot "baseline"
 for phase in $PHASES; do
   case "$phase" in
     leak-slow)
-      run_leaky 120 "$LEAK_SLOW_SEC" 0 tuning-leak-slow
+      run_leaky 120 "$LEAK_SLOW_SEC" 0 tune-leak-slow
       ;;
     leak-fast)
-      run_leaky 480 "$LEAK_FAST_SEC" 0 tuning-leak-fast
+      run_leaky 480 "$LEAK_FAST_SEC" 0 tune-leak-fast
       ;;
     leak-burst)
-      run_leaky 0 "$LEAK_BURST_SEC" "$LEAK_BURST_MIB" tuning-leak-burst
+      run_leaky 0 "$LEAK_BURST_SEC" "$LEAK_BURST_MIB" tune-leak-brst
       ;;
     cpu-sustained)
       if ! have_stress_ng; then

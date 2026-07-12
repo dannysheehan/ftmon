@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--process-name",
         default="tuning-leaky",
-        help="Linux comm name visible to ftmon (default tuning-leaky)",
+        help="Linux comm name visible to ftmon, max 15 chars (default tuning-leaky)",
     )
     args = parser.parse_args(argv)
 
