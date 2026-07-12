@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly FTMON soak evidence capture (TS-17)
+Documentation=https://github.com/dannysheehan/ftmon/blob/main/docs/soak-procedure.md
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=30m
+Unit=ftmon-soak-evidence.service
+
+[Install]
+WantedBy=timers.target

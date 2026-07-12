@@ -110,6 +110,18 @@ def _status(request: Request, q: Query | None) -> dict:
     return out
 
 
+def _check_aliases(paths) -> frozenset[str]:
+    """Load administrator check aliases; empty when registry is absent/invalid."""
+    if not paths.check_registry_file.exists():
+        return frozenset()
+    try:
+        from ftmon.checks.registry import load as load_check_registry
+
+        return frozenset(load_check_registry(paths.check_registry_file, paths=paths))
+    except ValueError:
+        return frozenset()
+
+
 async def dashboard(request: Request):
     paths = request.app.state.paths
     with _query(request) as q:
@@ -117,7 +129,11 @@ async def dashboard(request: Request):
             defs, errors = _demo_definitions(q)
         else:
             defs, errors = loader.load_dir(
-                paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+                paths.monitors_dir,
+                actions_dir=paths.actions_dir,
+                require_actions=True,
+                check_aliases=_check_aliases(paths),
+                require_checks=True,
             )
         status = _status(request, q)
         incidents = [] if q is None else q.incidents(state=None)
@@ -627,18 +643,7 @@ async def events(request: Request):
 
 async def monitors(request: Request):
     paths = request.app.state.paths
-    check_aliases: frozenset[str] = frozenset()
-    if paths.check_registry_file.exists():
-        try:
-            from ftmon.checks.registry import load as load_check_registry
-
-            check_aliases = frozenset(load_check_registry(
-                paths.check_registry_file, paths=paths
-            ))
-        except ValueError:
-            # The page must not disclose administrator argv; daemon/doctor
-            # surface the stable registry error category separately.
-            pass
+    check_aliases = _check_aliases(paths)
     defs, errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True,
         check_aliases=check_aliases, require_checks=True,
@@ -660,16 +665,7 @@ async def monitor_action(request: Request):
 
     name, action = request.path_params["name"], request.path_params["action"]
     paths = request.app.state.paths
-    check_aliases: frozenset[str] = frozenset()
-    if paths.check_registry_file.exists():
-        try:
-            from ftmon.checks.registry import load as load_check_registry
-
-            check_aliases = frozenset(load_check_registry(
-                paths.check_registry_file, paths=paths
-            ))
-        except ValueError:
-            pass
+    check_aliases = _check_aliases(paths)
     try:
         if action == "approve":
             manage.approve_draft(paths, name, check_aliases=check_aliases)

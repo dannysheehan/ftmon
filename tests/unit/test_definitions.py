@@ -407,6 +407,7 @@ INVALID_CASES = [
 
 @pytest.mark.parametrize("text,code,path_prefix", INVALID_CASES)
 def test_invalid_corpus(text, code, path_prefix):
+    """[MD-01] Structured validation errors cite path and code for every failure."""
     errors = _errors_of(text)
     _assert_error(errors, code=code, path_prefix=path_prefix)
 
@@ -448,6 +449,7 @@ def test_duplicate_rule_id_is_an_error():
 
 
 def test_missing_schema_key_is_an_error():
+    """[VC-02] Monitor definitions must declare a supported schema version."""
     text = VALID_SAMPLER.replace("schema = 1\n", "")
     errors = _errors_of(text)
     _assert_error(errors, code="missing_key", path_prefix="schema")
@@ -459,6 +461,7 @@ def test_missing_schema_key_is_an_error():
 
 
 def test_derived_metrics_are_topologically_ordered():
+    """[MD-08] Derived metrics evaluate in dependency order."""
     text = (
         VALID_SAMPLER
         + """

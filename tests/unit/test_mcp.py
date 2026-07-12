@@ -1,4 +1,4 @@
-"""[MC-01][MC-02][MC-03][MC-04][MC-05][PM-06] MCP tool surface: McpApi over a
+"""[MC-01][MC-02][MC-03][MC-04][MC-05][PM-06][TS-06] MCP tool surface: McpApi over a
 DaemonCore-populated database, plus the draft/approve/enable lifecycle.
 
 McpApi is tested directly (no stdio, TS-03: injected FakeClock shared with the

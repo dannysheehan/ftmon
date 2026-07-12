@@ -1,4 +1,4 @@
-"""HTTP-level coverage for the optional M5 dashboard (TS-07)."""
+"""[TS-07][UI-03][UI-04][UI-06][UI-07][UI-08][SE-02] HTTP-level web dashboard tests."""
 
 from pathlib import Path
 
@@ -31,6 +31,7 @@ def _client(tmp_path: Path):
 
 
 def test_ui_pages_security_and_escaping_ts_07_ui_02_ui_08_se_02(tmp_path):
+    """[TS-07][UI-08][SE-02] Pages escape untrusted strings and set CSP headers."""
     client, _paths = _client(tmp_path)
     headers = {"host": "localhost:8420"}
     for url in ("/", "/incidents", "/incidents/1", "/metrics", "/events",
@@ -114,7 +115,7 @@ def test_dashboard_tiles_restore_accessible_legacy_health_states_ui_14_ts_12(tmp
 
 
 def test_dashboard_stale_precedence_never_claims_clear_ui_14_ts_12(tmp_path):
-    """[UI-14][TS-12] Stale evidence overrides clear, warning, and disabled states."""
+    """[UI-04][UI-14][TS-12] Stale evidence overrides clear, warning, and disabled states."""
     client, paths = _client(tmp_path)
     builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/disk.toml"
     (paths.monitors_dir / "disk.toml").write_text(builtin.read_text())
@@ -132,6 +133,7 @@ def test_dashboard_stale_precedence_never_claims_clear_ui_14_ts_12(tmp_path):
 
 
 def test_ui_ack_requires_origin_and_reuses_small_writes_ui_03_ui_08(tmp_path):
+    """[UI-03][UI-08] Ack POST requires Origin and hits the same path as CLI."""
     client, paths = _client(tmp_path)
     host = {"host": "localhost:8420"}
     assert client.post("/incidents/1/ack", headers=host).status_code == 403

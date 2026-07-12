@@ -445,6 +445,8 @@ class DaemonCore:
                                        len(inc.BACKOFF_S) - 1)),
                 flap_clears=(),
                 occurrences=row["occurrences"],
+                ack_by=row["ack_by"],
+                ack_ts=float(row["ack_ts"]) if row["ack_ts"] is not None else None,
             )
             self._istates[key] = GroupState(rungs=rungs, core=core)
 
@@ -453,17 +455,27 @@ class DaemonCore:
         engine only needs the flag flipped on its in-memory core."""
         from dataclasses import replace
 
-        acked = {row["id"] for row in self.conn.execute(
-            "SELECT id FROM incidents WHERE state = 'acked'"
-        ).fetchall()}
+        acked = {
+            row["id"]: (row["ack_by"], row["ack_ts"])
+            for row in self.conn.execute(
+                "SELECT id, ack_by, ack_ts FROM incidents WHERE state = 'acked'"
+            ).fetchall()
+        }
         for key, st in self._istates.items():
             core = st.core
             if core and core.state == "open" and core.incident_id in acked:
+                by, ts = acked[core.incident_id]
                 self._istates[key] = GroupState(
-                    rungs=st.rungs, core=replace(core, state="acked")
+                    rungs=st.rungs,
+                    core=replace(
+                        core,
+                        state="acked",
+                        ack_by=by,
+                        ack_ts=float(ts) if ts is not None else None,
+                    ),
                 )
         if self.events_engine is not None:
-            self.events_engine.refresh_acks(acked)
+            self.events_engine.refresh_acks(set(acked))
 
     def on_tick(self, wall: float, mono: float, gap_s: float) -> None:
         started = self.clock.monotonic()

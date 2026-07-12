@@ -13,6 +13,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 
+from ftmon.checks.runner import trusted_executable
 from ftmon.engine.effects import PendingAction
 
 _RATE_LIMIT_S = 600
@@ -72,8 +73,8 @@ class ActionRunner:
         self._conn.commit()
 
         target = self._paths.actions_dir / request.action
-        if (target.is_symlink() or not target.is_file()
-                or not os.access(target, os.X_OK)):
+        resolved = str(target.resolve())
+        if not trusted_executable(resolved):
             return ActionResult("error", {
                 "action": request.action,
                 "error": "action disappeared or is no longer executable",
@@ -81,7 +82,7 @@ class ActionRunner:
         env = {"PATH": os.defpath, **request.env}
         try:
             completed = subprocess.run(
-                [str(target.resolve())],
+                [resolved],
                 cwd=self._paths.state_dir,
                 env=env,
                 capture_output=True,

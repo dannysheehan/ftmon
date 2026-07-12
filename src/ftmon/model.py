@@ -132,6 +132,10 @@ class IncidentCore:
     # Default 0 = "no better information than current severity" (restarts
     # rebuild from a DB that only stores the current value).
     peak_severity: int = 0
+    # Ack metadata lives in the DB (PM-03 small writes) but must round-trip
+    # through the effect executor on silent downgrades so upserts do not wipe it.
+    ack_by: str | None = None
+    ack_ts: float | None = None
 
 
 @dataclass(frozen=True)

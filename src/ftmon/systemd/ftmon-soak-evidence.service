@@ -1,0 +1,18 @@
+[Unit]
+Description=Capture FTMON soak evidence report (TS-17)
+Documentation=https://github.com/dannysheehan/ftmon/blob/main/docs/soak-procedure.md
+After=ftmon.service
+Wants=ftmon.service
+
+[Service]
+Type=oneshot
+User=ftmon
+Group=ftmon
+Environment=FTMON_CONFIG_DIR=/var/lib/ftmon/.config/ftmon
+Environment=FTMON_DATA_DIR=/var/lib/ftmon/.local/share/ftmon
+Environment=FTMON_STATE_DIR=/var/lib/ftmon/.local/state/ftmon
+Environment=FTMON_RUNTIME_DIR=/run/ftmon
+ExecStart=/opt/ftmon/bin/capture-soak-evidence.sh
+
+[Install]
+WantedBy=multi-user.target
