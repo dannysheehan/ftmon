@@ -148,6 +148,29 @@ class TestInit:
         self_toml = (monitors_dir / "self.toml").read_text()
         assert "self-monitoring" in self_toml.lower() or "self" in self_toml
 
+    def test_desktop_profile_installs_calibrated_leak_thresholds(
+        self, tmp_path, monkeypatch,
+    ):
+        """[PM-08] desktop init installs calibrated monitors, not stock builtins."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "desktop"]) == 0
+        leak = (tmp_path / "cfg" / "monitors" / "leak.toml").read_text()
+        assert "warn_mb_per_h = { value = 96" in leak
+        assert "confirm_cycles = 9" in leak
+        assert "gnome-shell" in leak
+        disk = (tmp_path / "cfg" / "monitors" / "disk.toml").read_text()
+        assert "used_pct > 70" in disk
+
+    def test_server_profile_installs_stock_builtin_leak_thresholds(
+        self, tmp_path, monkeypatch,
+    ):
+        """[PM-08] server init keeps normative builtin thresholds."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "server"]) == 0
+        leak = (tmp_path / "cfg" / "monitors" / "leak.toml").read_text()
+        assert "warn_mb_per_h = { value = 32" in leak
+        assert "confirm_cycles = 3" in leak
+
     def test_init_force_reinstalls_builtins(self, tmp_path, monkeypatch):
         """[FS-02] init --force re-installs builtin monitors over modified copies."""
         setup_env(tmp_path, monkeypatch)

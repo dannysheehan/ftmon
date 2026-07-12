@@ -1,0 +1,29 @@
+# FTMON desktop profile: journal/event-log entries of interest (SPEC 7.7.3)
+# Calibrated on a GNOME dev workstation (docs/tuning-desktop-xps15.md).
+schema = 1
+
+[monitor]
+name = "events"
+description = "Raises incidents for journal entries of interest"
+version = 2
+enabled = true
+platforms = ["linux"]
+source = "events"
+
+[[rule]]
+id = "errors"
+when = 'severity >= error and not matches(provider, "^(tracker-|gnome-shell$|kernel$)")'
+severity = "error"
+cooldown = "10m"
+clear_after = "30m"
+message = "{provider}: {message}"
+
+[[rule]]
+id = "oom"
+when = 'provider == "kernel" and contains(message, "Out of memory")'
+severity = "critical"
+confirm_count = 2
+confirm_window = "1h"
+cooldown = "15m"
+clear_after = "30m"
+message = "OOM killer fired: {message}"

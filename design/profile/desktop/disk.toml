@@ -1,0 +1,108 @@
+# FTMON desktop profile: disk space + filling detection (SPEC 7.7.4)
+# Calibrated on a GNOME dev workstation (docs/tuning-desktop-xps15.md).
+schema = 1
+
+exempt = [ 'matches(fstype, "^(tmpfs|iso9660|squashfs|overlay)$")' ]
+
+[monitor]
+name = "disk"
+description = "Disk space thresholds, inode thresholds, and filling-rate detection"
+version = 4
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "disk"
+
+[parameters]
+space_notice_pct = { value = 85, doc = "Notice threshold, percent used" }
+space_warn_pct = { value = 92, doc = "Warning threshold, percent used" }
+space_crit_pct = { value = 97, doc = "Error threshold, percent used" }
+inode_notice_pct = { value = 75, doc = "Notice threshold, percent inodes used" }
+inode_warn_pct = { value = 80, doc = "Warning threshold, percent inodes used" }
+inode_crit_pct = { value = 90, doc = "Error threshold, percent inodes used" }
+filling_frac = { value = 0.90, doc = "Fraction of consecutive growth samples (70m) that counts as filling" }
+
+[[derived]]
+name = "filling"
+expr = 'monot(used_bytes, "70m")'
+
+[[derived]]
+name = "fill_rate_bph"
+expr = 'slope(used_bytes, "70m") * 3600'
+
+[[derived]]
+name = "full_in_h"
+expr = 'free_bytes / clamp(slope(used_bytes, "70m") * 3600, 1, 1000000000000000)'
+
+[[trend]]
+id = "space-growth"
+kind = "capacity"
+title = "Disk capacity growth"
+value_metric = "used_pct"
+value_unit = "percent"
+rate_metric = "fill_rate_bph"
+rate_unit = "bytes/hour"
+confidence_metric = "filling"
+confidence_threshold_param = "filling_frac"
+remaining_metric = "free_bytes"
+value_threshold_params = ["space_notice_pct", "space_warn_pct", "space_crit_pct"]
+
+[[rule]]
+id = "space-notice"
+group = "space"
+when = 'used_pct > space_notice_pct'
+severity = "notice"
+confirm_cycles = 3
+message = "Disk {entity} at {used_pct:.0f}% used"
+
+[[rule]]
+id = "space-warn"
+group = "space"
+when = 'used_pct > space_warn_pct'
+severity = "warning"
+confirm_cycles = 3
+message = "Disk {entity} at {used_pct:.0f}% used"
+
+[[rule]]
+id = "space-crit"
+group = "space"
+when = 'used_pct > space_crit_pct'
+severity = "error"
+confirm_cycles = 2
+message = "Disk {entity} nearly full: {used_pct:.0f}% used, {free_mb:.0f} MB left"
+
+[[rule]]
+id = "inodes-notice"
+group = "inodes"
+when = 'inode_used_pct > inode_notice_pct'
+severity = "notice"
+confirm_cycles = 3
+message = "Inodes on {entity} at {inode_used_pct:.0f}%"
+
+[[rule]]
+id = "inodes-warn"
+group = "inodes"
+when = 'inode_used_pct > inode_warn_pct'
+severity = "warning"
+confirm_cycles = 3
+message = "Inodes on {entity} at {inode_used_pct:.0f}%"
+
+[[rule]]
+id = "inodes-crit"
+group = "inodes"
+when = 'inode_used_pct > inode_crit_pct'
+severity = "error"
+confirm_cycles = 2
+message = "Inodes on {entity} nearly exhausted: {inode_used_pct:.0f}%"
+
+[[rule]]
+id = "filling"
+group = "filling"
+when = 'filling >= filling_frac and used_pct > 70'
+severity = "warning"
+confirm_cycles = 9
+message = "Disk {entity} filling steadily; full in ~{full_in_h:.1f} h at current rate"
+
+[[derived]]
+name = "free_mb"
+expr = 'free_bytes / MB'

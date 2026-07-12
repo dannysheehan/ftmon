@@ -1,0 +1,69 @@
+# FTMON desktop profile: per-process memory-leak detector (SPEC 7.7.1)
+# Calibrated on a GNOME dev workstation (docs/tuning-desktop-xps15.md).
+# Server installs use design/builtins/leak.toml unchanged.
+schema = 1
+
+exempt = [
+  'matches(name, "^(firefox|chrome|chromium|Brave|brave)$")',
+  'matches(name, "^(code|cursor|Codex|codex|obsidian|Discord|lens-desktop|1password)$")',
+  'matches(name, "^gnome-shell$")',
+]
+
+[monitor]
+name = "leak"
+description = "Detects processes whose memory grows steadily (memory leaks)"
+version = 3
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "process"
+
+[parameters]
+warn_mb_per_h = { value = 96, doc = "Warn when RSS grows faster than this (MB/hour), sustained" }
+crit_mb_per_h = { value = 256, doc = "Error when RSS grows faster than this (MB/hour)" }
+promote_mb = { value = 48, doc = "Growth over 15m that makes a process worth tracking long-term" }
+growth_confidence = { value = 0.85, doc = "Fraction of rising samples that indicates sustained growth" }
+
+[promotion]
+expr = 'monot(rss_bytes, "15m") >= growth_confidence and delta(rss_bytes, "15m") > promote_mb * MB'
+
+[[rule]]
+id = "leak-warn"
+group = "leak"
+when = 'slope(rss_bytes, "45m") * 3600 > warn_mb_per_h * MB'
+severity = "warning"
+confirm_cycles = 9
+message = "{entity} leaking: RSS growing {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
+
+[[rule]]
+id = "leak-crit"
+group = "leak"
+when = 'slope(rss_bytes, "45m") * 3600 > crit_mb_per_h * MB'
+severity = "error"
+confirm_cycles = 9
+message = "{entity} leaking fast: RSS growing {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
+
+[[derived]]
+name = "rss_slope_mbph"
+expr = 'slope(rss_bytes, "45m") * 3600 / MB'
+
+[[derived]]
+name = "rss_mb"
+expr = 'rss_bytes / MB'
+
+[[derived]]
+name = "rss_growth_confidence"
+expr = 'monot(rss_bytes, "15m")'
+
+[[trend]]
+id = "rss-growth"
+kind = "growth"
+title = "Process memory growth"
+value_metric = "rss_mb"
+value_unit = "MiB"
+rate_metric = "rss_slope_mbph"
+rate_unit = "MiB/hour"
+confidence_metric = "rss_growth_confidence"
+confidence_threshold_param = "growth_confidence"
+rate_threshold_params = ["warn_mb_per_h", "crit_mb_per_h"]
+incident_group = "leak"

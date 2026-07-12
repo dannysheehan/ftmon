@@ -17,6 +17,45 @@ import ftmon
 from ftmon.paths import get_paths
 
 
+def _builtin_monitors_source(profile: str):
+    """Return a Path or Traversable directory of monitor TOML to install (FS-02).
+
+    Desktop profile installs calibrated copies from profile/desktop; server
+    profile keeps the normative design/builtins defaults.
+    """
+    if profile == "desktop":
+        try:
+            import importlib.resources
+
+            resources = importlib.resources.files("ftmon.definitions") / "profile" / "desktop"
+            try:
+                for item in resources.iterdir():
+                    if item.is_file() and item.name.endswith(".toml"):
+                        return resources
+            except (FileNotFoundError, AttributeError, TypeError):
+                pass
+        except ImportError:
+            pass
+        fallback = Path(__file__).resolve().parents[2] / "design" / "profile" / "desktop"
+        if fallback.is_dir():
+            return fallback
+
+    try:
+        import importlib.resources
+
+        resources = importlib.resources.files("ftmon.definitions") / "builtins"
+        try:
+            for item in resources.iterdir():
+                if item.is_file() and item.name.endswith(".toml"):
+                    return resources
+        except (FileNotFoundError, AttributeError, TypeError):
+            pass
+    except ImportError:
+        pass
+    fallback = Path(__file__).resolve().parents[2] / "design" / "builtins"
+    return fallback if fallback.is_dir() else None
+
+
 def _default_config_toml(profile: str = "desktop") -> str:
     """Explicit profile scaffold (PM-08); no runtime profile switch remains."""
     desktop_enabled = "true" if profile == "desktop" else "false"
@@ -89,7 +128,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     - Creates all dirs (0700)
     - Writes config.toml only if absent (unless --force)
-    - Installs 8 builtin *.toml files from design/builtins if available
+    - Installs 8 builtin *.toml files (desktop profile uses calibrated monitors)
     - Prints summary of what was installed
     """
     from ftmon.paths import atomic_write
@@ -117,37 +156,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
         print(f"wrote: {paths.check_registry_file}")
 
-    # Install builtin monitors
+    # Install builtin monitors for the selected profile.
     installed = []
     skipped = []
 
-    # Try package-data path first (if ftmon.definitions exists)
-    builtins_dir = None
-    try:
-        import importlib.resources
-
-        try:
-            # Python 3.11+: use files() API
-            resources = importlib.resources.files("ftmon.definitions")
-            builtins_resources = resources / "builtins"
-            # Check if it exists by trying to iterate
-            try:
-                for item in builtins_resources.iterdir():
-                    if item.is_file() and item.name.endswith(".toml"):
-                        builtins_dir = builtins_resources
-                        break
-            except (FileNotFoundError, AttributeError):
-                pass
-        except (ImportError, AttributeError):
-            pass
-    except ImportError:
-        pass
-
-    # Fallback to repo-relative design/builtins
-    if builtins_dir is None:
-        fallback = Path(__file__).resolve().parents[2] / "design" / "builtins"
-        if fallback.is_dir():
-            builtins_dir = fallback
+    builtins_dir = _builtin_monitors_source(args.profile)
 
     if builtins_dir:
         # Iterate builtins and copy

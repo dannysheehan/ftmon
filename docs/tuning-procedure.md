@@ -124,6 +124,10 @@ Record in a simple table (spreadsheet or markdown in `tuning/evidence/`):
 Promote the winner to `~/.config/ftmon/monitors/`. The daemon reloads within
 ~30s; no restart.
 
+Validated desktop thresholds for one GNOME dev workstation are recorded in
+[tuning-desktop-xps15.md](tuning-desktop-xps15.md) and ship with
+`ftmon init --profile desktop` under `design/profile/desktop/`.
+
 ## Desktop vs server
 
 | Concern | Desktop | Server |
@@ -133,8 +137,8 @@ Promote the winner to `~/.config/ftmon/monitors/`. The daemon reloads within
 | Defaults | Tune with this procedure | Keep shipped builtins |
 | `init --profile` | Future: ship tuned copies | `server` disables desktop popups |
 
-Do **not** weaken shipped `design/builtins/*.toml` to fix one desktop; tune the
-operator copy or the desktop init profile.
+Do **not** weaken shipped `design/builtins/*.toml` to fix one desktop; the
+`desktop` init profile installs calibrated copies from `design/profile/desktop/`.
 
 ## When to stop tuning
 

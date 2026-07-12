@@ -1,0 +1,47 @@
+# FTMON built-in: system-wide pressure (SPEC 7.7.5)
+# "Why is the whole desktop sluggish" — as opposed to blaming one process.
+# PSI metrics are None on kernels without CONFIG_PSI; those rules stay silent
+# (EX-06 three-valued logic) rather than firing wrongly.
+schema = 1
+
+[monitor]
+name = "load"
+description = "System-wide CPU/memory/IO pressure and swap growth"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "system"
+
+[parameters]
+psi_cpu_warn = { value = 40, doc = "Warn when avg CPU pressure (PSI some, 5m) exceeds this" }
+mem_avail_pct_warn = { value = 5, doc = "Warn when available memory drops below this percent of total" }
+psi_mem_crit = { value = 25, doc = "With swap growing, error when memory pressure exceeds this" }
+
+[[rule]]
+id = "pressure-warn"
+group = "pressure"
+when = 'avg(psi_some_cpu, "5m") > psi_cpu_warn or pct(mem_available_bytes, mem_total_bytes) < mem_avail_pct_warn'
+severity = "warning"
+confirm_cycles = 5
+message = "System under pressure: CPU PSI {psi_cpu_5m:.0f}, {mem_avail_pct:.0f}% memory available"
+
+[[rule]]
+id = "pressure-crit"
+group = "pressure"
+when = 'slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > psi_mem_crit'
+severity = "error"
+confirm_cycles = 5
+message = "Memory exhaustion in progress: swap growing, memory PSI {psi_mem_5m:.0f}"
+
+[[derived]]
+name = "psi_cpu_5m"
+expr = 'avg(psi_some_cpu, "5m")'
+
+[[derived]]
+name = "psi_mem_5m"
+expr = 'avg(psi_some_mem, "5m")'
+
+[[derived]]
+name = "mem_avail_pct"
+expr = 'pct(mem_available_bytes, mem_total_bytes)'

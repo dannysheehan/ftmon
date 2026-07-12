@@ -53,6 +53,24 @@ def test_design_builtins_mirror_package_builtins_md_07():
         ), f"{design_path.name} diverges from package builtin"
 
 
+DESIGN_DESKTOP_DIR = Path(__file__).resolve().parents[2] / "design" / "profile" / "desktop"
+PACKAGE_DESKTOP_DIR = (
+    Path(__file__).resolve().parents[2] / "src" / "ftmon" / "definitions" / "profile" / "desktop"
+)
+
+
+def test_desktop_profile_monitors_mirror_package_md_07():
+    """[MD-07] desktop profile monitors must match the shipped package data tree."""
+    design_files = sorted(DESIGN_DESKTOP_DIR.glob("*.toml"))
+    package_files = sorted(PACKAGE_DESKTOP_DIR.glob("*.toml"))
+    assert design_files, "desktop profile directory is missing"
+    assert [p.name for p in design_files] == [p.name for p in package_files]
+    for design_path, package_path in zip(design_files, package_files, strict=True):
+        assert design_path.read_text(encoding="utf-8") == package_path.read_text(
+            encoding="utf-8"
+        ), f"{design_path.name} diverges from package desktop profile"
+
+
 @pytest.mark.parametrize("name", BUILTIN_NAMES)
 def test_builtin_definitions_load_successfully(name):
     """[MD-07] every shipped built-in must pass the same validator as `ftmon check`."""

@@ -1,0 +1,40 @@
+# FTMON built-in: sockets (SPEC 7.7.7)
+# Expected listeners are watchlist targets; connection totals are baselined.
+# Per-process attribution is deliberately out of scope in v1 (NG-06).
+schema = 1
+
+[monitor]
+name = "net"
+description = "Expected listeners and abnormal connection counts"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "net"
+
+[source_options]
+watchlist = [
+  # { listen = "tcp:22" },
+  # { listen = "tcp:8420" },
+]
+
+[parameters]
+conn_spike_factor = { value = 4, doc = "Warn when total connections exceed baseline times this" }
+
+[[rule]]
+id = "listener-down"
+when = 'present == 0'
+severity = "error"
+confirm_cycles = 2
+message = "Expected listener {entity} is not listening"
+
+[[rule]]
+id = "conn-spike"
+when = 'conn_total > baseline(conn_total) * conn_spike_factor'
+severity = "warning"
+confirm_cycles = 5
+message = "Connection count unusual: {conn_total:.0f} (baseline {conn_base:.0f})"
+
+[[derived]]
+name = "conn_base"
+expr = 'coalesce(baseline(conn_total), 0)'
