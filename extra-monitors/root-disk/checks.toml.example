@@ -1,0 +1,13 @@
+[check.root_disk]
+# Warn when less than 20% of / is free; critical below 10%. These are plugin-side
+# thresholds; FTMON rules confirm plugin state before notifying.
+argv = [
+  "/usr/lib/nagios/plugins/check_disk",
+  "-w", "20%",
+  "-c", "10%",
+  "-p", "/",
+  "-t", "10",
+]
+protocol = "nagios"
+# Outer timeout sits just above the plugin -t so check_disk can return its message.
+timeout = "11s"

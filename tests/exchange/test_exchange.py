@@ -48,7 +48,7 @@ def test_exchange_build_is_deterministic_complete_and_no_js_optional(tmp_path):
     assert "Monitoring Plugins 2.3.5" in detail
     assert "/usr/lib/nagios/plugins/check_http" in detail
     assert search["schema"] == 1
-    assert [recipe["id"] for recipe in search["recipes"]] == ["http-tls"]
+    assert [recipe["id"] for recipe in search["recipes"]] == ["http-tls", "root-disk"]
     assert (first / "CNAME").read_text() == "exchange.ftmon.org\n"
 
 

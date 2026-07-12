@@ -1,0 +1,77 @@
+schema = 1
+
+[monitor]
+name = "root_disk"
+description = "Root filesystem used-space history via check_disk"
+version = 1
+enabled = false
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "root_disk"
+entity = "mount:/"
+
+[[source_options.perfdata]]
+label = "/"
+metric = "used_bytes"
+plugin_uom = "B"
+unit = "bytes"
+kind = "gauge"
+
+[parameters]
+growth_bytes_per_h = { value = 536870912, doc = "Used-byte growth per hour before warning (512 MiB/h)" }
+growth_confidence_min = { value = 0.8, doc = "Required fraction of rising used-byte samples" }
+
+[[derived]]
+name = "used_bytes_rate_bph"
+expr = 'slope(used_bytes, "6h") * 3600'
+
+[[derived]]
+name = "used_bytes_growth_confidence"
+expr = 'monot(used_bytes, "6h")'
+
+[[rule]]
+id = "plugin-warning"
+group = "space"
+when = "plugin_state == 1"
+severity = "warning"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-critical"
+group = "space"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-unknown"
+group = "check-health"
+when = "plugin_state == 3"
+severity = "warning"
+confirm_cycles = 2
+message = "Root disk check is unknown: {plugin_message}"
+
+[[rule]]
+id = "used-bytes-growing"
+group = "growth"
+when = "used_bytes_rate_bph > growth_bytes_per_h and used_bytes_growth_confidence >= growth_confidence_min"
+severity = "warning"
+confirm_cycles = 3
+message = "Root filesystem used space is steadily increasing"
+
+[[trend]]
+id = "used-bytes"
+kind = "growth"
+title = "Root used-space trend"
+value_metric = "used_bytes"
+value_unit = "bytes"
+rate_metric = "used_bytes_rate_bph"
+rate_unit = "bytes/hour"
+confidence_metric = "used_bytes_growth_confidence"
+confidence_threshold_param = "growth_confidence_min"
+rate_threshold_params = ["growth_bytes_per_h"]
