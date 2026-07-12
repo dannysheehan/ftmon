@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 dist/
 soak/
+tuning/evidence/
 *.egg-info/
 .coverage
 # Local AI-agent session state (tool permission grants), not project content.

@@ -156,6 +156,10 @@ edits within 30 seconds, no restart. Three knobs cover most needs:
   encoders). Exempt entities are still recorded — only alerting stops —
   so you can still ask about them later.
 
+For systematic threshold calibration on a live host, see the
+[tuning procedure](tuning-procedure.md) (`tools/tuning/leaky.py` and
+`stress_profile.sh`).
+
 Baselines learn automatically (~24 h of data before they speak). If your
 machine's "normal" genuinely changed — new job, big software upgrade —
 `ftmon baseline reset <monitor>` starts the learning over; affected rules
