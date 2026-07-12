@@ -17,6 +17,24 @@ import ftmon
 from ftmon.paths import get_paths
 
 
+def _seed_desktop_recipe(paths, *, force: bool = False) -> None:
+    """Desktop init registers the http-tls check when the plugin is present."""
+    plugin = Path("/usr/lib/nagios/plugins/check_http")
+    if not plugin.is_file():
+        print("note: monitoring-plugins not installed; skip http-tls check registration")
+        print("      install with: sudo apt install monitoring-plugins")
+        print("      then run: ftmon recipe install http-tls")
+        return
+    from ftmon.recipes.install import InstallError, merge_recipe_checks
+
+    try:
+        merge_recipe_checks(paths, "http-tls", force=force)
+        print("registered external check: demo_ftmon_https (http-tls recipe)")
+        print("enable with: ftmon recipe install http-tls")
+    except InstallError as exc:
+        print(f"note: http-tls check not registered ({exc.category})", file=sys.stderr)
+
+
 def _builtin_monitors_source(profile: str):
     """Return a Path or Traversable directory of monitor TOML to install (FS-02).
 
@@ -201,6 +219,40 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not installed and not skipped:
         print("no builtin definitions found")
 
+    if args.profile == "desktop":
+        _seed_desktop_recipe(paths, force=args.force)
+
+    return 0
+
+
+def cmd_recipe(args: argparse.Namespace) -> int:
+    """Install or list curated extra-monitor recipes (hot reload, no restart)."""
+    from ftmon.recipes import InstallError, install_recipe, list_recipe_ids
+
+    paths = get_paths()
+    paths.ensure()
+    action = getattr(args, "action", None)
+    if action == "list":
+        for recipe_id in list_recipe_ids():
+            print(recipe_id)
+        return 0
+    try:
+        result = install_recipe(
+            paths,
+            args.recipe_id,
+            force=args.force,
+            enable=not args.no_enable,
+        )
+    except InstallError as exc:
+        print(f"{exc.category}: {exc.message}", file=sys.stderr)
+        return 1
+    state = "enabled" if result.enabled else "installed (disabled)"
+    aliases = ", ".join(result.aliases) or "unchanged"
+    print(f"installed recipe: {result.recipe_id}")
+    print(f"monitor: {result.monitor} ({state})")
+    print(f"checks: {aliases}")
+    print(f"wrote: {result.monitor_path}")
+    print("the daemon picks this up within 30s; no restart required")
     return 0
 
 
@@ -583,6 +635,25 @@ def cmd_not_implemented(cmd_name: str) -> int:
     return handler
 
 
+def _dispatch_check_install(argv: list[str]) -> int | None:
+    """`ftmon check install` shares recipe install without breaking `check <path>`."""
+    if len(argv) < 2 or argv[0] != "check" or argv[1] != "install":
+        return None
+    parser = argparse.ArgumentParser(prog="ftmon check install")
+    parser.add_argument("recipe_id", help="Recipe directory name (e.g. http-tls)")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Replace an existing monitor file or check alias",
+    )
+    parser.add_argument(
+        "--no-enable", action="store_true",
+        help="Install without flipping enabled = true",
+    )
+    args = parser.parse_args(argv[2:])
+    args.action = "install"
+    return cmd_recipe(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point (CL-01). Returns exit code.
 
@@ -594,6 +665,11 @@ def main(argv: list[str] | None = None) -> int:
     - demo build: atomically create deterministic synthetic demonstration data
     - daemon, mcp, web, top, incidents, etc.: stubs (return 2)
     """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    install_rc = _dispatch_check_install(argv)
+    if install_rc is not None:
+        return install_rc
+
     parser = argparse.ArgumentParser(
         prog="ftmon",
         description="FTMON v2 - lightweight local systems monitor",
@@ -622,10 +698,29 @@ def main(argv: list[str] | None = None) -> int:
 
     # check
     check_parser = subparsers.add_parser(
-        "check", help="Validate monitor definitions"
+        "check", help="Validate monitor definitions (see: ftmon recipe install)"
     )
     check_parser.add_argument(
         "path", nargs="?", help="Check one file (or all if omitted)"
+    )
+
+    # recipe
+    recipe_parser = subparsers.add_parser(
+        "recipe", help="List or install curated extra-monitor recipes"
+    )
+    recipe_sub = recipe_parser.add_subparsers(dest="action", required=True)
+    recipe_sub.add_parser("list", help="List installable recipe IDs")
+    recipe_install = recipe_sub.add_parser(
+        "install", help="Install a recipe into monitors/ and checks.toml"
+    )
+    recipe_install.add_argument("recipe_id", help="Recipe directory name (e.g. http-tls)")
+    recipe_install.add_argument(
+        "--force", action="store_true",
+        help="Replace an existing monitor file or check alias",
+    )
+    recipe_install.add_argument(
+        "--no-enable", action="store_true",
+        help="Install without flipping enabled = true",
     )
 
     # status
@@ -831,6 +926,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     elif args.command == "monitor":
         return cmd_monitor(args)
+    elif args.command == "recipe":
+        return cmd_recipe(args)
     elif args.command == "baseline":
         return cmd_baseline(args)
     elif args.command == "doctor":

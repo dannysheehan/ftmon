@@ -51,14 +51,32 @@ def empty() -> CheckRegistry:
     return CheckRegistry(MappingProxyType({}))
 
 
-def _regular_protected(path: Path, category: str) -> os.stat_result:
+_OVERFLOW_UIDS = frozenset({65533, 65534})  # nfsnobody / nobody when ownership is masked
+_SYSTEM_EXECUTABLE_PREFIXES = ("/bin/", "/lib/", "/sbin/", "/usr/")
+
+
+def _masked_system_executable(path: Path, info: os.stat_result) -> bool:
+    """NoNewPrivileges can report distro executables with the overflow uid."""
+    if info.st_uid not in _OVERFLOW_UIDS:
+        return False
+    resolved = str(path.resolve())
+    return resolved.startswith(_SYSTEM_EXECUTABLE_PREFIXES)
+
+
+def _trusted_owner(path: Path, info: os.stat_result, *, executable: bool = False) -> bool:
+    if info.st_uid in {0, os.getuid()}:
+        return True
+    return executable and _masked_system_executable(path, info)
+
+
+def _regular_protected(path: Path, category: str, *, executable: bool = False) -> os.stat_result:
     try:
         info = path.lstat()
     except OSError as exc:
         raise RegistryError(category) from exc
     if not stat.S_ISREG(info.st_mode) or path.is_symlink():
         raise RegistryError(category)
-    if info.st_uid not in {0, os.getuid()} or info.st_mode & 0o022:
+    if not _trusted_owner(path, info, executable=executable) or info.st_mode & 0o022:
         raise RegistryError(category)
     return info
 
@@ -122,7 +140,7 @@ def _entry(alias: object, value: object, paths: Paths | None) -> CheckSpec:
         forbidden_roots = (paths.data_dir, paths.state_dir, paths.runtime_dir)
         if any(_under(resolved, root.resolve()) for root in forbidden_roots):
             raise RegistryError("invalid_executable")
-    info = _regular_protected(executable, "executable_unready")
+    info = _regular_protected(executable, "executable_unready", executable=True)
     if not info.st_mode & 0o111:
         raise RegistryError("executable_unready")
     if protocol not in PROTOCOLS:
