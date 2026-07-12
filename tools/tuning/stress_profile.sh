@@ -96,7 +96,7 @@ run_leaky() {
   snapshot "before-$name"
   echo "starting $name: ${rate} MiB/h for ${duration}s" | tee -a "$OUTDIR/timeline.txt"
   (cd "$REPO_ROOT" && uv run python "$LEAKY" --process-name "$name" \
-    --rate-mib-per-hour "$rate" --duration "$duration" $extra --hold) &
+    --rate-mib-per-hour "$rate" --duration "$duration" $extra) &
   pid=$!
   echo "$pid" > "$OUTDIR/${name}.pid"
   wait "$pid" || true
