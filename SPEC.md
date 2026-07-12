@@ -1,10 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.12** — v0.12 adds the release-readiness gates from the
-2026-07-12 repository review: a recorded real-time soak (TS-17), a
-zero-pending traceability gate with security IDs burned down first (TS-18),
-and a documentation-drift audit (DO-09), all collected in milestone M10.
-All §19 open questions are resolved.
+Status: **DRAFT v0.14** — v0.13 specifies the static FTMON Exchange
+publication of the in-repository recipe authority; v0.14 defines the
+repository-owned Agent Skill for adding extra monitors. The v0.12
+release-readiness gates (TS-17 soak, TS-18 zero-pending traceability, DO-09
+drift audit; milestone M10) remain in force with the pending list burned down
+to empty. All §19 open questions are resolved.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 

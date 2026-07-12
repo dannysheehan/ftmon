@@ -22,9 +22,9 @@ boundary is deliberate.
 Everything runs through `uv`:
 
 ```sh
-uv sync                        # install/refresh the environment
-uv run ruff check src tests    # lint (ruff is also the formatter; line length 100)
-uv run pytest -q               # full gate: unit + e2e + traceability (~20 s)
+uv sync                          # install/refresh the environment
+uv run ruff check src tests tools  # lint (ruff is also the formatter; line length 100)
+uv run pytest -q                 # full gate: unit + e2e + traceability (~35 s)
 uv run pytest -q tests/ai_skills                       # shared-skill contract
 uv run pytest -q tests/extra_monitors tests/exchange  # recipe/publication contract
 uv run pytest tests/unit/test_expr_eval.py -q          # one file
@@ -38,6 +38,13 @@ python3 tools/gen_reqindex.py --check   # regenerate/verify tests/reqindex.json 
 
 Real-system smoke tests are opt-in (deselected by default); the CI suite is
 deterministic and fixture-driven.
+
+GitHub workflows: `ci.yml` (gate + reqindex check + build smoke on push/PR),
+`release.yml` (a `v*` tag runs the gate, verifies the tag matches
+`ftmon.__version__`, publishes to PyPI via Trusted Publishing, and creates the
+GitHub Release — bump the version in both `pyproject.toml` and
+`src/ftmon/__init__.py`), and `exchange.yml` (PRs build the static Exchange
+site; only main deploys).
 
 ## Spec-driven workflow (the central process fact)
 
@@ -53,8 +60,14 @@ Traceability is machine-enforced by `tests/unit/test_traceability.py` (TS-01):
   and must match on regeneration; `tests/traceability_pending.json` lists
   testable IDs not yet covered (a ratchet — an ID can't be both covered and
   pending).
-- Adding/changing a requirement ⇒ regenerate the index. Covering a pending
-  ID ⇒ remove it from the pending list. `NG-*`/`DO-*` IDs are exempt.
+- Adding/changing a requirement ⇒ regenerate the index. `NG-*`/`DO-*` IDs are
+  exempt.
+- The pending list was burned down to **empty** in M10 and TS-18 says it may
+  only shrink — a new testable requirement must land with its tests in the
+  same change, not by re-growing the pending list.
+- SPEC changes must also bump the `Status:` header line and add a §21
+  changelog entry, and DESIGN's "Companion to SPEC.md vX.Y" line must follow —
+  this header has drifted from the changelog twice already.
 
 When you land a user-visible change, updating the matching docs
 (`docs/manual.md`, `docs/install.md`, `docs/definitions.md`) is part of the
@@ -99,7 +112,15 @@ Package layout (full annotated tree in DESIGN.md §1):
   independent durable retry.
 - `daemon.py` (composition root; owns the only bulk-write connection),
   `cli.py`, `mcp_server.py`, `web/` (operational app + isolated synthetic demo
-  app), `demo.py`, `selfmon.py`, `systemd/` units.
+  app), `demo.py`, `selfmon.py`, `systemd/` units (incl. the soak-evidence
+  service/timer).
+- `tools/` — maintainer tooling, linted like source: `gen_reqindex.py`
+  (traceability), `soak_report.py` + `capture_soak_evidence.sh` (TS-17
+  release-gate evidence; procedure in `docs/soak-procedure.md`),
+  `build_exchange.py` (static Exchange site; treats recipe bytes as
+  untrusted, XR-08), and `tuning/` live-host workload generators
+  (`docs/tuning-procedure.md`). Their outputs — `soak/`, `tuning/evidence/` —
+  are local artifacts and gitignored.
 
 Key invariants:
 
@@ -123,5 +144,9 @@ Key invariants:
   `test_daemon_rejects_second_instance_pm_02`.
 - Commit subjects are concise and imperative, often milestone-prefixed
   (`M9: add bounded external checks`, `Docs: ...`).
-- `dist/`, `.venv/`, caches, and `ftmon-legacy/` are gitignored; don't commit
-  build artifacts or the legacy tree.
+- `dist/`, `.venv/`, caches, `ftmon-legacy/`, `soak/`, and `tuning/evidence/`
+  are gitignored; don't commit build artifacts, evidence captures, or the
+  legacy tree.
+- Review artifacts and audit records (`docs/REVIEW-3.md`,
+  `docs/drift-audit-m10.md`) are maintainer-facing records per DO-09, not
+  user documentation — don't cite them from the manual or README.
