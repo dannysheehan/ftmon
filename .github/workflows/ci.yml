@@ -6,9 +6,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -22,5 +27,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      - run: uv run ruff check src tests
+      - run: uv run ruff check src tests tools
+      - run: uv run python tools/gen_reqindex.py --check
       - run: uv run pytest -q
+      - run: uv build

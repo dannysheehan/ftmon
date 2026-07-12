@@ -17,6 +17,7 @@ import pytest
 from ftmon.definitions import ValidationError, load_dir, load_file, load_text
 
 BUILTINS_DIR = Path(__file__).resolve().parents[2] / "src" / "ftmon" / "definitions" / "builtins"
+DESIGN_BUILTINS_DIR = Path(__file__).resolve().parents[2] / "design" / "builtins"
 DEFINITIONS_SRC = Path(__file__).resolve().parents[2] / "src" / "ftmon" / "definitions"
 
 BUILTIN_NAMES = (
@@ -39,6 +40,17 @@ BUILTIN_NAMES = (
 def test_builtins_dir_has_exactly_the_eight_shipped_files():
     found = {p.stem for p in BUILTINS_DIR.glob("*.toml")}
     assert found == set(BUILTIN_NAMES)
+
+
+def test_design_builtins_mirror_package_builtins_md_07():
+    """[MD-07] normative design copies must match the shipped package data tree."""
+    design_files = sorted(DESIGN_BUILTINS_DIR.glob("*.toml"))
+    package_files = sorted(BUILTINS_DIR.glob("*.toml"))
+    assert [p.name for p in design_files] == [p.name for p in package_files]
+    for design_path, package_path in zip(design_files, package_files, strict=True):
+        assert design_path.read_text(encoding="utf-8") == package_path.read_text(
+            encoding="utf-8"
+        ), f"{design_path.name} diverges from package builtin"
 
 
 @pytest.mark.parametrize("name", BUILTIN_NAMES)
