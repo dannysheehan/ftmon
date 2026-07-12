@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Curated, tested integrations for FTMON">
+  <title>FTMON Exchange</title>
+  <link rel="stylesheet" href="assets/exchange.css">
+  <script src="assets/exchange.js" defer></script>
+</head>
+<body>
+  <header class="hero">
+    <a class="brand" href="./" aria-label="FTMON Exchange home">FTMON <span>Exchange</span></a>
+    <h1>Extend one host without building a monitoring stack</h1>
+    <p>Curated recipes connect established checks to FTMON history, incidents and Trends.</p>
+  </header>
+  <main>
+    <section class="controls" aria-labelledby="find-heading">
+      <h2 id="find-heading">Find a monitor</h2>
+      <label for="exchange-search">Search recipes</label>
+      <input id="exchange-search" type="search" placeholder="HTTP, storage, TLS…" autocomplete="off">
+      <div class="filters" aria-label="Recipe filters">
+        <label>Category <select id="category-filter"><option value="">All</option>{% for category in categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}</select></label>
+        <label>Platform <select id="platform-filter"><option value="">All</option>{% for platform in platforms %}<option value="{{ platform }}">{{ platform }}</option>{% endfor %}</select></label>
+        <label>Protocol <select id="protocol-filter"><option value="">All</option>{% for protocol in protocols %}<option value="{{ protocol }}">{{ protocol }}</option>{% endfor %}</select></label>
+        <label>Privilege <select id="privilege-filter"><option value="">All</option>{% for privilege in privileges %}<option value="{{ privilege }}">{{ privilege }}</option>{% endfor %}</select></label>
+      </div>
+      <p id="result-count" aria-live="polite">{{ recipes|length }} recipe{% if recipes|length != 1 %}s{% endif %}</p>
+    </section>
+    <section class="cards" id="recipe-list" aria-label="Monitor recipes">
+      {% for recipe in recipes %}
+      <article class="card" data-recipe-id="{{ recipe.id }}">
+        <div class="eyebrow">{{ recipe.category }} · {{ recipe.kind }}</div>
+        <h2><a href="recipes/{{ recipe.id }}/">{{ recipe.title }}</a></h2>
+        <p>{{ recipe.summary }}</p>
+        <ul class="badges" aria-label="Compatibility">
+          {% for platform in recipe.platforms %}<li>{{ platform }}</li>{% endfor %}
+          <li>{{ recipe.status }}</li>
+          {% if recipe.privilege != "none" %}<li>{{ recipe.privilege }}</li>{% endif %}
+        </ul>
+      </article>
+      {% endfor %}
+    </section>
+    <noscript><p class="notice">All recipes are shown. Search and filters require JavaScript.</p></noscript>
+  </main>
+  <footer>
+    <p>Recipes are compatibility evidence, not endorsement or a security audit.</p>
+    <p><a href="https://github.com/dannysheehan/ftmon/tree/main/extra-monitors">Contribute on GitHub</a> · <a href="https://ftmon.org/">FTMON</a></p>
+  </footer>
+</body>
+</html>

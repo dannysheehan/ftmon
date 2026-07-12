@@ -16,6 +16,7 @@ CATALOGUE = ROOT / "extra-monitors"
 RECIPE_KEYS = {
     "id", "title", "summary", "kind", "platforms", "upstream", "license",
     "status", "privilege", "network", "last_verified_version",
+    "category", "tags", "min_ftmon_version",
 }
 FIXTURE_KEYS = {"path", "exit_code", "state", "labels"}
 DOC_HEADINGS = {
@@ -62,6 +63,13 @@ def test_recipe_metadata_and_documentation_contract(recipe):
     assert meta["upstream"].startswith("https://")
     assert meta["license"].strip()
     assert type(meta["network"]) is bool
+    assert meta["category"] in {
+        "applications", "database", "hardware", "network", "other", "security",
+        "storage", "system", "web",
+    }
+    assert meta["tags"] == sorted(set(meta["tags"]))
+    assert all(tag and tag == tag.lower() for tag in meta["tags"])
+    assert meta["min_ftmon_version"]
 
     readme = (path / "README.md").read_text()
     assert DOC_HEADINGS <= set(readme.splitlines())

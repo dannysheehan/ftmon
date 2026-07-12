@@ -123,10 +123,14 @@ Never expose an operational FTMON database as a demo.
   performance-data mappings, privileges, and security boundaries.
 - [Extra monitors](extra-monitors/) — tested integration recipes for
   separately installed checks.
+- [FTMON Exchange](https://exchange.ftmon.org/) — the generated, searchable
+  public view of the curated extra-monitor catalogue.
 - [Product specification](SPEC.md) and [technical design](DESIGN.md) — normative
   behavior, rationale, architecture, and requirement IDs.
 - [Contributing guide](CONTRIBUTING.md) — development and documentation
   standards.
+- [Exchange publishing guide](docs/exchange.md) — local preview, GitHub Pages,
+  custom-domain verification and rollback.
 - [Why FTMON?](docs/why-ftmon.md) — product positioning, intended users, and
   the value of extensible checks.
 

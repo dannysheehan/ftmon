@@ -12,6 +12,9 @@ status = "real-system-verified"
 privilege = "none"
 network = true
 last_verified_version = "Monitoring Plugins 2.3.5 on Ubuntu 24.04; 2026-07-12"
+category = "web"
+tags = ["http", "https", "latency", "tls"]
+min_ftmon_version = "2.0.0a1"
 
 [[fixtures]]
 path = "fixtures/ok.txt"

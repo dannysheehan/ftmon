@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{{ recipe.summary }}">
+  <title>{{ recipe.title }} · FTMON Exchange</title>
+  <link rel="stylesheet" href="../../assets/exchange.css">
+</head>
+<body>
+  <header class="detail-head">
+    <a class="brand" href="../../">FTMON <span>Exchange</span></a>
+    <p class="eyebrow">{{ recipe.category }} · {{ recipe.kind }}</p>
+    <h1>{{ recipe.title }}</h1>
+    <p class="lede">{{ recipe.summary }}</p>
+  </header>
+  <main class="detail">
+    <aside class="facts" aria-label="Recipe facts">
+      <h2>Compatibility</h2>
+      <dl>
+        <dt>Minimum FTMON</dt><dd>{{ recipe.min_ftmon_version }}</dd>
+        <dt>Platforms</dt><dd>{{ recipe.platforms|join(", ") }}</dd>
+        <dt>Confidence</dt><dd>{{ recipe.status }}</dd>
+        <dt>Privilege</dt><dd>{{ recipe.privilege }}</dd>
+        <dt>Network</dt><dd>{{ "yes" if recipe.network else "no" }}</dd>
+        <dt>Licence</dt><dd>{{ recipe.license }}</dd>
+        <dt>Last verified</dt><dd>{{ recipe.last_verified_version }}</dd>
+      </dl>
+      <p><a href="{{ recipe.upstream }}">Upstream project</a></p>
+      <p><a href="{{ recipe.source_url }}">Reviewed recipe source</a></p>
+      <h2>Tags</h2>
+      <ul class="badges">{% for tag in recipe.tags %}<li>{{ tag }}</li>{% endfor %}</ul>
+    </aside>
+    <article class="article">
+      {{ article_html|safe }}
+      <h2>Registry example</h2>
+      <pre><code>{{ checks_text }}</code></pre>
+      <h2>Monitor definition</h2>
+      <pre><code>{{ monitor_text }}</code></pre>
+    </article>
+  </main>
+  <footer>
+    <p>This catalogue does not redistribute third-party checks. Review and install dependencies from their upstream project.</p>
+    <p><a href="../../">Back to all recipes</a></p>
+  </footer>
+</body>
+</html>

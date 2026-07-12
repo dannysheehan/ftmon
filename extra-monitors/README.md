@@ -61,3 +61,7 @@ unprivileged and independent of third-party packages.
 
 See [External checks](../docs/external-checks.md) for the execution, privilege,
 credential and licensing boundary that every recipe must preserve.
+
+Accepted recipes are rendered at [FTMON Exchange](https://exchange.ftmon.org/).
+The [publishing guide](../docs/exchange.md) explains the deterministic local
+preview, publication metadata and GitHub Pages deployment boundary.
