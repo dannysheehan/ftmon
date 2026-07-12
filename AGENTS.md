@@ -12,6 +12,10 @@ be added to this repository.
 - `CLAUDE.md` summarizes the v2 architecture, commands, and the spec/traceability workflow for AI coding agents.
 - `README.md` gives users and contributors the repository entry point.
 - `docs/` contains the install guide, user manual, and definition reference.
+- `.ai/skills/` contains portable, repository-owned AI contribution workflows;
+  current repository authority and tests always override skill prose.
+- `extra-monitors/` contains tested external-check recipes rendered at FTMON
+  Exchange.
 
 New v2 code should follow `SPEC.md`: Python package code in `ftmon/`, tests in `tests/`, and user-editable monitor definitions as TOML.
 

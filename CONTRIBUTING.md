@@ -49,6 +49,19 @@ Good: `# deadline is checked between entities, not inside psutil calls -
 When you land a user-visible feature, updating the manual chapter is part of
 the work package, not a follow-up.
 
+## Shared AI skills
+
+Repository-owned contribution skills live under `.ai/skills/`. They are
+reviewed workflow aids, not an authority above `AGENTS.md`, SPEC, DESIGN,
+templates or tests. Keep one canonical portable `SKILL.md`; vendor discovery
+locations are personal or ignored installation links, never edited copies.
+
+The initial `ftmon-add-extra-monitor` skill covers Nagios and FTMON JSON recipe
+work. Contributors may use it directly or follow `extra-monitors/README.md`
+manually. In either case, review evidence, privilege, licensing, generated
+Exchange output and tests normally. See `docs/ai-skills.md` for installation
+and the trust model.
+
 ## Style
 
 Python >= 3.11, ruff (line length 100) is the linter and formatter authority.

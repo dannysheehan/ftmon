@@ -1,0 +1,4 @@
+interface:
+  display_name: "Add FTMON Extra Monitor"
+  short_description: "Create and verify an FTMON check recipe"
+  default_prompt: "Use $ftmon-add-extra-monitor to add a verified Nagios or FTMON JSON recipe to the extra-monitor catalogue."

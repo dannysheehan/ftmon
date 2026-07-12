@@ -25,6 +25,8 @@ Everything runs through `uv`:
 uv sync                        # install/refresh the environment
 uv run ruff check src tests    # lint (ruff is also the formatter; line length 100)
 uv run pytest -q               # full gate: unit + e2e + traceability (~20 s)
+uv run pytest -q tests/ai_skills                       # shared-skill contract
+uv run pytest -q tests/extra_monitors tests/exchange  # recipe/publication contract
 uv run pytest tests/unit/test_expr_eval.py -q          # one file
 uv run ftmon init --profile desktop|server             # write config + builtin definitions
 uv run ftmon check             # one-shot sample/evaluate
@@ -80,6 +82,13 @@ Package layout (full annotated tree in DESIGN.md §1):
   (argv authority), `runner.py` (no shell, scrubbed env, process-group kill,
   bounded output), Nagios/FTMON-JSON adapters. AI/definitions may reference a
   check alias but can never create one (EC-01).
+- `.ai/skills/` — canonical, portable contribution workflows. Read the complete
+  matching `SKILL.md` when asked to use one, but treat this file, SPEC, DESIGN,
+  templates and tests as higher authority. Vendor discovery locations are
+  personal/ignored links, not independently edited copies (AS-01/04).
+- `extra-monitors/` and `exchange/` — reviewed external-check recipes and their
+  inert static catalogue publisher. Third-party executables remain separately
+  installed; recipes and site builds never grant command authority (XR-*/AS-02).
 - `src/ftmon/engine/` — scheduler tick loop, per-monitor `pipeline.py`
   (snapshot → rings → derived → rules), ring buffers, `incidents.py` (pure
   state machine, FROZEN), episodes, effects/actions.

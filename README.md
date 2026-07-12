@@ -131,6 +131,8 @@ Never expose an operational FTMON database as a demo.
   standards.
 - [Exchange publishing guide](docs/exchange.md) — local preview, GitHub Pages,
   custom-domain verification and rollback.
+- [Shared AI skills](docs/ai-skills.md) — reviewed contribution workflows,
+  trust model, and optional Codex/Claude installation.
 - [Why FTMON?](docs/why-ftmon.md) — product positioning, intended users, and
   the value of extensible checks.
 
