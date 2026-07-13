@@ -18,10 +18,13 @@ def _env(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("FTMON_RUNTIME_DIR", str(tmp_path / "run"))
 
 
-def _recipe_tree(tmp_path: Path) -> Path:
+def _recipe_tree(tmp_path: Path, recipe_id: str = "test-recipe") -> Path:
     catalogue = tmp_path / "catalogue"
-    recipe = catalogue / "http-tls"
+    recipe = catalogue / recipe_id
     recipe.mkdir(parents=True)
+    (recipe / "recipe.toml").write_text(
+        f'schema = 1\n[recipe]\nid = "{recipe_id}"\ntitle = "test"\n'
+    )
     return recipe
 
 
@@ -47,7 +50,7 @@ def test_merge_recipe_checks_writes_protected_registry(tmp_path, monkeypatch):
     paths = get_paths()
     paths.ensure()
 
-    aliases = merge_recipe_checks(paths, "http-tls")
+    aliases = merge_recipe_checks(paths, "test-recipe")
 
     assert aliases == ("demo_ftmon_https",)
     registry = paths.check_registry_file
@@ -61,9 +64,6 @@ def test_install_recipe_enables_monitor_without_restart(tmp_path, monkeypatch):
     plugin = _executable(tmp_path)
     recipe = _recipe_tree(tmp_path)
     monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
-    (recipe / "recipe.toml").write_text(
-        'schema = 1\n[recipe]\nid = "http-tls"\ntitle = "t"\n'
-    )
     (recipe / "checks.toml.example").write_text(
         f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
     )
@@ -78,7 +78,7 @@ def test_install_recipe_enables_monitor_without_restart(tmp_path, monkeypatch):
     paths = get_paths()
     paths.ensure()
 
-    result = install_recipe(paths, "http-tls")
+    result = install_recipe(paths, "test-recipe")
 
     assert result.enabled is True
     text = (paths.monitors_dir / "demo_ftmon_https.toml").read_text()
@@ -90,7 +90,6 @@ def test_install_recipe_accepts_explicit_directory_path(tmp_path, monkeypatch):
     _env(tmp_path, monkeypatch)
     plugin = _executable(tmp_path)
     recipe = _recipe_tree(tmp_path)
-    (recipe / "recipe.toml").write_text('schema = 1\n[recipe]\nid = "http-tls"\n')
     (recipe / "checks.toml.example").write_text(
         f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
     )
@@ -107,7 +106,7 @@ def test_install_recipe_accepts_explicit_directory_path(tmp_path, monkeypatch):
 
     result = install_recipe(paths, str(recipe))
 
-    assert result.recipe_id == "http-tls"
+    assert result.recipe_id == "test-recipe"
     assert (paths.monitors_dir / "demo_ftmon_https.toml").exists()
 
 
@@ -117,7 +116,6 @@ def test_cli_recipe_install_and_check_install_alias(tmp_path, monkeypatch, capsy
     plugin = _executable(tmp_path)
     recipe = _recipe_tree(tmp_path)
     monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
-    (recipe / "recipe.toml").write_text('schema = 1\n[recipe]\nid = "http-tls"\n')
     (recipe / "checks.toml.example").write_text(
         f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
     )
@@ -130,8 +128,9 @@ def test_cli_recipe_install_and_check_install_alias(tmp_path, monkeypatch, capsy
         'severity = "critical"\nconfirm_cycles = 1\nmessage = "down"\n'
     )
     assert main(["recipe", "list"]) == 0
-    assert "http-tls" in capsys.readouterr().out
-    assert main(["check", "install", "http-tls"]) == 0
+    listed = capsys.readouterr().out
+    assert "test-recipe" in listed
+    assert main(["check", "install", "test-recipe"]) == 0
     assert (get_paths().monitors_dir / "demo_ftmon_https.toml").exists()
 
 
