@@ -1,4 +1,9 @@
-"""Shared executable trust checks for registry load and runtime execution."""
+"""Shared executable trust policy for registry load and check execution (EC-01).
+
+Registry validation and the external-check runner must apply one ownership and
+path contract; diverging copies would let a trusted load race an untrusted run.
+NoNewPrivileges also masks distro plugin ownership to overflow uids (nobody).
+"""
 
 from __future__ import annotations
 

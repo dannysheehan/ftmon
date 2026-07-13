@@ -5,10 +5,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from ftmon.checks.registry import load
 from ftmon.cli import main
 from ftmon.paths import get_paths
-from ftmon.recipes.install import install_recipe, merge_recipe_checks
+from ftmon.recipes.install import InstallError, install_recipe, merge_recipe_checks
 
 
 def _env(tmp_path, monkeypatch) -> None:
@@ -28,11 +30,22 @@ def _recipe_tree(tmp_path: Path, recipe_id: str = "test-recipe") -> Path:
     return recipe
 
 
-def _executable(tmp_path: Path) -> Path:
-    executable = tmp_path / "check_http"
+def _executable(tmp_path: Path, name: str = "check_http") -> Path:
+    executable = tmp_path / name
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o700)
     return executable
+
+
+def _monitor_toml() -> str:
+    return (
+        'schema = 1\n[monitor]\nname = "demo_ftmon_https"\n'
+        'description = "d"\nversion = 1\nenabled = false\nplatforms = ["linux"]\n'
+        'interval = "60s"\nsource = "external"\n'
+        '[source_options]\ncheck = "demo_ftmon_https"\nentity = "https://example.test/"\n'
+        '[[rule]]\nid = "down"\nwhen = "plugin_state == 2"\n'
+        'severity = "critical"\nconfirm_cycles = 1\nmessage = "down"\n'
+    )
 
 
 def test_merge_recipe_checks_writes_protected_registry(tmp_path, monkeypatch):
@@ -67,14 +80,7 @@ def test_install_recipe_enables_monitor_without_restart(tmp_path, monkeypatch):
     (recipe / "checks.toml.example").write_text(
         f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
     )
-    (recipe / "monitor.toml").write_text(
-        'schema = 1\n[monitor]\nname = "demo_ftmon_https"\n'
-        'description = "d"\nversion = 1\nenabled = false\nplatforms = ["linux"]\n'
-        'interval = "60s"\nsource = "external"\n'
-        '[source_options]\ncheck = "demo_ftmon_https"\nentity = "https://example.test/"\n'
-        '[[rule]]\nid = "down"\nwhen = "plugin_state == 2"\n'
-        'severity = "critical"\nconfirm_cycles = 1\nmessage = "down"\n'
-    )
+    (recipe / "monitor.toml").write_text(_monitor_toml())
     paths = get_paths()
     paths.ensure()
 
@@ -93,14 +99,7 @@ def test_install_recipe_accepts_explicit_directory_path(tmp_path, monkeypatch):
     (recipe / "checks.toml.example").write_text(
         f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
     )
-    (recipe / "monitor.toml").write_text(
-        'schema = 1\n[monitor]\nname = "demo_ftmon_https"\n'
-        'description = "d"\nversion = 1\nenabled = false\nplatforms = ["linux"]\n'
-        'interval = "60s"\nsource = "external"\n'
-        '[source_options]\ncheck = "demo_ftmon_https"\nentity = "https://example.test/"\n'
-        '[[rule]]\nid = "down"\nwhen = "plugin_state == 2"\n'
-        'severity = "critical"\nconfirm_cycles = 1\nmessage = "down"\n'
-    )
+    (recipe / "monitor.toml").write_text(_monitor_toml())
     paths = get_paths()
     paths.ensure()
 
@@ -119,19 +118,85 @@ def test_cli_recipe_install_and_check_install_alias(tmp_path, monkeypatch, capsy
     (recipe / "checks.toml.example").write_text(
         f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
     )
-    (recipe / "monitor.toml").write_text(
-        'schema = 1\n[monitor]\nname = "demo_ftmon_https"\n'
-        'description = "d"\nversion = 1\nenabled = false\nplatforms = ["linux"]\n'
-        'interval = "60s"\nsource = "external"\n'
-        '[source_options]\ncheck = "demo_ftmon_https"\nentity = "https://example.test/"\n'
-        '[[rule]]\nid = "down"\nwhen = "plugin_state == 2"\n'
-        'severity = "critical"\nconfirm_cycles = 1\nmessage = "down"\n'
-    )
+    (recipe / "monitor.toml").write_text(_monitor_toml())
     assert main(["recipe", "list"]) == 0
     listed = capsys.readouterr().out
     assert "test-recipe" in listed
     assert main(["check", "install", "test-recipe"]) == 0
     assert (get_paths().monitors_dir / "demo_ftmon_https.toml").exists()
+
+
+def test_merge_recipe_checks_skips_existing_alias_without_force(tmp_path, monkeypatch):
+    """[EC-01] Install never overwrites administrator argv authority unless forced."""
+    _env(tmp_path, monkeypatch)
+    plugin = _executable(tmp_path)
+    existing = _executable(tmp_path, "existing_check")
+    recipe = _recipe_tree(tmp_path)
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
+    (recipe / "checks.toml.example").write_text(
+        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+    )
+    paths = get_paths()
+    paths.ensure()
+    paths.check_registry_file.write_text(
+        f'[check.demo_ftmon_https]\nargv = ["{existing}"]\nprotocol = "nagios"\n'
+    )
+    paths.check_registry_file.chmod(0o600)
+
+    aliases = merge_recipe_checks(paths, "test-recipe")
+
+    assert aliases == ("demo_ftmon_https",)
+    assert load(paths.check_registry_file, paths=paths)["demo_ftmon_https"].argv[0] == str(
+        existing,
+    )
+
+
+def test_install_recipe_no_enable_leaves_monitor_disabled(tmp_path, monkeypatch):
+    """[PM-04] --no-enable registers authority without turning the monitor on."""
+    _env(tmp_path, monkeypatch)
+    plugin = _executable(tmp_path)
+    recipe = _recipe_tree(tmp_path)
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
+    (recipe / "checks.toml.example").write_text(
+        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+    )
+    (recipe / "monitor.toml").write_text(_monitor_toml())
+    paths = get_paths()
+    paths.ensure()
+
+    result = install_recipe(paths, "test-recipe", enable=False)
+
+    assert result.enabled is False
+    text = (paths.monitors_dir / "demo_ftmon_https.toml").read_text()
+    assert "enabled = false" in text
+
+
+def test_install_recipe_raises_when_recipe_missing(tmp_path, monkeypatch):
+    """[XR-02] Unknown recipe ids fail before touching checks.toml or monitors/."""
+    _env(tmp_path, monkeypatch)
+    catalogue = tmp_path / "catalogue"
+    catalogue.mkdir()
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(catalogue))
+    paths = get_paths()
+    paths.ensure()
+
+    with pytest.raises(InstallError, match="recipe_not_found"):
+        install_recipe(paths, "no-such-recipe")
+
+    assert not paths.check_registry_file.exists()
+    assert list(paths.monitors_dir.glob("*.toml")) == []
+
+
+def test_cli_recipe_install_reports_missing_recipe(tmp_path, monkeypatch, capsys):
+    """[CL-01] Operator-facing install errors use stable categories."""
+    _env(tmp_path, monkeypatch)
+    catalogue = tmp_path / "catalogue"
+    catalogue.mkdir()
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(catalogue))
+    get_paths().ensure()
+
+    assert main(["recipe", "install", "missing-recipe"]) == 1
+    assert "recipe_not_found" in capsys.readouterr().err
 
 
 def test_registry_accepts_masked_system_executable_owner(tmp_path, monkeypatch):

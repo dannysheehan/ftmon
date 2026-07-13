@@ -205,7 +205,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_recipe(args: argparse.Namespace) -> int:
-    """Install or list curated extra-monitor recipes (hot reload, no restart)."""
+    """List or install curated recipes; daemon hot-reload needs no restart (PM-04, XR-02)."""
     from ftmon.recipes import InstallError, install_recipe, list_recipe_ids
 
     paths = get_paths()

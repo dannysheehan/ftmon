@@ -1,4 +1,10 @@
-"""Install curated extra-monitor recipes into the live config tree (EC-01)."""
+"""Install curated extra-monitor recipes into the live config tree (XR-02, EC-01).
+
+Merges recipe ``checks.toml.example`` into the administrator registry and
+copies ``monitor.toml`` so operators adopt reviewed integrations without
+hand-editing argv. The merged registry is validated before install succeeds so
+the daemon never publishes a rejected authority file (EC-06).
+"""
 
 from __future__ import annotations
 
@@ -60,7 +66,11 @@ def merge_recipe_checks(
     *,
     force: bool = False,
 ) -> tuple[str, ...]:
-    """Merge a recipe's checks.toml.example into the administrator registry."""
+    """Merge a recipe's checks.toml.example into the administrator registry.
+
+    Skips aliases already present unless ``force``; never grants argv authority
+    from a recipe without the administrator's explicit overwrite (EC-01).
+    """
     recipe = resolve_recipe_path(ref)
     example = recipe / "checks.toml.example"
     try:
@@ -93,6 +103,8 @@ def merge_recipe_checks(
 
     payload = _REGISTRY_HEADER + tomli_w.dumps({"check": merged})
     atomic_write(paths.check_registry_file, payload.encode("utf-8"), mode=0o600)
+    # Fail the install before the operator assumes success: the daemon only
+    # publishes authority that passes the same registry contract (EC-06).
     try:
         load_check_registry(paths.check_registry_file, paths=paths)
     except RegistryError as exc:
@@ -109,7 +121,11 @@ def install_recipe(
     force: bool = False,
     enable: bool = True,
 ) -> InstallResult:
-    """Install monitor TOML and registry entries for a curated recipe."""
+    """Install monitor TOML and registry entries for a curated recipe.
+
+    When the monitor file already exists and ``force`` is false, only flips
+    ``enabled`` when requested — definitions are not silently replaced (PM-04).
+    """
     try:
         recipe = resolve_recipe_path(ref)
         load_manifest(ref)
