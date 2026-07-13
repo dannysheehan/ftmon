@@ -11,6 +11,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from ftmon.checks.model import CheckSpec
+from ftmon.checks.trust import trusted_owner
 from ftmon.definitions.schema import valid_name
 from ftmon.expr import ExprSyntaxError, parse_duration
 from ftmon.paths import Paths
@@ -51,24 +52,6 @@ def empty() -> CheckRegistry:
     return CheckRegistry(MappingProxyType({}))
 
 
-_OVERFLOW_UIDS = frozenset({65533, 65534})  # nfsnobody / nobody when ownership is masked
-_SYSTEM_EXECUTABLE_PREFIXES = ("/bin/", "/lib/", "/sbin/", "/usr/")
-
-
-def _masked_system_executable(path: Path, info: os.stat_result) -> bool:
-    """NoNewPrivileges can report distro executables with the overflow uid."""
-    if info.st_uid not in _OVERFLOW_UIDS:
-        return False
-    resolved = str(path.resolve())
-    return resolved.startswith(_SYSTEM_EXECUTABLE_PREFIXES)
-
-
-def _trusted_owner(path: Path, info: os.stat_result, *, executable: bool = False) -> bool:
-    if info.st_uid in {0, os.getuid()}:
-        return True
-    return executable and _masked_system_executable(path, info)
-
-
 def _regular_protected(path: Path, category: str, *, executable: bool = False) -> os.stat_result:
     try:
         info = path.lstat()
@@ -76,7 +59,7 @@ def _regular_protected(path: Path, category: str, *, executable: bool = False) -
         raise RegistryError(category) from exc
     if not stat.S_ISREG(info.st_mode) or path.is_symlink():
         raise RegistryError(category)
-    if not _trusted_owner(path, info, executable=executable) or info.st_mode & 0o022:
+    if not trusted_owner(path, info, system_executable=executable) or info.st_mode & 0o022:
         raise RegistryError(category)
     return info
 

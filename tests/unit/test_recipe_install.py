@@ -153,7 +153,7 @@ def test_registry_accepts_masked_system_executable_owner(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "lstat", masked_lstat)
     monkeypatch.setattr(
-        "ftmon.checks.registry._SYSTEM_EXECUTABLE_PREFIXES",
+        "ftmon.checks.trust._SYSTEM_EXECUTABLE_PREFIXES",
         (str(tmp_path) + "/",),
     )
     path = tmp_path / "checks.toml"

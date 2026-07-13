@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import os
 import signal
-import stat
 import subprocess
 import threading
 from pathlib import Path
 
 from ftmon.checks import jsoncheck, nagios
 from ftmon.checks.model import CheckSpec, RawCheckResult, unknown
+from ftmon.checks.trust import trusted_executable_path
 from ftmon.clock import Clock, SystemClock
 
 _STDOUT_LIMIT = 64 * 1024
@@ -28,26 +28,6 @@ def _read_bounded(stream: object, limit: int, output: bytearray, overflow: list[
             overflow[0] = True
 
 
-def trusted_executable(executable: str) -> bool:
-    """Reject symlinks, non-regular files, and group/world-writable targets."""
-    path = Path(executable)
-    try:
-        info = path.lstat()
-        resolved = path.resolve(strict=True)
-        resolved_info = resolved.lstat()
-    except (OSError, RuntimeError):
-        return False
-    return (
-        path.is_absolute()
-        and not stat.S_ISLNK(info.st_mode)
-        and stat.S_ISREG(info.st_mode)
-        and resolved == path
-        and resolved_info.st_uid in {0, os.geteuid()}
-        and not resolved_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-        and bool(resolved_info.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
-    )
-
-
 class CheckRunner:
     def __init__(self, state_dir: Path, clock: Clock | None = None):
         self._state_dir = state_dir
@@ -55,7 +35,7 @@ class CheckRunner:
 
     def run(self, spec: CheckSpec, deadline_mono: float) -> RawCheckResult:
         started = self._clock.monotonic()
-        if not spec.argv or not trusted_executable(spec.argv[0]):
+        if not spec.argv or not trusted_executable_path(spec.argv[0]):
             return unknown(0.0, "executable")
         timeout = min(spec.timeout_s, max(0.0, deadline_mono - started))
         if timeout <= 0:

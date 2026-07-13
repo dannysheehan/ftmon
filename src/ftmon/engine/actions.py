@@ -13,7 +13,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 
-from ftmon.checks.runner import trusted_executable
+from ftmon.checks.trust import trusted_executable_path as trusted_executable
 from ftmon.engine.effects import PendingAction
 
 _RATE_LIMIT_S = 600
