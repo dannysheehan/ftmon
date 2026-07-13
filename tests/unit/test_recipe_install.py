@@ -145,10 +145,70 @@ def test_merge_recipe_checks_skips_existing_alias_without_force(tmp_path, monkey
 
     aliases = merge_recipe_checks(paths, "test-recipe")
 
-    assert aliases == ("demo_ftmon_https",)
+    assert aliases == ()
     assert load(paths.check_registry_file, paths=paths)["demo_ftmon_https"].argv[0] == str(
         existing,
     )
+
+
+def test_merge_recipe_checks_rejects_invalid_existing_registry(tmp_path, monkeypatch):
+    """[EC-01] Merge refuses to rewrite a registry with invalid [check] entries."""
+    _env(tmp_path, monkeypatch)
+    plugin = _executable(tmp_path)
+    recipe = _recipe_tree(tmp_path)
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
+    (recipe / "checks.toml.example").write_text(
+        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+    )
+    paths = get_paths()
+    paths.ensure()
+    paths.check_registry_file.write_text('[check]\ndemo_ftmon_https = "oops"\n')
+    paths.check_registry_file.chmod(0o600)
+
+    with pytest.raises(InstallError, match="invalid_registry"):
+        merge_recipe_checks(paths, "test-recipe")
+
+
+def test_merge_recipe_checks_leaves_registry_unchanged_on_rejection(tmp_path, monkeypatch):
+    """[EC-06] A rejected merge must not replace the last-good checks registry."""
+    _env(tmp_path, monkeypatch)
+    existing = _executable(tmp_path, "existing_check")
+    recipe = _recipe_tree(tmp_path)
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
+    (recipe / "checks.toml.example").write_text(
+        '[check.demo_ftmon_https]\nargv = ["/nonexistent/check_http"]\nprotocol = "nagios"\n'
+    )
+    paths = get_paths()
+    paths.ensure()
+    before = (
+        f'[check.demo_ftmon_https]\nargv = ["{existing}"]\nprotocol = "nagios"\n'
+    )
+    paths.check_registry_file.write_text(before)
+    paths.check_registry_file.chmod(0o600)
+
+    with pytest.raises(InstallError):
+        merge_recipe_checks(paths, "test-recipe", force=True)
+
+    assert paths.check_registry_file.read_text() == before
+
+
+def test_install_recipe_invalid_monitor_leaves_registry_untouched(tmp_path, monkeypatch):
+    """[XR-02] Monitor validation runs before registry merge for atomic install."""
+    _env(tmp_path, monkeypatch)
+    plugin = _executable(tmp_path)
+    recipe = _recipe_tree(tmp_path)
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
+    (recipe / "checks.toml.example").write_text(
+        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+    )
+    (recipe / "monitor.toml").write_text('schema = 1\n[monitor]\ndescription = "missing name"\n')
+    paths = get_paths()
+    paths.ensure()
+
+    with pytest.raises(InstallError, match="recipe_invalid"):
+        install_recipe(paths, "test-recipe")
+
+    assert not paths.check_registry_file.exists()
 
 
 def test_install_recipe_no_enable_leaves_monitor_disabled(tmp_path, monkeypatch):

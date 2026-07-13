@@ -24,7 +24,8 @@ def masked_system_executable(path: Path, info: os.stat_result) -> bool:
 
 def trusted_owner(path: Path, info: os.stat_result, *, system_executable: bool = False) -> bool:
     uid = info.st_uid
-    if uid in {0, os.getuid()}:
+    # SE-07: trust against the executing identity, not only the real uid.
+    if uid in {0, os.geteuid()}:
         return True
     return system_executable and masked_system_executable(path, info)
 

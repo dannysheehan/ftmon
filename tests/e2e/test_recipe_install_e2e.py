@@ -21,19 +21,13 @@ CHECK_DISK = Path("/usr/lib/nagios/plugins/check_disk")
     not CHECK_DISK.is_file(),
     reason="monitoring-plugins check_disk not installed",
 )
-def test_root_disk_recipe_install_collects_samples_e2e(tmp_path):
+def test_root_disk_recipe_install_collects_samples_e2e(tmp_path, monkeypatch):
     """Recipe install registers authority, enables the monitor, and the daemon samples."""
-    env = {
-        **os.environ,
-        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
-        "FTMON_DATA_DIR": str(tmp_path / "data"),
-        "FTMON_STATE_DIR": str(tmp_path / "state"),
-        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
-        "FTMON_EXTRA_MONITORS": str(EXTRA_MONITORS),
-    }
-    for key, value in env.items():
-        if key.startswith("FTMON_"):
-            os.environ[key] = value
+    monkeypatch.setenv("FTMON_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("FTMON_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("FTMON_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("FTMON_RUNTIME_DIR", str(tmp_path / "run"))
+    monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(EXTRA_MONITORS))
 
     assert main(["recipe", "install", "root-disk"]) == 0
     monitor = tmp_path / "cfg" / "monitors" / "root_disk.toml"
@@ -43,7 +37,7 @@ def test_root_disk_recipe_install_collects_samples_e2e(tmp_path):
     assert "root_disk" in registry.read_text()
 
     harness = DaemonHarness(tmp_path, {}, "firefox-leak-2mb-min")
-    harness.env.update(env)
+    harness.env["FTMON_EXTRA_MONITORS"] = str(EXTRA_MONITORS)
     try:
         harness.start()
         harness.step_until(_has_root_disk_sample, max_steps=40, s=5.0)
