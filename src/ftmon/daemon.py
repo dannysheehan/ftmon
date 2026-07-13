@@ -226,7 +226,6 @@ class DaemonCore:
         stamp = self._check_registry_stamp()
         if not initial and stamp == self._registry_stamp:
             return
-        self._registry_stamp = stamp
         if stamp is None:
             # A missing default registry means no external authority. If a
             # previously valid file disappears, retain it until a valid
@@ -244,6 +243,7 @@ class DaemonCore:
                     message=f"external check registry rejected: {exc.category}",
                 ))
             return
+        self._registry_stamp = stamp
         self.check_registry = registry
         self.external_sampler.set_registry(registry)
 

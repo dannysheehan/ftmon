@@ -27,9 +27,22 @@ The executable used by this recipe is
 
 ## Configure
 
-Merge the `[check.demo_ftmon_https]` table from `checks.toml.example` into the
-administrator-owned check registry, then copy `monitor.toml` into the active
-monitor directory and set `enabled = true`.
+Install the recipe while FTMON is running — no daemon restart:
+
+```sh
+ftmon recipe install http-tls
+```
+
+This merges `[check.demo_ftmon_https]` from `checks.toml.example` into your
+administrator registry, enables `demo_ftmon_https.toml`, and the daemon
+reloads within ~30 seconds. `ftmon check install http-tls` is the same command.
+
+On a fresh desktop host, run `ftmon recipe install http-tls` from a checkout
+or with `FTMON_EXTRA_MONITORS` pointing at the catalogue.
+
+To configure manually instead, merge the `[check.demo_ftmon_https]` table from
+`checks.toml.example` into the administrator-owned check registry, then copy
+`monitor.toml` into the active monitor directory and set `enabled = true`.
 
 The exact argument list uses `--sni` because name-based HTTPS servers can
 reject a handshake when the client omits the TLS server name. `-E` asks the

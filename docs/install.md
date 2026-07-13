@@ -33,7 +33,9 @@ For development, use `uv sync` followed by `uv run ftmon ...`. `ftmon init`
 creates private directories, installs eight built-in monitor definitions (the
 `desktop` profile uses calibrated thresholds documented in
 [docs/tuning-desktop-xps15.md](tuning-desktop-xps15.md)), and writes explicit
-desktop notification settings. For a headless host use
+desktop notification settings. Extra monitors from `extra-monitors/` are
+installed separately with `ftmon recipe install` and never ship inside the
+core package wheel. For a headless host use
 `ftmon init --profile server`; it writes the same ordinary configuration with
 desktop popups disabled. Desktop/user initialization also creates an empty,
 private `checks.toml` registry for external checks. Profiles only scaffold a

@@ -265,6 +265,15 @@ exact argv in `checks.toml`; the monitor maps only the performance labels it is
 prepared to store. Start with [External checks](external-checks.md), including
 its privilege, credential and third-party licence guidance.
 
+Curated recipes from `extra-monitors/` install with:
+
+```sh
+ftmon recipe install http-tls
+```
+
+The daemon picks up the new monitor and check alias within ~30 seconds — no
+restart required.
+
 ## 8. Notifications & quiet hours
 
 Notifications are deliberately short; depth lives in `ftmon incident <id>` and

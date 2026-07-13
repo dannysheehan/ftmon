@@ -122,7 +122,7 @@ class TestInit:
             core.conn.close()
 
     def test_init_installs_builtin_monitors(self, tmp_path, monkeypatch, capsys):
-        """[FS-02] init installs 8 builtin *.toml files from design/builtins."""
+        """[FS-02] desktop init installs eight profile monitors."""
         setup_env(tmp_path, monkeypatch)
         rc = main(["init"])
         assert rc == 0
@@ -130,16 +130,14 @@ class TestInit:
         monitors_dir = tmp_path / "cfg" / "monitors"
         toml_files = sorted(monitors_dir.glob("*.toml"))
 
-        # Should have 8 builtin monitors: disk, events, hog, leak, load, net,
-        # self, service
         names = [f.name for f in toml_files]
         assert len(toml_files) == 8, (
-            f"Expected 8 builtins, got {len(toml_files)}: {names}"
+            f"Expected 8 desktop profile monitors, got {len(toml_files)}: {names}"
         )
 
         expected_names = {
             "disk.toml", "events.toml", "hog.toml", "leak.toml",
-            "load.toml", "net.toml", "self.toml", "service.toml"
+            "load.toml", "net.toml", "self.toml", "service.toml",
         }
         actual_names = {f.name for f in toml_files}
         assert actual_names == expected_names

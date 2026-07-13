@@ -14,7 +14,48 @@ itself command-execution authority (EC-01, SE-07).
 ## Register a check
 
 Desktop installations use `~/.config/ftmon/checks.toml`, created as a private
-empty registry by `ftmon init`:
+empty registry by `ftmon init`. The file must be mode `0600` (owner read/write
+only); group-writable registries are rejected.
+
+### Install a curated recipe
+
+Reviewed integrations under `extra-monitors/` ship with a tested monitor
+definition and `checks.toml.example`. Install one without restarting the
+daemon:
+
+```sh
+sudo apt install monitoring-plugins   # when the recipe uses check_http
+ftmon recipe install http-tls
+ftmon check
+```
+
+`ftmon check install http-tls` is an equivalent alias. The command merges the
+recipe's check alias into `checks.toml`, writes the monitor TOML into
+`monitors/` with `enabled = true`, and the daemon rescans within ~30 seconds
+(PM-04). Use `--no-enable` to register authority without turning the monitor
+on, or `--force` to replace an existing alias or monitor file.
+
+Recipes are **not** bundled into the FTMON wheel. From a git checkout,
+`ftmon recipe install http-tls` discovers `extra-monitors/` automatically.
+Otherwise set a catalogue root once:
+
+```sh
+export FTMON_EXTRA_MONITORS=/path/to/ftmon/extra-monitors
+ftmon recipe install http-tls
+```
+
+You can also pass the recipe directory directly:
+
+```sh
+ftmon recipe install /path/to/extra-monitors/http-tls
+```
+
+Adding a new recipe is adding a directory under that catalogue — no changes to
+`pyproject.toml` or the core package.
+
+### Manual registration
+
+You can also merge a recipe by hand:
 
 ```toml
 [check.website_https]
@@ -33,9 +74,12 @@ must be root-owned mode 0755; the file must be root-owned, group `ftmon`, mode
 
 Every alias contains an explicit argument vector, not a shell command. The
 first argument must be an absolute, regular, executable path owned by root or
-the FTMON service user and not writable by group or other users. Symlinks and
-executables under FTMON's writable data, state or runtime directories are
-rejected. Timeouts range from 1 to 30 seconds and default to 10 seconds.
+the FTMON service user and not writable by group or other users. Under a user
+systemd unit with `NoNewPrivileges=yes`, distro plugins under `/usr/` may
+report the overflow `nobody` uid instead of root; FTMON accepts those system
+paths when they remain non-writable. Symlinks and executables under FTMON's
+writable data, state or runtime directories are rejected. Timeouts range from
+1 to 30 seconds and default to 10 seconds.
 
 After editing either file, validate without executing a check:
 

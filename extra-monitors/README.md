@@ -48,6 +48,10 @@ placeholder. Keep commands in `checks.toml.example`, never in `monitor.toml`.
 Include the output fixture that taught you each mapping, especially labels and
 units used by Trends.
 
+No `pyproject.toml` or package-data edits are required. Recipes live only under
+`extra-monitors/` (or another directory named in `FTMON_EXTRA_MONITORS`) and are
+installed on a host with `ftmon recipe install <id>`.
+
 Run:
 
 ```sh
