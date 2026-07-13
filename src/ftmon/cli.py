@@ -670,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
     - check [file]: validate definitions
     - status: daemon status (exit code 0/1/2 per CL-04)
     - demo build: atomically create deterministic synthetic demonstration data
-    - daemon, mcp, web, top, query, incident: mostly implemented; top/query/incident stub
+    - daemon, mcp, web: run services; top, query, incident: stubs (return 2)
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     install_rc = _dispatch_check_install(argv)
