@@ -1,8 +1,8 @@
 """Command-line interface (CL-01..05).
 
-Entry point: main(argv). Subcommands: version, init, check, status, monitors,
-demo build, and stubs for top/query/incident. All read paths work with daemon
-down (PM-01). Every subcommand that produces lists supports --json (CL-03).
+Entry point: main(argv). Implements version/init/check/status plus list commands (incidents/events/monitors),
+monitor management (monitor) and maintenance (doctor/baseline/demo); top/query/incident remain stubs.
+All read paths work with daemon down (PM-01). Every list subcommand supports --json (CL-03).
 Status exit codes: 0 all-clear, 1 warnings, 2 errors+ (CL-04).
 """
 
