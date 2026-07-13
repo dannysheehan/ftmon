@@ -325,6 +325,44 @@ class TestStatus:
             pytest.fail(f"status --json did not output valid JSON: {captured.out}")
 
 
+class TestMonitors:
+    """[CL-01][CL-03] ftmon monitors subcommand."""
+
+    def test_monitors_lists_enabled_and_draft_states(self, tmp_path, monkeypatch, capsys):
+        """Enabled monitors, drafts, and config errors share one listing."""
+        setup_env(tmp_path, monkeypatch)
+        main(["init"])
+        capsys.readouterr()
+        drafts = tmp_path / "cfg" / "monitors" / "drafts"
+        drafts.mkdir(exist_ok=True)
+        (drafts / "pending.toml").write_text(
+            'schema = 1\n[monitor]\nname = "pending"\n'
+            'description = "draft monitor"\nversion = 1\nenabled = false\n'
+            'platforms = ["linux"]\ninterval = "60s"\nsource = "process"\n'
+        )
+        (tmp_path / "cfg" / "monitors" / "broken.toml").write_text("not toml [[")
+        rc = main(["monitors"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "leak" in out
+        assert "enabled" in out
+        assert "pending" in out
+        assert "draft" in out
+        assert "broken" in out
+        assert "config_error" in out
+
+    def test_monitors_json_matches_shared_catalog_shape(self, tmp_path, monkeypatch, capsys):
+        """[CL-03] --json uses the same shape as MCP list_monitors."""
+        setup_env(tmp_path, monkeypatch)
+        main(["init"])
+        capsys.readouterr()
+        assert main(["monitors", "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert "tz" in payload
+        assert any(row["name"] == "leak" and row["state"] == "enabled"
+                   for row in payload["monitors"])
+
+
 class TestNotImplemented:
     """[CL-01] Stub subcommands return 2."""
 
@@ -339,7 +377,6 @@ class TestNotImplemented:
         [
             "top",
             "query",
-            "monitors",
         ]
     )
     def test_not_implemented_commands(self, cmd, capsys):

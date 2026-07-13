@@ -16,12 +16,20 @@ from __future__ import annotations
 import re
 from collections.abc import Set
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from ftmon.definitions import loader
 from ftmon.paths import Paths, atomic_write, reject_symlink
 
-__all__ = ["ManageError", "write_draft", "approve_draft", "delete_draft", "set_enabled"]
+__all__ = [
+    "ManageError",
+    "write_draft",
+    "approve_draft",
+    "delete_draft",
+    "set_enabled",
+    "list_monitors",
+]
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,58 @@ class ManageError(Exception):
 
     def __str__(self) -> str:
         return f"{self.code}: {self.message}"
+
+
+def _response_tz(now: float) -> str:
+    """Host zone name for list responses (MC-02/CL-03)."""
+    try:
+        return Path("/etc/timezone").read_text().strip()
+    except OSError:
+        return str(datetime.fromtimestamp(now).astimezone().tzinfo)
+
+
+def list_monitors(paths: Paths, *, now: float) -> dict:
+    """Return enabled, disabled, draft, and config_error monitors (CL-03, MC-01)."""
+    out: list[dict] = []
+    defs, errors = loader.load_dir(
+        paths.monitors_dir,
+        actions_dir=paths.actions_dir,
+        require_actions=True,
+    )
+    for mdef in defs:
+        out.append({
+            "name": mdef.name,
+            "state": "enabled" if mdef.enabled else "disabled",
+            "source": mdef.source,
+            "description": mdef.description,
+            "version": mdef.version,
+            "trends": [
+                {"id": profile.id, "kind": profile.kind, "title": profile.title}
+                for profile in mdef.trends
+            ],
+        })
+    for path, err in errors:
+        out.append({
+            "name": Path(path).stem,
+            "state": "config_error",
+            "error": str(err)[:300],
+        })
+    if paths.drafts_dir.exists():
+        ddefs, derr = loader.load_dir(paths.drafts_dir)
+        for mdef in ddefs:
+            out.append({
+                "name": mdef.name,
+                "state": "draft",
+                "source": mdef.source,
+                "description": mdef.description,
+            })
+        for path, err in derr:
+            out.append({
+                "name": Path(path).stem,
+                "state": "draft_invalid",
+                "error": str(err)[:300],
+            })
+    return {"tz": _response_tz(now), "monitors": out}
 
 
 def _validate_text(
