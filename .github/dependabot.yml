@@ -1,0 +1,19 @@
+# Weekly version bumps for the Python lockfile and GitHub Actions pins.
+# Security updates are enabled separately via Dependabot alerts.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
