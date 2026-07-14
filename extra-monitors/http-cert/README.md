@@ -8,7 +8,7 @@ looks fine on availability probes until the leaf cert is past its notAfter.
 so FTMON can confirm warning/critical windows without coupling to HTTP
 latency checks.
 
-This is a **separate** recipe from [http-tls](../http-tls/). With Monitoring
+This is a **separate** recipe from `http-tls`. With Monitoring
 Plugins 2.3.5, combining `-C` and `--continue-after-certificate` prints the
 certificate result on the first line and HTTP perfdata on the next. FTMON
 keeps only first-line Nagios output, so a combined argv would silently drop
