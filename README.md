@@ -121,8 +121,40 @@ command or credentials. See [External checks](docs/external-checks.md),
 
 ## Quick start
 
+### Install from PyPI
+
 FTMON requires Python 3.11 or newer and
-[uv](https://docs.astral.sh/uv/).
+[uv](https://docs.astral.sh/uv/). The recommended operator install uses an
+isolated tool environment from
+[PyPI](https://pypi.org/project/ftmon/):
+
+```sh
+uv tool install ftmon
+ftmon init --profile desktop
+ftmon check
+ftmon daemon
+```
+
+In another terminal:
+
+```sh
+ftmon web
+```
+
+Then open <http://127.0.0.1:8420/>. FTMON binds only to loopback and the web UI
+loads no external assets. Prefer `uv tool` or `pipx` over a bare
+`pip install ftmon` into a shared environment. Upgrade, systemd, and server
+account setup are in the
+[installation guide](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md).
+
+For a headless single server, initialize with `--profile server`. This writes
+explicit settings with desktop popups disabled; remote ntfy, webhook, and SMTP
+channels use environment or protected-file credential references and maintain
+independent durable retry state. The operational dashboard stays on loopback;
+reach it remotely with an SSH tunnel rather than exposing the unauthenticated
+UI through a public reverse proxy.
+
+### Develop from a checkout
 
 ```sh
 git clone https://github.com/dannysheehan/ftmon.git
@@ -132,25 +164,6 @@ uv run ftmon init --profile desktop
 uv run ftmon check
 uv run ftmon daemon
 ```
-
-In another terminal, start the local dashboard:
-
-```sh
-uv run ftmon web
-```
-
-Then open <http://127.0.0.1:8420/>. FTMON binds only to loopback and the web UI
-loads no external assets.
-
-For a headless single server, initialize with `--profile server`. This writes
-explicit settings with desktop popups disabled; remote ntfy, webhook, and SMTP
-channels use environment or protected-file credential references and maintain
-independent durable retry state.
-
-For a user-level service or a hardened dedicated `ftmon` server account,
-follow the [installation guide](docs/install.md). The operational dashboard
-stays on loopback; reach it remotely with an SSH tunnel rather than exposing
-the unauthenticated UI through a public reverse proxy.
 
 The live [public demonstration](https://demo.ftmon.org/) is a different,
 GET-only application over deterministic synthetic data. Its reproducible DNS,
@@ -162,8 +175,8 @@ Never expose an operational FTMON database as a demo.
 
 - [User manual](docs/manual.md) — concepts, daily use, tuning, trends, and
   troubleshooting.
-- [Installation guide](docs/install.md) — `uv`, systemd, web, MCP, actions, and
-  backups.
+- [Installation guide](docs/install.md) — `uv`, upgrade, systemd, web, MCP,
+  actions, and backups.
 - [Monitor definition reference](docs/definitions.md) — TOML schema, expression
   language, and examples.
 - [External checks](docs/external-checks.md) — scripts, Nagios plugins,
