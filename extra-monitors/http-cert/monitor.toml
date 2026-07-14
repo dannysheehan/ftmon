@@ -1,0 +1,38 @@
+schema = 1
+
+[monitor]
+name = "exchange_ftmon_cert"
+description = "TLS certificate days remaining for exchange.ftmon.org"
+version = 1
+enabled = false
+platforms = ["linux"]
+interval = "1h"
+source = "external"
+
+[source_options]
+check = "exchange_ftmon_cert"
+entity = "https://exchange.ftmon.org/"
+
+[[rule]]
+id = "plugin-warning"
+group = "certificate"
+when = "plugin_state == 1"
+severity = "warning"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-critical"
+group = "certificate"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-unknown"
+group = "check-health"
+when = "plugin_state == 3"
+severity = "warning"
+confirm_cycles = 2
+message = "Certificate check is unknown: {plugin_message}"

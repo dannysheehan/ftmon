@@ -1,0 +1,1 @@
+check_http: You must specify a server address or host name

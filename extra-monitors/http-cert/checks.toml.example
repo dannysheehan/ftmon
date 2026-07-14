@@ -1,0 +1,14 @@
+[check.exchange_ftmon_cert]
+# Certificate-only form of check_http (-C). Keep separate from the http-tls
+# latency recipe: combining -C with --continue-after-certificate puts the
+# certificate line first and HTTP perfdata on the next line, which FTMON
+# would discard (first-line Nagios only).
+argv = [
+  "/usr/lib/nagios/plugins/check_http",
+  "-H", "exchange.ftmon.org",
+  "-S", "--sni",
+  "-C", "30,14",
+  "-t", "10",
+]
+protocol = "nagios"
+timeout = "12s"
