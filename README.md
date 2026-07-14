@@ -36,44 +36,16 @@ CLI, loopback web dashboard, and stdio MCP server read the same store (and
 perform a few narrow writes such as ack and draft approval). Monitor
 definitions are data validated at load time, not code loaded into the daemon.
 
-```mermaid
-flowchart TB
-    subgraph processes [Separate processes]
-        CLI[CLI]
-        DAEMON[Daemon]
-        WEB[Web UI]
-        MCP[MCP server]
-    end
+- **Processes:** CLI, daemon, loopback web UI, and stdio MCP server.
+- **Daemon path:** scheduler → samplers / external checks → pipeline →
+  incident engine → store writer → SQLite; notifications leave from the daemon.
+- **Readers:** CLI, web UI, and MCP read (and lightly write) the same SQLite
+  store.
 
-    subgraph engine [Monitoring engine]
-        SCHED[Scheduler]
-        PIPE[Pipeline]
-        INC[Incident engine]
-        WRITER[Store writer]
-    end
-
-    subgraph io [I/O adapters]
-        SRC[Samplers and event sources]
-        CHK[External checks]
-        STORE[(SQLite)]
-        NOTIFY[Notifications]
-    end
-
-    CLI --> STORE
-    WEB --> STORE
-    MCP --> STORE
-    DAEMON --> SCHED
-    SCHED --> SRC
-    SCHED --> CHK
-    SCHED --> PIPE
-    PIPE --> INC
-    INC --> WRITER
-    WRITER --> STORE
-    DAEMON --> NOTIFY
-```
-
-The web UI listens on loopback only; MCP uses stdio. For design detail and
-layering rules, see [DESIGN.md](DESIGN.md).
+The web UI listens on loopback only; MCP uses stdio. PyPI's Markdown renderer
+does not support Mermaid, so the flowchart lives in
+[DESIGN.md](https://github.com/dannysheehan/ftmon/blob/main/DESIGN.md#process-overview)
+(rendered on GitHub). For packaging layering rules, see the same document.
 
 ## Why FTMON?
 

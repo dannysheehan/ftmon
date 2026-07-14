@@ -13,6 +13,47 @@ Design-phase artifacts:
 
 `TESTPLAN.md` and per-milestone work packages are the next phase and build on §16.
 
+## Process overview
+
+FTMON runs as separate processes on one host. The daemon owns sampling and
+writes; CLI, web, and MCP share the SQLite store:
+
+```mermaid
+flowchart TB
+    subgraph processes [Separate processes]
+        CLI[CLI]
+        DAEMON[Daemon]
+        WEB[Web UI]
+        MCP[MCP server]
+    end
+
+    subgraph engine [Monitoring engine]
+        SCHED[Scheduler]
+        PIPE[Pipeline]
+        INC[Incident engine]
+        WRITER[Store writer]
+    end
+
+    subgraph io [I/O adapters]
+        SRC[Samplers and event sources]
+        CHK[External checks]
+        STORE[(SQLite)]
+        NOTIFY[Notifications]
+    end
+
+    CLI --> STORE
+    WEB --> STORE
+    MCP --> STORE
+    DAEMON --> SCHED
+    SCHED --> SRC
+    SCHED --> CHK
+    SCHED --> PIPE
+    PIPE --> INC
+    INC --> WRITER
+    WRITER --> STORE
+    DAEMON --> NOTIFY
+```
+
 ---
 
 ## 1. Repository and package layout
