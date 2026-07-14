@@ -1,5 +1,6 @@
 # Weekly version bumps for the Python lockfile and GitHub Actions pins.
-# Security updates are enabled separately via Dependabot alerts.
+# Security updates are enabled separately via Dependabot alerts and stay
+# ungrouped so they can be merged promptly.
 version: 2
 updates:
   - package-ecosystem: pip
@@ -9,6 +10,12 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "ftmon"
 
   - package-ecosystem: github-actions
     directory: /
@@ -17,3 +24,8 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    groups:
+      # One weekly PR for all Action pin bumps instead of a spray of majors.
+      github-actions:
+        patterns:
+          - "*"
