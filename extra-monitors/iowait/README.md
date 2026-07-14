@@ -26,6 +26,21 @@ sudo make install
 /usr/lib/nagios/plugins/check_iowait -V
 ```
 
+Upstream's `check_iowait` is a **symlink** to `check_cpu`. FTMON refuses
+symlinked argv[0] (SE-07). Install a regular-file copy that keeps the
+`check_iowait` basename (the plugin selects mode from argv[0]):
+
+```sh
+sudo mkdir -p /usr/local/lib/ftmon
+sudo install -m 0755 /usr/lib/nagios/plugins/check_cpu \
+  /usr/local/lib/ftmon/check_iowait
+/usr/local/lib/ftmon/check_iowait -m -w 20% -c 40% 1 2
+```
+
+On a single-user desktop without sudo for `/usr/local`, copy to a path you own
+(for example `~/.local/lib/ftmon/checks/check_iowait`) and set that absolute
+path as `argv[0]` in `checks.toml` after recipe install.
+
 ## Configure
 
 ```sh
@@ -77,8 +92,10 @@ ftmon doctor
 
 ## Security and permissions
 
-No elevation and no network: the plugin reads `/proc` CPU accounting. Readable
-by any local account.
+No elevation and no network for the check itself: the plugin reads `/proc` CPU
+accounting. The regular-file copy under `/usr/local/lib/ftmon/` should stay
+root-owned and mode `0755` (not group/world-writable). Do not point FTMON at
+the upstream symlink.
 
 ## Upstream and licence
 
