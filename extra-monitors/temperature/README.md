@@ -42,6 +42,13 @@ Defaults warn at **80°C** and go critical at **90°C** for the hottest zone
 (plugin behaviour when `-t` is omitted). Brief turbo spikes are common, so
 warning and critical rules confirm for **three** cycles before notifying.
 
+Separately, a **Trends** growth profile tracks sustained climb: over a **2 h**
+window, if the fitted slope exceeds **8 °C/h** with mostly rising samples,
+FTMON warns (group `thermal-rise`). That catches fan failure / stuck load
+warming while still below the absolute plugin thresholds. Tune
+`rise_celsius_per_h` and `rise_confidence_min` in the monitor TOML; absolute
+°C thresholds stay in `checks.toml` argv.
+
 To pin a stable sensor (package temp, ACPI zone, …), list zones and edit the
 registry argv:
 
