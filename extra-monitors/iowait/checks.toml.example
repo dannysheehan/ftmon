@@ -1,0 +1,13 @@
+[check.iowait]
+# Instantaneous iowait over a 1s sample (delay 1, count 2 ≈ 1s wall time).
+# Thresholds are percent of CPU time spent waiting on I/O, not load average.
+argv = [
+  "/usr/lib/nagios/plugins/check_iowait",
+  "-m",
+  "-w", "20%",
+  "-c", "40%",
+  "1", "2",
+]
+protocol = "nagios"
+# Outer bound above the plugin's ~1s sample window with headroom.
+timeout = "5s"
