@@ -1,0 +1,41 @@
+schema = 1
+
+[recipe]
+id = "sensors"
+title = "Hardware sensors (lm_sensors)"
+summary = "Alert when lm_sensors reports ALARM or FAULT via check_sensors."
+kind = "nagios"
+platforms = ["linux"]
+upstream = "https://www.monitoring-plugins.org/doc/man/check_sensors.html"
+license = "GPL-3.0-or-later"
+status = "real-system-verified"
+privilege = "none"
+network = false
+last_verified_version = "Monitoring Plugins 2.3.5 on Ubuntu 24.04 (Dell XPS 15); 2026-07-14"
+category = "hardware"
+tags = ["fan", "hardware", "lm-sensors", "sensors", "thermal"]
+min_ftmon_version = "2.0.0a1"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = []
+
+[[fixtures]]
+path = "fixtures/warning.txt"
+exit_code = 1
+state = 1
+labels = []
+
+[[fixtures]]
+path = "fixtures/critical.txt"
+exit_code = 2
+state = 2
+labels = []
+
+[[fixtures]]
+path = "fixtures/unknown.txt"
+exit_code = 3
+state = 3
+labels = []

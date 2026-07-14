@@ -1,0 +1,15 @@
+[check.iowait]
+# Upstream installs check_iowait as a symlink to the check_cpu multi-call binary.
+# FTMON rejects symlinked argv[0] (SE-07). Install a regular-file copy whose
+# basename remains check_iowait so the plugin selects iowait mode — see README.
+# Instantaneous iowait over a 1s sample (delay 1, count 2 ≈ 1s wall time).
+argv = [
+  "/usr/local/lib/ftmon/check_iowait",
+  "-m",
+  "-w", "20%",
+  "-c", "40%",
+  "1", "2",
+]
+protocol = "nagios"
+# Outer bound above the plugin's ~1s sample window with headroom.
+timeout = "5s"

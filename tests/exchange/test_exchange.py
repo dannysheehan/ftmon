@@ -39,6 +39,14 @@ def test_exchange_build_is_deterministic_complete_and_no_js_optional(tmp_path):
     build(second)
     assert _files(first) == _files(second)
 
+    expected_ids = sorted(
+        path.name
+        for path in (ROOT / "extra-monitors").iterdir()
+        if path.is_dir()
+        and not path.name.startswith("_")
+        and (path / "recipe.toml").is_file()
+    )
+
     index = (first / "index.html").read_text()
     detail = (first / "recipes/http-tls/index.html").read_text()
     search = json.loads((first / "search-index.v1.json").read_text())
@@ -48,7 +56,7 @@ def test_exchange_build_is_deterministic_complete_and_no_js_optional(tmp_path):
     assert "Monitoring Plugins 2.3.5" in detail
     assert "/usr/lib/nagios/plugins/check_http" in detail
     assert search["schema"] == 1
-    assert [recipe["id"] for recipe in search["recipes"]] == ["http-tls", "root-disk"]
+    assert [recipe["id"] for recipe in search["recipes"]] == expected_ids
     assert (first / "CNAME").read_text() == "exchange.ftmon.org\n"
 
 

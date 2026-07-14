@@ -1,0 +1,41 @@
+schema = 1
+
+[recipe]
+id = "temperature"
+title = "Hardware temperature"
+summary = "Alert when the hottest thermal zone exceeds Celsius thresholds, with temperature history."
+kind = "nagios"
+platforms = ["linux"]
+upstream = "https://github.com/madrisan/nagios-plugins-linux"
+license = "GPL-3.0-or-later"
+status = "real-system-verified"
+privilege = "none"
+network = false
+last_verified_version = "nagios-plugins-linux v35 on Ubuntu 24.04 (Dell XPS 15); 2026-07-14"
+category = "hardware"
+tags = ["cpu", "hardware", "sensors", "temperature", "thermal"]
+min_ftmon_version = "2.0.0a1"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = ["temp"]
+
+[[fixtures]]
+path = "fixtures/warning.txt"
+exit_code = 1
+state = 1
+labels = ["temp"]
+
+[[fixtures]]
+path = "fixtures/critical.txt"
+exit_code = 2
+state = 2
+labels = ["temp"]
+
+[[fixtures]]
+path = "fixtures/unknown.txt"
+exit_code = 3
+state = 3
+labels = []

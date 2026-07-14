@@ -1,0 +1,1 @@
+SENSORS UNKNOWN - command not found (did you install lmsensors?)

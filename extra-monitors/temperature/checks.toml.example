@@ -1,0 +1,10 @@
+[check.temperature]
+# Warn/crit Celsius for the hottest thermal zone (plugin default without -t).
+# Pin a zone with "-t", "<n>" after checking: check_temperature --list
+argv = [
+  "/usr/lib/nagios/plugins/check_temperature",
+  "-w", "80",
+  "-c", "90",
+]
+protocol = "nagios"
+timeout = "10s"

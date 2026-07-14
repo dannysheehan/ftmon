@@ -1,0 +1,41 @@
+schema = 1
+
+[recipe]
+id = "http-cert"
+title = "TLS certificate expiry"
+summary = "Warn when an HTTPS certificate nears expiry via check_http -C."
+kind = "nagios"
+platforms = ["linux"]
+upstream = "https://www.monitoring-plugins.org/doc/man/check_http.html"
+license = "GPL-3.0-or-later with OpenSSL exception"
+status = "real-system-verified"
+privilege = "none"
+network = true
+last_verified_version = "Monitoring Plugins 2.3.5 on Ubuntu 24.04; exchange.ftmon.org; 2026-07-14"
+category = "web"
+tags = ["certificate", "expiry", "https", "tls", "web"]
+min_ftmon_version = "2.0.0a1"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = []
+
+[[fixtures]]
+path = "fixtures/warning.txt"
+exit_code = 1
+state = 1
+labels = []
+
+[[fixtures]]
+path = "fixtures/critical.txt"
+exit_code = 2
+state = 2
+labels = []
+
+[[fixtures]]
+path = "fixtures/unknown.txt"
+exit_code = 3
+state = 3
+labels = []

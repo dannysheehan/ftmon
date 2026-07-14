@@ -1,0 +1,77 @@
+schema = 1
+
+[monitor]
+name = "temperature"
+description = "Hardware temperature via check_temperature (hottest thermal zone)"
+version = 2
+enabled = false
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "temperature"
+entity = "thermal:max"
+
+[[source_options.perfdata]]
+label = "temp"
+metric = "temp_celsius"
+plugin_uom = "C"
+unit = "celsius"
+kind = "gauge"
+
+[parameters]
+rise_celsius_per_h = { value = 8, doc = "Sustained °C/hour climb over 2h before warning (cooling / load)" }
+rise_confidence_min = { value = 0.8, doc = "Required fraction of rising temperature samples in the window" }
+
+[[derived]]
+name = "temp_rate_cph"
+expr = 'slope(temp_celsius, "2h") * 3600'
+
+[[derived]]
+name = "temp_rise_confidence"
+expr = 'monot(temp_celsius, "2h")'
+
+[[rule]]
+id = "plugin-warning"
+group = "thermal"
+when = "plugin_state == 1"
+severity = "warning"
+confirm_cycles = 3
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-critical"
+group = "thermal"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 3
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-unknown"
+group = "check-health"
+when = "plugin_state == 3"
+severity = "warning"
+confirm_cycles = 2
+message = "Temperature check is unknown: {plugin_message}"
+
+[[rule]]
+id = "temp-rising"
+group = "thermal-rise"
+when = "temp_rate_cph > rise_celsius_per_h and temp_rise_confidence >= rise_confidence_min"
+severity = "warning"
+confirm_cycles = 3
+message = "Hottest thermal zone is climbing steadily ({temp_celsius} °C)"
+
+[[trend]]
+id = "temp-rise"
+kind = "growth"
+title = "Temperature rise trend"
+value_metric = "temp_celsius"
+value_unit = "celsius"
+rate_metric = "temp_rate_cph"
+rate_unit = "celsius/hour"
+confidence_metric = "temp_rise_confidence"
+confidence_threshold_param = "rise_confidence_min"
+rate_threshold_params = ["rise_celsius_per_h"]

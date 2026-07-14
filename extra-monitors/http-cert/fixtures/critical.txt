@@ -1,0 +1,1 @@
+CRITICAL - Certificate 'exchange.ftmon.org' expires in 87 day(s) (Sat 10 Oct 2026 04:38:08 AM GMT +0000).
