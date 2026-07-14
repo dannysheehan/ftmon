@@ -62,6 +62,14 @@ manually. In either case, review evidence, privilege, licensing, generated
 Exchange output and tests normally. See `docs/ai-skills.md` for installation
 and the trust model.
 
+## Branch and release workflow
+
+Work on short-lived branches named `feature/`, `fix/`, or `docs/<slug>`, then
+open a pull request into `main`. Direct pushes to `main` are blocked; CI must
+pass; PRs squash-merge. Releases are tag-only: bump the version in both
+`pyproject.toml` and `src/ftmon/__init__.py`, merge to `main`, then push a
+matching `v*` tag so `release.yml` publishes via Trusted Publishing.
+
 ## Style
 
 Python >= 3.11, ruff (line length 100) is the linter and formatter authority.
