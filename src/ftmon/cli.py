@@ -1,8 +1,8 @@
 """Command-line interface (CL-01..05).
 
-Entry point: main(argv). Subcommands: version, init, check, status, demo build, and
-stubs for daemon/mcp/web/top/incidents/etc. All read paths work with daemon
-down (PM-01). Every subcommand that produces lists supports --json (CL-03).
+Entry point: main(argv). Implements version/init/check/status plus list commands (incidents/events/monitors),
+monitor management (monitor) and maintenance (doctor/baseline/demo); top/query/incident remain stubs.
+All read paths work with daemon down (PM-01). Every list subcommand supports --json (CL-03).
 Status exit codes: 0 all-clear, 1 warnings, 2 errors+ (CL-04).
 """
 
@@ -468,6 +468,31 @@ def cmd_events(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_monitors(args: argparse.Namespace) -> int:
+    """List installed monitors and pending drafts (CL-01, CL-03)."""
+    from ftmon.clock import SystemClock
+    from ftmon.definitions.manage import list_monitors
+
+    payload = list_monitors(get_paths(), now=SystemClock().now())
+    if args.json:
+        print(json.dumps(payload))
+        return 0
+    monitors = sorted(payload["monitors"], key=lambda row: row["name"])
+    if not monitors:
+        print("no monitors")
+        return 0
+    for row in monitors:
+        state = row["state"]
+        if state in {"config_error", "draft_invalid"}:
+            detail = row.get("error", "")[:60]
+            print(f"{row['name']:<20} {state:<14} {detail}")
+            continue
+        source = row.get("source", "")
+        description = row.get("description", "")[:50]
+        print(f"{row['name']:<20} {state:<14} {source:<10} {description}")
+    return 0
+
+
 def cmd_monitor(args: argparse.Namespace) -> int:
     """MD-05 lifecycle: approve a draft into monitors/ (PM-06d), or flip a
     monitor's `enabled` line in place. The daemon notices within 30s
@@ -645,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
     - check [file]: validate definitions
     - status: daemon status (exit code 0/1/2 per CL-04)
     - demo build: atomically create deterministic synthetic demonstration data
-    - daemon, mcp, web, top, incidents, etc.: stubs (return 2)
+    - daemon, mcp, web: run services; top, query, incident: stubs (return 2)
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     install_rc = _dispatch_check_install(argv)
@@ -802,9 +827,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # monitors
-    subparsers.add_parser(
+    monitors_parser = subparsers.add_parser(
         "monitors",
-        help="List all monitors"
+        help="List all monitors",
+    )
+    monitors_parser.add_argument(
+        "--json", action="store_true", help="Output JSON",
     )
 
     # monitor
@@ -906,9 +934,7 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     elif args.command == "monitors":
-        print("monitors: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        return cmd_monitors(args)
     elif args.command == "monitor":
         return cmd_monitor(args)
     elif args.command == "recipe":

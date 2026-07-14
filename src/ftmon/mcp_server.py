@@ -416,31 +416,9 @@ class McpApi:
         }
 
     def list_monitors(self) -> dict:
-        now = self._clock.now()
-        out = []
-        defs, errors = loader.load_dir(
-            self._paths.monitors_dir,
-            actions_dir=self._paths.actions_dir,
-            require_actions=True,
-        )
-        for d in defs:
-            out.append({"name": d.name, "state": "enabled" if d.enabled
-                        else "disabled", "source": d.source,
-                        "description": d.description, "version": d.version,
-                        "trends": [{"id": p.id, "kind": p.kind, "title": p.title}
-                                   for p in d.trends]})
-        for path, e in errors:
-            out.append({"name": Path(path).stem, "state": "config_error",
-                        "error": str(e)[:300]})
-        if self._paths.drafts_dir.exists():
-            ddefs, derr = loader.load_dir(self._paths.drafts_dir)
-            for d in ddefs:
-                out.append({"name": d.name, "state": "draft",
-                            "source": d.source, "description": d.description})
-            for path, e in derr:
-                out.append({"name": Path(path).stem, "state": "draft_invalid",
-                            "error": str(e)[:300]})
-        return {"tz": _tz_name(now), "monitors": out}
+        from ftmon.definitions.manage import list_monitors as list_monitor_catalog
+
+        return list_monitor_catalog(self._paths, now=self._clock.now())
 
     def get_monitor(self, name: str) -> dict:
         now = self._clock.now()
