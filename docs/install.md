@@ -18,8 +18,34 @@ export PATH="$HOME/.local/bin:$PATH"
 uv --version
 ```
 
-The public-demo procedure below installs a root-owned copy because system
-deployment must not depend on one administrator's home directory.
+### From PyPI (recommended)
+
+Install the published package into an isolated tool environment, then
+initialize and smoke-check:
+
+```sh
+uv tool install ftmon
+ftmon init --profile desktop
+ftmon check
+```
+
+`pipx install ftmon` is an equivalent isolated installer if you prefer pipx.
+PyPI's project page shows `pip install ftmon` in the sidebar; prefer
+`uv tool` or `pipx` so the CLI is not mixed into a shared environment.
+
+FTMON is published at <https://pypi.org/project/ftmon/>. The current series is
+pre-release; pin explicitly when you need a fixed version (use the version
+shown on PyPI):
+
+```sh
+uv tool install 'ftmon==X.Y.Z'
+```
+
+### From a source checkout
+
+Use a checkout for unreleased commits, packaging work, or the public-demo
+procedure (that path installs a root-owned copy so system deployment does not
+depend on one administrator's home directory):
 
 ```sh
 git clone https://github.com/dannysheehan/ftmon.git
@@ -42,6 +68,48 @@ private `checks.toml` registry for external checks. Profiles only scaffold a
 new `config.toml`—they do not
 become a hidden runtime mode. Running init again preserves existing settings;
 `--force` replaces built-in definitions only (PM-08).
+
+## Upgrade
+
+Upgrading replaces the installed `ftmon` executable. Configuration,
+`checks.toml`, monitor files, and the SQLite database are preserved. Schema
+migrations run automatically the next time a process opens the database
+(VC-01); do not copy a live `ftmon.db` file.
+
+Check the running version, then upgrade from PyPI or from a checkout:
+
+```sh
+ftmon --version
+uv tool upgrade ftmon
+# or, from a git checkout of this repository:
+# uv tool install --force .
+```
+
+Restart the daemon so it loads the new binary. Upgrading the tool does not
+reload a running process:
+
+```sh
+# desktop / workstation user service
+systemctl --user restart ftmon.service
+systemctl --user status ftmon.service
+
+# dedicated single-server service
+# sudo systemctl restart ftmon.service
+# sudo systemctl status ftmon.service
+```
+
+Verify with `ftmon --version` and `ftmon doctor`.
+
+Do not re-run `ftmon init` unless you intend to refresh scaffolding.
+`ftmon init --force` reinstalls built-in monitor TOML files only; it does not
+upgrade the package (PM-08, FS-02). Extra-monitor recipes are separate from
+the core wheel: upgrading FTMON does not reinstall recipes under
+`extra-monitors/`. After a release that changes sampling or baseline behaviour,
+`ftmon baseline reset <monitor>` is available when learned normals are no
+longer meaningful — see the [user manual](manual.md).
+
+The synthetic demo website has its own update and rollback procedure under
+[Publish the synthetic demo website](#publish-the-synthetic-demo-website).
 
 ## Notification credentials
 
@@ -137,7 +205,8 @@ allow-list need one private, predictable ownership boundary (PM-09, DO-06).
 sudo useradd --system --create-home --home-dir /var/lib/ftmon \
   --shell /usr/sbin/nologin ftmon
 sudo env UV_TOOL_DIR=/opt/ftmon UV_TOOL_BIN_DIR=/usr/local/bin \
-  uv tool install .
+  uv tool install ftmon
+# From a checkout instead of PyPI: uv tool install .
 sudo -u ftmon -H /usr/local/bin/ftmon init --profile server
 sudo install -d -o root -g ftmon -m 0755 /etc/ftmon
 printf '[check]\n' | sudo install -o root -g ftmon -m 0640 /dev/stdin \

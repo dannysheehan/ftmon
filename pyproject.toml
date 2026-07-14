@@ -39,6 +39,7 @@ Repository = "https://github.com/dannysheehan/ftmon"
 Issues = "https://github.com/dannysheehan/ftmon/issues"
 Demo = "https://demo.ftmon.org/"
 Documentation = "https://github.com/dannysheehan/ftmon/blob/main/docs/manual.md"
+Install = "https://github.com/dannysheehan/ftmon/blob/main/docs/install.md"
 
 [dependency-groups]
 dev = [
