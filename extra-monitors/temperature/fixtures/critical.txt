@@ -1,0 +1,1 @@
+temperature CRITICAL - +95.0°C (thermal zone: 10 [Virtual device], type: "SEN2") | temp=95C
