@@ -1,0 +1,6 @@
+[check.sensors]
+# lm_sensors ALARM/FAULT probe from Monitoring Plugins. No numeric thresholds —
+# the plugin grades hardware status text from `sensors`.
+argv = ["/usr/lib/nagios/plugins/check_sensors"]
+protocol = "nagios"
+timeout = "10s"
