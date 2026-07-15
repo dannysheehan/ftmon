@@ -145,6 +145,14 @@ Key invariants:
   `test_daemon_rejects_second_instance_pm_02`.
 - Commit subjects are concise and imperative, often milestone-prefixed
   (`M9: add bounded external checks`, `Docs: ...`).
+- `main` is protected (squash-merge PRs only, CI required): work on
+  `feature/…`, `fix/…`, `docs/…`, `chore/…` branches; never push to `main`.
+- GitHub issues are the canonical backlog; `BACKLOG.md` is uncommitted local
+  scratch that gets promoted. Issue bodies state problem, direction, likely
+  touchpoints, and SPEC IDs; roadmap items get `enhancement` + `backlog`
+  (drop `backlog` on starting work; PRs say `Closes #N`). Never open public
+  issues for undisclosed vulnerabilities — `.github/SECURITY.md`. Details in
+  `CONTRIBUTING.md` and `docs/github-hygiene.md`.
 - `dist/`, `.venv/`, caches, `ftmon-legacy/`, `soak/`, and `tuning/evidence/`
   are gitignored; don't commit build artifacts, evidence captures, or the
   legacy tree.
