@@ -145,9 +145,26 @@ Key invariants:
   `test_daemon_rejects_second_instance_pm_02`.
 - Commit subjects are concise and imperative, often milestone-prefixed
   (`M9: add bounded external checks`, `Docs: ...`).
+- `main` is protected (squash-merge PRs only, CI required): work on
+  `feature/…`, `fix/…`, `docs/…`, `chore/…` branches; never push to `main`.
+- GitHub issues are the canonical backlog; `BACKLOG.md` is uncommitted local
+  scratch that gets promoted. Issue bodies state problem, direction, likely
+  touchpoints, and SPEC IDs; roadmap items get `enhancement` + `backlog`
+  (drop `backlog` on starting work; PRs say `Closes #N`). Never open public
+  issues for undisclosed vulnerabilities — `.github/SECURITY.md`. Details in
+  `CONTRIBUTING.md` and `docs/github-hygiene.md`.
 - `dist/`, `.venv/`, caches, `ftmon-legacy/`, `soak/`, and `tuning/evidence/`
   are gitignored; don't commit build artifacts, evidence captures, or the
   legacy tree.
 - Review artifacts and audit records (`docs/REVIEW-3.md`,
   `docs/drift-audit-m10.md`) are maintainer-facing records per DO-09, not
   user documentation — don't cite them from the manual or README.
+- **Never run `sqlite3` (or any direct SQL client) against the live FTMON
+  database while the daemon is running.** Connections set a 5 s
+  `busy_timeout`, but an external write transaction that outlives it makes
+  the writer's `BEGIN IMMEDIATE` in `commit_tick` raise
+  `OperationalError("database is locked")`, and the daemon currently dies
+  with a traceback instead of recovering (#23) — the web UI just shows
+  "data is stale" until someone restarts it. For inspection, stop the
+  daemon first or open the DB read-only (`file:...?mode=ro`); for cleanup,
+  stop the daemon.

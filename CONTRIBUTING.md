@@ -70,6 +70,30 @@ pass; PRs squash-merge. Releases are tag-only: bump the version in both
 `pyproject.toml` and `src/ftmon/__init__.py`, merge to `main`, then push a
 matching `v*` tag so `release.yml` publishes via Trusted Publishing.
 
+## Issues
+
+GitHub issues are the canonical backlog for bugs and feature ideas. A local
+`BACKLOG.md` (if you keep one) is scratch space only — promote ideas to issues
+when they should be tracked.
+
+| Label | Use |
+| ----- | --- |
+| `enhancement` | New feature or product improvement |
+| `backlog` | On the roadmap but not scheduled yet |
+| `bug` | Something broken |
+| `documentation` | Docs-only work |
+| `dependencies` | Dependabot version bumps (do not add manually) |
+
+- **Security:** do not open a public issue for undisclosed vulnerabilities.
+  Follow [`.github/SECURITY.md`](.github/SECURITY.md).
+- **Features:** open an issue with problem, proposed direction, and any SPEC
+  IDs if known. Roadmap items get `enhancement` and `backlog`.
+- **Pull requests:** link issues with `Closes #N` (or `Fixes #N`) when the PR
+  completes the work. Remove the `backlog` label when you start implementation.
+
+Maintainer triage habits (labels, promotion from local notes) are in
+[`docs/github-hygiene.md`](docs/github-hygiene.md).
+
 ## Style
 
 Python >= 3.11, ruff (line length 100) is the linter and formatter authority.

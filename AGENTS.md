@@ -41,7 +41,7 @@ Add pytest coverage for all v2 behavior. Name tests by behavior, and include req
 
 This repository has no existing commit history, so no local convention is established. Use concise, imperative commit subjects such as `Add daemon lock handling` or `Document legacy config validation`.
 
-Pull requests should describe the change, reference affected `SPEC.md` requirement IDs, and list validation commands run. Include screenshots only for web UI changes.
+Pull requests should describe the change, reference affected `SPEC.md` requirement IDs, and list validation commands run. Include screenshots only for web UI changes. Link closing issues with `Closes #N` when applicable; see **Issues** above.
 
 ## Security & Configuration Tips
 
