@@ -274,6 +274,17 @@ ftmon recipe install http-tls
 The daemon picks up the new monitor and check alias within ~30 seconds — no
 restart required.
 
+### Don't poke the live database
+
+The FTMON database (`~/.local/share/ftmon/ftmon.db`) is written by the
+daemon on every tick. An external `sqlite3` session (or any direct SQL
+client, or an AI assistant offering to "just delete those rows") that
+writes to it can hold the write lock longer than the daemon tolerates;
+the daemon then crashes with a `database is locked` error and stays down
+until restarted. For inspection, open the database read-only
+(`sqlite3 "file:$HOME/.local/share/ftmon/ftmon.db?mode=ro"`) or stop the
+daemon first; for any cleanup or bulk changes, always stop the daemon.
+
 ## 8. Notifications & quiet hours
 
 Notifications are deliberately short; depth lives in `ftmon incident <id>` and
