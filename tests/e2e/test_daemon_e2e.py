@@ -322,3 +322,31 @@ def test_sighup_reloads_without_exit_pm_11(harness):
     # new load hash here can only be the SIGHUP-driven rescan.
     h.step_until(lambda: len(load_hashes() - before) == 1, max_steps=4)
     assert h.proc.poll() is None
+
+
+def test_monitor_rescan_reloads_daemon_cl_07(harness):
+    """[CL-07][PM-11] `ftmon monitor rescan` finds the daemon via the pid in
+    the PM-02 lock file and triggers the reload well inside the PM-04 window."""
+    h = harness
+    h.start()
+    h.step()  # first tick performs and commits the initial load
+
+    mdef = h.paths.monitors_dir / "leak.toml"
+    mdef.write_text(mdef.read_text().replace("version = 1", "version = 2"))
+
+    def load_hashes():
+        conn = _db(h)
+        try:
+            return {r["hash"] for r in conn.execute(
+                "SELECT hash FROM monitor_loads WHERE monitor = 'leak'")}
+        finally:
+            conn.close()
+
+    before = load_hashes()
+    rescan = subprocess.run(
+        [sys.executable, "-m", "ftmon", "monitor", "rescan"],
+        env=h.env, capture_output=True, text=True)
+    assert rescan.returncode == 0, rescan.stderr
+    assert str(h.proc.pid) in rescan.stdout  # signalled the real daemon pid
+    h.step_until(lambda: len(load_hashes() - before) == 1, max_steps=4)
+    assert h.proc.poll() is None

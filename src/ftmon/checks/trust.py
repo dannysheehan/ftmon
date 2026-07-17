@@ -30,21 +30,45 @@ def trusted_owner(path: Path, info: os.stat_result, *, system_executable: bool =
     return system_executable and masked_system_executable(path, info)
 
 
-def trusted_executable_path(executable: str) -> bool:
-    """Reject symlinks, non-regular files, and untrusted ownership."""
+def trust_failures(executable: str) -> list[str]:
+    """Every failed trust condition, by name (CL-08 diagnostics).
+
+    Single evaluator behind trusted_executable_path(): a separate explain
+    path would inevitably diverge from the enforcement path, which is the
+    exact failure mode this module exists to prevent.
+    """
     path = Path(executable)
+    if not path.is_absolute():
+        return [f"not_absolute: {executable!r} must be an absolute path"]
     try:
         info = path.lstat()
         resolved = path.resolve(strict=True)
         resolved_info = resolved.lstat()
-    except (OSError, RuntimeError):
-        return False
-    return (
-        path.is_absolute()
-        and not stat.S_ISLNK(info.st_mode)
-        and stat.S_ISREG(info.st_mode)
-        and resolved == path
-        and trusted_owner(resolved, resolved_info, system_executable=True)
-        and not resolved_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-        and bool(resolved_info.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
-    )
+    except (OSError, RuntimeError) as exc:
+        return [f"unreadable: cannot stat {executable!r} ({exc.__class__.__name__})"]
+    failures: list[str] = []
+    if stat.S_ISLNK(info.st_mode):
+        failures.append("symlink: the executable itself must not be a symlink")
+    elif not stat.S_ISREG(info.st_mode):
+        failures.append("not_regular_file: must be a regular file")
+    if resolved != path and not stat.S_ISLNK(info.st_mode):
+        failures.append(
+            f"symlinked_parent: path traverses a symlink (resolves to {resolved})"
+        )
+    if not trusted_owner(resolved, resolved_info, system_executable=True):
+        failures.append(
+            f"untrusted_owner: uid {resolved_info.st_uid} is neither root nor "
+            f"the executing uid {os.geteuid()}"
+        )
+    if resolved_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        failures.append(
+            f"group_or_other_writable: mode {stat.filemode(resolved_info.st_mode)}"
+        )
+    if not resolved_info.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        failures.append(f"not_executable: mode {stat.filemode(resolved_info.st_mode)}")
+    return failures
+
+
+def trusted_executable_path(executable: str) -> bool:
+    """Reject symlinks, non-regular files, and untrusted ownership."""
+    return not trust_failures(executable)

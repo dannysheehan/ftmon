@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.17 — every design element
+Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.18 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -847,7 +847,7 @@ Tier choice: `end > now−48h and span ≤ 12h` → raw; `span ≤ 30d` → 5m; 
 
 ---
 
-## 13. MCP server (`mcp_server.py`, MC-01..05)
+## 13. MCP server (`mcp_server.py`, MC-01..06)
 
 FastMCP over stdio; every tool = thin wrapper on `Query`/`SmallWrites`/`definitions`. Parameter schemas (FROZEN; `range` = duration string or `[iso, iso]`):
 
@@ -861,8 +861,10 @@ FastMCP over stdio; every tool = thin wrapper on `Query`/`SmallWrites`/`definiti
 | list_incidents | — ; state, range, monitor | incidents[] summary |
 | explain_incident | **id** | rule text+params, series ±window, events ±10 m, history[] |
 | list_monitors / get_monitor | — / **name** | defs + state + validation + load history |
+| monitor_paths | — | {config_dir, monitors_dir, drafts_dir, actions_dir, check_registry, data_dir, db_file, state_dir} — mirrors `ftmon paths --json` (MC-06/CL-06) |
+| diagnose_monitor | **name** | {found(enabled\|disabled\|draft\|missing), path, valid, errors[], last_load{hash, age_s}, check{alias, registered, executable_trusted}} — booleans/categories only, never argv (SE-07) |
 | validate_monitor | **toml_text** | {ok} \| {errors[]: {path, code, message, hint}} |
-| define_monitor | **toml_text** | {draft_path, approval_hint} \| errors as above |
+| define_monitor | **toml_text** | {draft_path, approval_hint, next_steps[] {via(cli\|web), action}} \| errors as above |
 | ack_incident | **id**; note | {ok, incident} |
 
 Errors: `{code, message, hint}` (MC-04) with codes `invalid_params, validation_failed, not_found, name_exists, daemon_stale`. Resource (MC-05): `ftmon://docs/definitions` → `docs/definitions.md`.

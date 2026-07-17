@@ -1,8 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.17** — v0.17 makes SIGHUP a reload request instead of the
-fatal default disposition (PM-11). v0.16 requires the daemon to survive a tick
-write lock timeout instead of exiting (PM-10). v0.15 made document-version
+Status: **DRAFT v0.18** — v0.18 adds authoring discoverability: `ftmon paths`,
+`ftmon monitor rescan`, `ftmon check trust` (CL-06..08) and the read-only MCP
+tools `monitor_paths`/`diagnose_monitor` (MC-06). v0.17 makes SIGHUP a reload
+request instead of the fatal default disposition (PM-11). v0.16 requires the
+daemon to survive a tick write lock timeout instead of exiting (PM-10). v0.15
+made document-version
 coherence a tested invariant (TS-19) and opened OPEN-8 (container monitoring:
 core source vs recipe, to be resolved during the TS-17 soak window). The v0.12
 release-readiness gates (TS-17 soak, TS-18 zero-pending traceability, DO-09
@@ -814,8 +817,10 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 | `list_incidents` | (state?, range?, monitor?) | incidents/episodes with summaries |
 | `explain_incident` | (id) | rule text + parameter values, evaluation series around opening, related events ±10 m, full history (DM-12) |
 | `list_monitors` / `get_monitor` | (name) | definitions incl. drafts (marked), validation status, load history (PM-07) |
+| `monitor_paths` | () | resolved filesystem layout an author needs (monitors, drafts, actions, check registry, db) — the JSON form of `ftmon paths` (CL-06) |
+| `diagnose_monitor` | (name) | where the file lives (enabled/draft/missing), validation errors, enabled state, last load hash and age, and for external monitors whether the alias is registered and its executable trusted (no argv exposure, SE-07) |
 | `validate_monitor` ✎(no writes) | (toml_text) | full validation, returns errors or normalized form |
-| `define_monitor` ✎ | (toml_text) | validate → write to `drafts/` (PM-06) → return "pending approval: run `ftmon monitor approve <name>` or use web UI" |
+| `define_monitor` ✎ | (toml_text) | validate → write to `drafts/` (PM-06) → return draft path plus structured `next_steps` (CLI approve command and web UI) |
 | `ack_incident` ✎ | (id, note?) | sets acked with `by = "mcp"`, note into history |
 
 - **MC-01** The tool list above is the complete v1 tool surface; names and required parameters are frozen by this spec (exact JSON schemas in the design doc). Every tool answers within 2 s on a DM-05-sized database.
@@ -823,6 +828,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 - **MC-03** `define_monitor` MUST refuse (not silently overwrite) a name that already exists as enabled/disabled; drafts may be overwritten (iterating on a draft is the normal flow).
 - **MC-04** Error responses are structured (`code`, `message`, `hint`) — a less capable model must be able to self-correct from validation errors (MD-01's quality bar applies).
 - **MC-05** The server exposes one MCP **resource**: the monitor-definition guide (DO-01) — so a model authoring a definition can pull the reference without leaving the session. The full SPEC is not exposed (operational noise).
+- **MC-06** `monitor_paths` and `diagnose_monitor` are strictly read-only diagnostics: they answer "where do files go?" and "why isn't this monitor running?" in one round-trip each. `diagnose_monitor` may surface validation errors verbatim (already exposed by `get_monitor`) but MUST NOT expose registry argv or credentials — trust status is reported as booleans and stable categories only (SE-07). Write paths remain exactly drafts (`define_monitor`) and `ack_incident`; approval stays a human action (MD-05).
 
 ---
 
@@ -902,11 +908,14 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 ## 15. CLI
 
-- **CL-01** Single entry point `ftmon` with subcommands: `daemon`, `mcp`, `web`, `init`, `status`, `top`, `incidents`, `incident <id>`, `ack <id>`, `events`, `query`, `monitors`, `monitor approve|enable|disable <name>`, `check [file]`, `baseline reset`, `doctor`, `version`. All read paths work with the daemon down (PM-01).
+- **CL-01** Single entry point `ftmon` with subcommands: `daemon`, `mcp`, `web`, `init`, `status`, `top`, `incidents`, `incident <id>`, `ack <id>`, `events`, `query`, `monitors`, `monitor approve|enable|disable|rescan [name]`, `check [file]`, `check trust <path>`, `paths`, `baseline reset`, `doctor`, `version`. All read paths work with the daemon down (PM-01).
 - **CL-02** `ftmon check` validates all definitions (or one file) and exits non-zero on any error — the successor of legacy `-c`, and the pre-commit/CI hook for definitions.
 - **CL-03** Every list-producing subcommand supports `--json` (stable, documented shape shared with MCP responses) — the CLI is also scripting surface.
 - **CL-04** `ftmon status` is the legacy `-z` successor: one screen, exit code 0/1/2 mapping to (all-clear / warnings / errors+) for scripting.
 - **CL-05** `ftmon doctor`: runs `PRAGMA quick_check` (full `integrity_check` with `--deep`), WAL checkpoint, reports DB/table sizes, orphaned rows, cursor ages, and config errors; `ftmon doctor --backup <path>` produces a consistent snapshot via the SQLite backup API. Naive file-copy of the live WAL database is documented as unsupported (VC-03). Exit non-zero on any problem found.
+- **CL-06** `ftmon paths` prints the resolved filesystem layout an author or operator needs — config dir, monitors dir, drafts dir, actions dir, check registry file, data dir, database file, state dir, log and notifications files, runtime dir and lock file — honoring the `FTMON_*` overrides, with `--json` (CL-03). Works with the daemon down (PM-01); prints paths only, never file contents.
+- **CL-07** `ftmon monitor rescan` requests an immediate PM-11 reload from the running daemon instead of waiting out the PM-04 window, using the daemon pid recorded in the PM-02 lock file. When no daemon is running (lock not held), it exits non-zero with a clear message rather than signalling a stale pid.
+- **CL-08** `ftmon check trust <path>` evaluates the shared executable trust policy (EC-01/SE-07 — the same predicate the registry and runner enforce) and reports **every** failed condition by name (absolute path, symlink-free, regular file, trusted owner, no group/other write, executable), exiting 0 when trusted and 1 otherwise. It never executes the candidate.
 
 ---
 
@@ -1118,6 +1127,17 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.18 (2026-07-17)** — authoring discoverability (issue #25). An AI agent
+adding a monitor from the docs alone guessed wrong four times: wrong drafts
+directory, SIGHUP (then fatal), a double-applied perfdata scale, and no way
+to ask "why isn't this monitor running?". CL-06 (`ftmon paths`), CL-07
+(`ftmon monitor rescan`, riding PM-11), CL-08 (`ftmon check trust`, the
+EC-01/SE-07 predicate with reasons) and MC-06 (`monitor_paths`,
+`diagnose_monitor`) make the layout, reload, trust, and load-state questions
+answerable in one step; `define_monitor` returns structured `next_steps`.
+No new write authority anywhere (MD-05/EC-01 unchanged). The daemon records
+its pid in the PM-02 lock file to give CL-07 a signalling target.
 
 **v0.17 (2026-07-17)** — SIGHUP reloads instead of killing the daemon
 (issue #24). Only SIGTERM/SIGINT had handlers, so the conventional Unix

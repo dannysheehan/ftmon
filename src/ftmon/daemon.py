@@ -631,6 +631,12 @@ def run(args) -> int:
     except BlockingIOError:
         print("ftmon daemon already running (lock held); exiting", file=sys.stderr)
         return 1
+    # CL-07: `ftmon monitor rescan` signals this pid. The flock, not the pid
+    # text, remains the single-instance authority (PM-02).
+    import os
+
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
 
     clock: Clock
     if getattr(args, "clock", "system") == "controlled":

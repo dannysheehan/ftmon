@@ -452,8 +452,83 @@ class McpApi:
                         "WHERE monitor = ? ORDER BY loaded_ts DESC", (name,))
                 ]  # PM-07
             return entry
-        return _err("not_found", f"no monitor or draft named {name!r}",
-                    "list_monitors shows what exists")
+        return _err("not_found",
+                    f"no {name}.toml in monitors_dir or drafts_dir",
+                    "list_monitors shows what exists; monitor_paths shows "
+                    "where definitions live")
+
+    def monitor_paths(self) -> dict:
+        """MC-06: the JSON form of `ftmon paths` (CL-06) — paths only,
+        never contents or credentials."""
+        p = self._paths
+        return {
+            "config_dir": str(p.config_dir),
+            "config_file": str(p.config_file),
+            "monitors_dir": str(p.monitors_dir),
+            "drafts_dir": str(p.drafts_dir),
+            "actions_dir": str(p.actions_dir),
+            "check_registry": str(p.check_registry_file),
+            "data_dir": str(p.data_dir),
+            "db_file": str(p.db_file),
+            "state_dir": str(p.state_dir),
+        }
+
+    def diagnose_monitor(self, name: str) -> dict:
+        """MC-06: answer "why isn't this monitor running?" in one call:
+        location, validity, load state, and (external) alias trust — as
+        booleans and categories, never registry argv (SE-07)."""
+        now = self._clock.now()
+        out: dict = {"tz": _tz_name(now), "name": name}
+        path = None
+        for found, directory in (("enabled", self._paths.monitors_dir),
+                                 ("draft", self._paths.drafts_dir)):
+            candidate = directory / f"{name}.toml"
+            if candidate.exists():
+                path, out["found"] = candidate, found
+                break
+        if path is None:
+            out["found"] = "missing"
+            out["hint"] = (f"no {name}.toml in monitors_dir or drafts_dir — "
+                           "see monitor_paths for the layout")
+            return out
+        out["path"] = str(path)
+        try:
+            d = loader.load_text(path.read_text())
+            out["valid"] = True
+            if out["found"] == "enabled" and not d.enabled:
+                out["found"] = "disabled"
+        except loader.ValidationError as e:
+            out["valid"] = False
+            out["errors"] = e.errors
+            d = None
+        q = self._query()
+        if q is not None:
+            row = q._conn.execute(
+                "SELECT loaded_ts, hash FROM monitor_loads WHERE monitor = ? "
+                "ORDER BY loaded_ts DESC LIMIT 1", (name,)).fetchone()
+            out["last_load"] = (
+                {"hash": row["hash"], "age_s": round(now - row["loaded_ts"])}
+                if row else None)  # never loaded (PM-07)
+        if d is not None and d.source == "external":
+            alias = d.source_options.get("check")
+            check: dict = {"alias": alias}
+            try:
+                from ftmon.checks.registry import load as load_registry
+                from ftmon.checks.trust import trusted_executable_path
+
+                registry = load_registry(self._paths.check_registry_file,
+                                         paths=self._paths)
+                spec = registry.get(alias)
+                check["registered"] = spec is not None
+                if spec is not None:
+                    check["executable_trusted"] = trusted_executable_path(
+                        spec.argv[0])
+            except (OSError, ValueError) as e:
+                # Registry errors expose only a stable category (SE-07).
+                check["registered"] = False
+                check["registry_error"] = str(e)[:120]
+            out["check"] = check
+        return out
 
     def validate_monitor(self, toml_text: str) -> dict:
         try:
@@ -472,6 +547,13 @@ class McpApi:
             "approval_hint": ("pending approval: run `ftmon monitor approve "
                               f"{draft.stem}` or use the web UI — drafts are "
                               "never loaded by the daemon (MD-05)"),
+            "next_steps": [
+                {"via": "cli",
+                 "action": f"ftmon monitor approve {draft.stem}"},
+                {"via": "web",
+                 "action": f"approve draft {draft.stem!r} on the "
+                           "Monitors page"},
+            ],
         }
 
     def ack_incident(self, id: int, note=None) -> dict:  # noqa: A002
@@ -498,7 +580,8 @@ class McpApi:
 TOOL_NAMES = (  # MC-01: frozen; test_mcp asserts the server exposes exactly these
     "get_status", "query_metrics", "top_consumers", "get_process_history",
     "list_events", "list_incidents", "explain_incident", "list_monitors",
-    "get_monitor", "validate_monitor", "define_monitor", "ack_incident",
+    "get_monitor", "monitor_paths", "diagnose_monitor",  # MC-06 (SPEC v0.18)
+    "validate_monitor", "define_monitor", "ack_incident",
 )
 
 
@@ -542,12 +625,23 @@ def build_server(paths: Paths):
     server.tool(name="get_monitor",
                 description="One definition with validation status and load "
                 "history")(api.get_monitor)
+    server.tool(name="monitor_paths",
+                description="Resolved filesystem layout for authoring: "
+                "monitors, drafts, actions, check registry, database "
+                "(MC-06)")(api.monitor_paths)
+    server.tool(name="diagnose_monitor",
+                description="Why isn't this monitor running? Location, "
+                "validation, load state, and external-alias trust in one "
+                "call")(api.diagnose_monitor)
     server.tool(name="validate_monitor",
                 description="Validate a monitor TOML without writing "
                 "anything")(api.validate_monitor)
     server.tool(name="define_monitor",
-                description="Validate and save a monitor TOML as a draft "
-                "awaiting human approval")(api.define_monitor)
+                description="Validate and save a monitor TOML as a draft. "
+                "Drafts are never loaded by the daemon: a human must approve "
+                "via `ftmon monitor approve <name>` or the web UI Monitors "
+                "page — the response's next_steps repeats both")(
+                api.define_monitor)
     server.tool(name="ack_incident",
                 description="Acknowledge an incident (stops re-notifying, "
                 "keeps watching)")(api.ack_incident)

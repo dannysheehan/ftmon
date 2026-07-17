@@ -153,6 +153,8 @@ Never expose an operational FTMON database as a demo.
   language, and examples.
 - [External checks](https://github.com/dannysheehan/ftmon/blob/main/docs/external-checks.md) — scripts, Nagios plugins,
   performance-data mappings, privileges, and security boundaries.
+- [Writing an external check](https://github.com/dannysheehan/ftmon/blob/main/docs/check-authoring.md) — the executable's
+  contract: location, trust rules, output protocols, worked examples.
 - [Extra monitors](https://github.com/dannysheehan/ftmon/tree/main/extra-monitors) — tested integration recipes for
   separately installed checks.
 - [FTMON Exchange](https://exchange.ftmon.org/) — the generated, searchable

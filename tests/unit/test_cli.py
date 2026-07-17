@@ -440,3 +440,95 @@ class TestUnknownSubcommand:
         except SystemExit:
             # This is expected
             pass
+
+
+class TestPathsCommand:
+    def test_paths_prints_layout_cl_06(self, tmp_path, monkeypatch, capsys):
+        """[CL-06] every author-relevant location, resolved from FTMON_* env."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["paths"]) == 0
+        out = capsys.readouterr().out
+        for key in ("monitors_dir", "drafts_dir", "actions_dir",
+                    "check_registry", "db_file", "state_dir", "lock_file"):
+            assert key in out
+        assert str(tmp_path / "cfg" / "monitors" / "drafts") in out
+
+    def test_paths_json_cl_06(self, tmp_path, monkeypatch, capsys):
+        """[CL-06][CL-03] --json is machine-readable and matches the env."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["paths", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["drafts_dir"] == str(tmp_path / "cfg" / "monitors" / "drafts")
+        assert data["db_file"] == str(tmp_path / "data" / "ftmon.db")
+
+
+class TestCheckTrust:
+    def test_trusted_executable_cl_08(self, tmp_path, capsys):
+        """[CL-08] a private executable owned by the invoking uid passes."""
+        exe = tmp_path / "ok.sh"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o700)
+        assert main(["check", "trust", str(exe)]) == 0
+        assert "trusted:" in capsys.readouterr().out
+
+    def test_reports_every_failed_condition_cl_08(self, tmp_path, capsys):
+        """[CL-08] all failing conditions print, not just the first."""
+        exe = tmp_path / "bad.sh"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o666)  # group/other-writable and not executable
+        assert main(["check", "trust", str(exe)]) == 1
+        err = capsys.readouterr().err
+        assert "group_or_other_writable" in err
+        assert "not_executable" in err
+
+    def test_symlink_rejected_cl_08(self, tmp_path, capsys):
+        """[CL-08] a symlink fails even when its target would pass."""
+        real = tmp_path / "real.sh"
+        real.write_text("#!/bin/sh\nexit 0\n")
+        real.chmod(0o700)
+        link = tmp_path / "link.sh"
+        link.symlink_to(real)
+        assert main(["check", "trust", str(link)]) == 1
+        assert "symlink" in capsys.readouterr().err
+
+
+class TestMonitorRescan:
+    def test_rescan_without_daemon_cl_07(self, tmp_path, monkeypatch, capsys):
+        """[CL-07] no lock file, or a lock nobody holds, is a clear error —
+        never a signal to a stale pid."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["monitor", "rescan"]) == 1
+        run_dir = tmp_path / "run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "daemon.lock").write_text("12345")
+        assert main(["monitor", "rescan"]) == 1
+        assert "not running" in capsys.readouterr().err
+
+    def test_rescan_signals_lock_holder_cl_07(self, tmp_path, monkeypatch,
+                                              capsys):
+        """[CL-07] SIGHUP goes to the pid recorded by the flock holder; this
+        test holds the lock itself so it must receive the signal."""
+        import fcntl
+        import os
+        import signal as sig
+
+        setup_env(tmp_path, monkeypatch)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        got: list[bool] = []
+        old = sig.signal(sig.SIGHUP, lambda *_: got.append(True))
+        try:
+            with open(run_dir / "daemon.lock", "w") as holder:
+                fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                holder.write(str(os.getpid()))
+                holder.flush()
+                assert main(["monitor", "rescan"]) == 0
+        finally:
+            sig.signal(sig.SIGHUP, old)
+        assert got == [True]
+
+    def test_monitor_actions_require_name(self, tmp_path, monkeypatch, capsys):
+        """[CL-01] rescan made the name optional; the others still need it."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["monitor", "approve"]) == 2
+        assert "missing monitor name" in capsys.readouterr().err
