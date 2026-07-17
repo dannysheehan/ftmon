@@ -4,7 +4,7 @@
 <!-- HTML is needed to size the large source mark. -->
 <p align="center">
   <img
-    src="src/ftmon/web/static/brand/ftmon-mark.png"
+    src="https://raw.githubusercontent.com/dannysheehan/ftmon/main/src/ftmon/web/static/brand/ftmon-mark.png"
     alt="FTMON monitor dial logo"
     width="160"
   >
@@ -72,7 +72,7 @@ The operational dashboard remains bound to loopback and is reached through an
 SSH tunnel. This keeps the unauthenticated management interface off the public
 Internet while still making it useful on a remote headless host. A hardened
 systemd unit and complete single-server installation procedure are provided in
-the [installation guide](docs/install.md#dedicated-single-server-service).
+the [installation guide](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md#dedicated-single-server-service).
 
 ### Bring your own checks
 
@@ -87,9 +87,9 @@ That means an existing HTTP, TLS-certificate, DNS, mail, database, UPS or sensor
 check can answer “is it broken now?”, while FTMON adds “has it been degrading?”
 and “what changed before the incident?” The executable remains outside FTMON;
 AI-authored definitions may reuse an approved alias but cannot introduce a
-command or credentials. See [External checks](docs/external-checks.md),
-[Why FTMON?](docs/why-ftmon.md), and the normative contract in
-[SPEC.md](SPEC.md#64-administrator-registered-external-checks).
+command or credentials. See [External checks](https://github.com/dannysheehan/ftmon/blob/main/docs/external-checks.md),
+[Why FTMON?](https://github.com/dannysheehan/ftmon/blob/main/docs/why-ftmon.md), and the normative contract in
+[SPEC.md](https://github.com/dannysheehan/ftmon/blob/main/SPEC.md#64-administrator-registered-external-checks).
 
 ## Quick start
 
@@ -140,34 +140,32 @@ uv run ftmon daemon
 The live [public demonstration](https://demo.ftmon.org/) is a different,
 GET-only application over deterministic synthetic data. Its reproducible DNS,
 Caddy, systemd, verification, update, and rollback runbook is in the
-[installation guide](docs/install.md#publish-the-synthetic-demo-website).
+[installation guide](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md#publish-the-synthetic-demo-website).
 Never expose an operational FTMON database as a demo.
 
 ## Documentation
 
-- [User manual](docs/manual.md) — concepts, daily use, tuning, trends, and
+- [User manual](https://github.com/dannysheehan/ftmon/blob/main/docs/manual.md) — concepts, daily use, tuning, trends, and
   troubleshooting.
-- [Installation guide](docs/install.md) — `uv`, upgrade, systemd, web, MCP,
+- [Installation guide](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md) — `uv`, upgrade, systemd, web, MCP,
   actions, and backups.
-- [Monitor definition reference](docs/definitions.md) — TOML schema, expression
+- [Monitor definition reference](https://github.com/dannysheehan/ftmon/blob/main/docs/definitions.md) — TOML schema, expression
   language, and examples.
-- [External checks](docs/external-checks.md) — scripts, Nagios plugins,
+- [External checks](https://github.com/dannysheehan/ftmon/blob/main/docs/external-checks.md) — scripts, Nagios plugins,
   performance-data mappings, privileges, and security boundaries.
-- [Extra monitors](extra-monitors/) — tested integration recipes for
+- [Extra monitors](https://github.com/dannysheehan/ftmon/tree/main/extra-monitors) — tested integration recipes for
   separately installed checks.
 - [FTMON Exchange](https://exchange.ftmon.org/) — the generated, searchable
   public view of the curated extra-monitor catalogue.
-- [Product specification](SPEC.md) and [technical design](DESIGN.md) — normative
+- [Product specification](https://github.com/dannysheehan/ftmon/blob/main/SPEC.md) and [technical design](https://github.com/dannysheehan/ftmon/blob/main/DESIGN.md) — normative
   behavior, rationale, architecture, and requirement IDs.
-- [Contributing guide](CONTRIBUTING.md) — development and documentation
+- [Contributing guide](https://github.com/dannysheehan/ftmon/blob/main/CONTRIBUTING.md) — development and documentation
   standards.
-- [Documentation drift audit (M10)](docs/drift-audit-m10.md) — recorded DO-09
-  pass for the pre-v1.0 release window.
-- [Exchange publishing guide](docs/exchange.md) — local preview, GitHub Pages,
+- [Exchange publishing guide](https://github.com/dannysheehan/ftmon/blob/main/docs/exchange.md) — local preview, GitHub Pages,
   custom-domain verification and rollback.
-- [Shared AI skills](docs/ai-skills.md) — reviewed contribution workflows,
+- [Shared AI skills](https://github.com/dannysheehan/ftmon/blob/main/docs/ai-skills.md) — reviewed contribution workflows,
   trust model, and optional Codex/Claude installation.
-- [Why FTMON?](docs/why-ftmon.md) — product positioning, intended users, and
+- [Why FTMON?](https://github.com/dannysheehan/ftmon/blob/main/docs/why-ftmon.md) — product positioning, intended users, and
   the value of extensible checks.
 
 ## Original FTMON
@@ -189,11 +187,11 @@ uv run ruff check src tests
 uv run pytest -q
 ```
 
-Tests reference stable requirement IDs from [SPEC.md](SPEC.md). When changing
+Tests reference stable requirement IDs from [SPEC.md](https://github.com/dannysheehan/ftmon/blob/main/SPEC.md). When changing
 behavior, update the relevant specification, design rationale, tests, and user
 documentation together.
 
 ## License
 
-FTMON v2 is available under the [MIT License](LICENSE). The separately published
+FTMON v2 is available under the [MIT License](https://github.com/dannysheehan/ftmon/blob/main/LICENSE). The separately published
 original FTMON project retains its own GPLv2 license.
