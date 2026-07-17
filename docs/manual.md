@@ -279,9 +279,11 @@ restart required.
 The FTMON database (`~/.local/share/ftmon/ftmon.db`) is written by the
 daemon on every tick. An external `sqlite3` session (or any direct SQL
 client, or an AI assistant offering to "just delete those rows") that
-writes to it can hold the write lock longer than the daemon tolerates;
-the daemon then crashes with a `database is locked` error and stays down
-until restarted. For inspection, open the database read-only
+writes to it can hold the write lock longer than the daemon's
+`busy_timeout`. The daemon survives that (it drops the tick's buffered
+writes, counts `sqlite_lock_errors`, and records a self-event), but the
+tick is still lost and contention can leave the dashboard looking stale
+until the lock clears. For inspection, open the database read-only
 (`sqlite3 "file:$HOME/.local/share/ftmon/ftmon.db?mode=ro"`) or stop the
 daemon first; for any cleanup or bulk changes, always stop the daemon.
 

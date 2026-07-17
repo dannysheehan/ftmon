@@ -337,3 +337,87 @@ def test_daemon_core_ticks_persist_and_hot_reload(tmp_path):
     clock.advance(31)
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
     assert core.monitors["leak"].content_hash != old_hash
+
+
+def test_daemon_survives_database_locked_pm_10(tmp_path):
+    """[PM-10] lock timeout on commit_tick is counted and recoverable, not fatal."""
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths
+    from ftmon.store.db import connect
+
+    env = {
+        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+        "FTMON_DATA_DIR": str(tmp_path / "data"),
+        "FTMON_STATE_DIR": str(tmp_path / "state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
+    }
+    paths = get_paths(env)
+    paths.ensure()
+    (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
+
+    clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+    core = DaemonCore(paths=paths, clock=clock)
+    core.samplers["process"] = ScriptedSampler()
+    core.samplers["process"].push(grower(0))
+    core.conn.execute("PRAGMA busy_timeout = 50")
+
+    locker = connect(paths.db_file)
+    locker.execute("PRAGMA busy_timeout = 0")
+    locker.execute("BEGIN IMMEDIATE")
+    try:
+        core.on_tick(clock.now(), clock.monotonic(), 0.0)
+    finally:
+        locker.rollback()
+        locker.close()
+
+    assert core.stats.counters.get("sqlite_lock_errors") == 1
+    assert core.conn.execute(
+        "SELECT value FROM meta WHERE key = 'last_tick_ts'"
+    ).fetchone() is None
+
+    clock.advance(60)
+    core.samplers["process"].push(grower(1))
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)
+
+    assert core.conn.execute(
+        "SELECT value FROM meta WHERE key = 'last_tick_ts'"
+    ).fetchone() is not None
+    rows = core.conn.execute(
+        "SELECT message FROM events WHERE source = 'self' AND provider = 'ftmon.store'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert "locked" in rows[0]["message"].lower()
+    snap = core.samplers["self"].sample(clock.now(), clock.monotonic() + 10.0, {})
+    assert snap.entities[0].metrics["sqlite_lock_errors"] == 1.0
+
+
+def test_daemon_rethrows_non_lock_operational_errors_pm_10(tmp_path, monkeypatch):
+    """[PM-10] only lock timeouts are swallowed; other OperationalErrors still raise."""
+    import sqlite3
+
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths
+
+    env = {
+        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+        "FTMON_DATA_DIR": str(tmp_path / "data"),
+        "FTMON_STATE_DIR": str(tmp_path / "state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
+    }
+    paths = get_paths(env)
+    paths.ensure()
+    (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
+    core = DaemonCore(paths=paths, clock=FakeClock(wall=1.0, mono=1.0))
+    core.samplers["process"] = ScriptedSampler()
+    core.samplers["process"].push(grower(0))
+
+    def boom():
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(core.writer, "commit_tick", boom)
+    try:
+        core.on_tick(1.0, 1.0, 0.0)
+        raise AssertionError("expected OperationalError")
+    except sqlite3.OperationalError as exc:
+        assert "disk I/O error" in str(exc)
+    assert core.stats.counters.get("sqlite_lock_errors", 0) == 0

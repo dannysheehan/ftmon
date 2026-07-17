@@ -64,6 +64,7 @@ class SelfSampler:
             "source_activity_age_s": s.source_activity_age_s,
             "eval_unknown_total": float(s.counters.get("eval_unknown_total", 0)),
             "samples_rejected": float(s.counters.get("samples_rejected", 0)),
+            "sqlite_lock_errors": float(s.counters.get("sqlite_lock_errors", 0)),
             "external_checks_skipped": float(
                 s.counters.get("external_checks_skipped", 0)
             ),
