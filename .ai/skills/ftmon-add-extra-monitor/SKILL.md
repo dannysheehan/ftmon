@@ -13,8 +13,10 @@ incidents and explicit Trends.
 
 1. Locate the repository and read its active `AGENTS.md`.
 2. Read the relevant current sections of `SPEC.md`, `DESIGN.md`,
-   `docs/external-checks.md`, `extra-monitors/README.md`, the complete
-   `extra-monitors/_template/`, and `tests/extra_monitors/test_recipes.py`.
+   `docs/external-checks.md`, `docs/check-authoring.md` (executable trust
+   contract, protocol details, binary location convention),
+   `extra-monitors/README.md`, the complete `extra-monitors/_template/`, and
+   `tests/extra_monitors/test_recipes.py`.
 3. Inspect existing recipes and `git status`. Preserve unrelated user changes.
 
 Treat those files as authoritative over this skill. Never rely on a remembered
@@ -56,6 +58,11 @@ Write one exact `[check.<alias>]` in `checks.toml.example`:
 - keep passwords, tokens, URL user-info and private-key material out of argv;
 - explain non-obvious flags and timeout differences with why-focused comments;
 - never grant broad `sudo`, `docker`, `adm` or plugin-directory authority.
+
+On a live host, `ftmon check trust <path>` reports every failing condition of
+the executable trust contract (ownership, writability, symlinks) without
+running the candidate; include it in the recipe's manual test or operator
+steps so a rejected binary is diagnosed before registration, not after.
 
 For an unavoidable privileged read-only check, use `/usr/bin/sudo -n` with one
 exact root-owned wrapper. Document an argument-free `sudoers` rule, ownership,
