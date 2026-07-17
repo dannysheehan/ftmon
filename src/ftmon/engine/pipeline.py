@@ -124,7 +124,7 @@ class Pipeline:
             values.update(ent.attrs)
             values.update(ent.metrics)
             values.update(derived_vals.get(ent.entity_id, {}))
-            values["entity"] = ent.attrs.get("name", ent.entity_id)
+            values["entity"] = ent.attrs.get("display") or ent.attrs.get("name", ent.entity_id)
             values["monitor"] = mdef.name
             for rule in mdef.rules:
                 result = to_tribool(rule.when.eval(ctx, counter=self._counter))
@@ -247,3 +247,11 @@ class Pipeline:
         out = list(self._gone)
         self._gone.clear()
         return out
+
+    def seed_seen(self, monitor: str, entity_id: str, last_seen: float) -> None:
+        """IN-09: disappearance tracking (CA-08) is memory-only, so the daemon
+        seeds it at startup from stored last_seen for entities with open
+        incidents. The ordinary grace path then does the clearing — there is
+        deliberately no second clearing mechanism. setdefault: a genuine
+        sighting must never be overwritten by a stale stored timestamp."""
+        self._state.setdefault(monitor, _MonitorState()).seen.setdefault(entity_id, last_seen)

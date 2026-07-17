@@ -77,6 +77,21 @@ def f_monot(pts: Points) -> float | None:
     return ups / (len(pts) - 1)
 
 
+def f_coverage(pts: Points, window_s: float) -> float | None:
+    """Fraction of the window actually observed, clamped to [0, 1] (CA-01, v0.19 #20).
+
+    Every other series function only needs the points; this one also needs the
+    window length because a rule reasoning about "did we actually see w worth of
+    history" cannot answer that from point count alone (a sparse sampler could
+    hand back 3 points that span the whole window, or 300 that span a sliver).
+    window_s <= 0 is rejected defensively, mirroring slope's zero-denominator guard.
+    """
+    if len(pts) < 2 or window_s <= 0:
+        return None
+    span = pts[-1][0] - pts[0][0]
+    return clean_number(min(max(span / window_s, 0.0), 1.0))
+
+
 def f_pct(a: object, b: object, counter: Counter) -> float | None:
     if a is None or b is None or not _num(a) or not _num(b):
         return None

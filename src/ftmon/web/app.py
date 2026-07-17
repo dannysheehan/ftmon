@@ -274,9 +274,16 @@ async def incident_detail(request: Request):
             "SELECT * FROM incidents WHERE id=?", (iid,)).fetchone()
         history = [] if q is None else q._conn.execute(
             "SELECT * FROM incident_history WHERE incident_id=? ORDER BY seq", (iid,)).fetchall()
+        entity_row = None if row is None else q._conn.execute(
+            "SELECT attrs FROM entities WHERE monitor=? AND entity_id=? LIMIT 1",
+            (row["monitor"], row["entity_id"])).fetchone()
         status = _status(request, q)
     if row is None:
         return Response("Incident not found", status_code=404)
+    # SA-09 SHOULD: this is a loopback, single-user surface (NG-05/SE-04), so
+    # showing the sampled attrs (including cmdline) here is in-posture; only
+    # notification content stays governed by SE-04's raw-cmdline ban.
+    entity_attrs = json.loads(entity_row["attrs"]) if entity_row and entity_row["attrs"] else {}
     trend_profile = next((
         profile for mdef, profile in _trend_catalog(request)
         if mdef.name == row["monitor"]
@@ -284,7 +291,7 @@ async def incident_detail(request: Request):
     ), None)
     return _render("incident.html", request, title=f"Incident #{iid}", row=row,
                    history=history, status=status, trend_profile=trend_profile,
-                   refresh_ms=5000)
+                   entity_attrs=entity_attrs, refresh_ms=5000)
 
 
 async def ack(request: Request):

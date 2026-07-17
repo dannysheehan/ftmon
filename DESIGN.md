@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.18 — every design element
+Status: **DRAFT v0.10**. Companion to `SPEC.md` v0.19 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -403,7 +403,7 @@ class SmallWrites:
 - `parse.py`: `ast.parse(text, mode="eval")`; walk with an allowlist visitor (exact node list EX-01, kwargs rejected EX-05); output is a private IR (nested frozen dataclasses) — the evaluator never touches `ast` nodes again. Regexes found in `matches()` are compiled here (EX-07) and pattern length checked.
 - Name resolution (EX-02) happens at compile time against `NameEnv`; the IR stores slot kinds (`metric|attr|param|const`) so eval does no dict lookups on strings the author controls.
 - `eval.py`: small recursive interpreter over the IR. All binary/unary/compare ops route through `tribool.py` helpers implementing the EX-06 truth table verbatim (one function per table row group; the unit tests mirror the table). Division/modulo by zero, NaN/inf results → `UNKNOWN` + a counter callback. A `deadline_check()` closure is consulted every N=64 IR nodes (EX-03's 10 ms cap).
-- `functions.py`: the CA-01 table. Series functions take `(ctx, metric_slot, window_seconds)`; `slope` = numerically stable least squares over (t−t₀); `monot` counts consecutive positive deltas / (n−1). `CompiledExpr.windows` is the union of all (metric, window) references — the loader aggregates these per monitor to size ring buffers (CA-04) and to reject > 6 h / >10 000-point windows.
+- `functions.py`: the CA-01 table. Series functions take `(ctx, metric_slot, window_seconds)`; `slope` = numerically stable least squares over (t−t₀); `monot` counts consecutive positive deltas / (n−1); `coverage` = (t_newest − t_oldest)/w clamped to [0, 1] — the window parameter reaches the function for exactly this one case (every other series function only needs the points). `CompiledExpr.windows` is the union of all (metric, window) references — the loader aggregates these per monitor to size ring buffers (CA-04) and to reject > 6 h / >10 000-point windows.
 - Message templates (MD-02): validated with `string.Formatter().parse`; allowed field names = same NameEnv; rendering wraps every value — `None` renders as `"n/a"` ignoring any format spec (so `{full_in_h:.1f}` never raises at fire time).
 
 ---
@@ -588,7 +588,7 @@ The process source keeps its own all-process short window (15 samples) in `rings
 
 ### 10.4 Incident engine (IN-01..08) — pure
 
-`step_group` implements the SPEC §9.1 diagram exactly; `GroupConfig` carries per-rung `severity, confirm, clear, message-template-id, action, notify_recovery` + backoff table `(300, 900, 3600, 21600)` (IN-02). Backoff/renotify decisions derive from `IncidentCore.last_notify_ts/backoff_tier` — the caller rebuilds `IncidentCore` from DB at startup, which is how restarts keep the schedule (IN-02). `step_episode` shares `IncidentCore` and differs only per IN-08 (cooldown gate, `clear_after` timer via `now − last_seen`). Effects are executed by `effects.py`: `NotifyEffect` creates the immutable notification and its eligible delivery rows in the incident transaction, then the dispatcher attempts due rows post-commit; `ActionEffect` → AC-02 subprocess with env, recorded to history.
+`step_group` implements the SPEC §9.1 diagram exactly; `GroupConfig` carries per-rung `severity, confirm, clear, message-template-id, action, notify_recovery` + backoff table `(300, 900, 3600, 21600)` (IN-02). Backoff/renotify decisions derive from `IncidentCore.last_notify_ts/backoff_tier` — the caller rebuilds `IncidentCore` from DB at startup, which is how restarts keep the schedule (IN-02). The same rebuild pass seeds the pipeline's disappearance tracking (`seen[entity_id] = stored last_seen`) for each open incident's discovered entity (IN-09): the ordinary CA-08 grace path then clears entities that vanished during downtime — no second clearing mechanism exists. `step_episode` shares `IncidentCore` and differs only per IN-08 (cooldown gate, `clear_after` timer via `now − last_seen`). Effects are executed by `effects.py`: `NotifyEffect` creates the immutable notification and its eligible delivery rows in the incident transaction, then the dispatcher attempts due rows post-commit; `ActionEffect` → AC-02 subprocess with env, recorded to history.
 
 ### 10.5 Baselines & retention slices
 

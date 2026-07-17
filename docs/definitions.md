@@ -40,7 +40,7 @@ when = 'growth_bph > warn_bph'
 severity = "warning"            # info|notice|warning|error|critical
 confirm_cycles = 3              # consecutive TRUE cycles before opening
 clear_cycles = 3                # consecutive FALSE cycles before clearing
-message = "{entity} leaking: {growth_bph:.0f} B/h (warn at {warn_bph})"
+message = "{entity} sustained RSS growth: {growth_bph:.0f} B/h (warn at {warn_bph})"
 ```
 
 Section reference:
@@ -134,6 +134,7 @@ Constants: `KB MB GB TB` (powers of 1024) and the severity names
 | `rate(m, "5m")` | per-second rate | counter-aware: a counter reset yields unknown, not a negative spike |
 | `slope(m, "15m")` | least-squares slope per second | needs ≥3 points; the leak detector |
 | `monot(m, "15m")` | fraction of steps that increased, 0..1 | 1.0 = strictly rising; noise-tolerant leak signal |
+| `coverage(m, "45m")` | fraction of the window actually observed, 0..1 | windows are maximums — a `"45m"` slope can rest on 3 samples; require coverage when the verdict needs the window represented |
 | `age(m)` | seconds since `m` was last sampled | |
 | `baseline(m)` | learned normal (EW mean, ~3-day half-life) | unknown for the first ~24 h of data |
 | `pct(a, b)` | `100*a/b`, unknown if `b` is 0 | |
@@ -324,7 +325,9 @@ operator-recommended path for logs that are not already in journald.
 ```toml
 [[rule]]
 id = "grow"
-when = 'slope(rss_bytes, "15m") * 3600 > warn_bph and monot(rss_bytes, "15m") >= 0.8'
+# Windows are maximums: a "15m" slope will happily fire on three samples.
+# coverage() makes the rule wait until the window is actually represented.
+when = 'slope(rss_bytes, "15m") * 3600 > warn_bph and coverage(rss_bytes, "15m") >= 0.8'
 severity = "warning"
 confirm_cycles = 5
 message = "{entity} rss rising {growth_bph:.0f} B/h for 15m+"

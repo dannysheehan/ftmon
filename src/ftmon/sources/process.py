@@ -10,10 +10,17 @@ Two constraints shape this module:
   isolated per entity and per metric (PL-03): a vanished process is skipped, a
   denied metric is omitted, and nothing short of an interpreter error aborts
   the sampling pass.
+
+SA-09 also derives ``exe_base``/``display``/``cmd_hint`` from the already-read
+``exe``/``cmdline`` so interpreter-hosted processes (a generic kernel name
+like ``MainThread``/``node``/``python3``) get a recognizable display identity
+and an exemption-able executable attr; only derived basenames are stored,
+never a raw argument (SE-04 unchanged).
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from typing import ClassVar
 
@@ -88,9 +95,9 @@ class ProcessSampler:
         live.add(key)
 
         attrs: dict[str, str] = {"name": name}
-        cmdline = _opt(lambda: " ".join(proc.cmdline()))
-        if cmdline:
-            attrs["cmdline"] = str(cmdline)[:_CMDLINE_MAX]
+        cmdline_argv = _opt(proc.cmdline)
+        if cmdline_argv:
+            attrs["cmdline"] = " ".join(cmdline_argv)[:_CMDLINE_MAX]  # type: ignore[union-attr]
         for attr_name, read in (
             ("username", proc.username),
             ("exe", proc.exe),
@@ -98,6 +105,21 @@ class ProcessSampler:
             value = _opt(read)
             if value:
                 attrs[attr_name] = str(value)
+
+        # SA-09: interpreter-hosted processes surface a generic kernel name
+        # (MainThread, node, python3) that defeats both recognition and
+        # name-based exemptions. exe_base/display/cmd_hint recover an
+        # executable identity from data already collected above; cmd_hint
+        # stores derived basenames only, never a raw argument (SE-04).
+        exe_base = os.path.basename(attrs["exe"]) if attrs.get("exe") else ""
+        if exe_base:
+            attrs["exe_base"] = exe_base
+        attrs["display"] = f"{exe_base} ({name})" if exe_base and exe_base != name else name
+        if exe_base and cmdline_argv:
+            for arg in cmdline_argv[1:]:  # type: ignore[union-attr]
+                if "/" in arg:
+                    attrs["cmd_hint"] = f"{exe_base} {os.path.basename(arg)}"[:64]
+                    break
 
         metrics: dict[str, float] = {}
         # cpu_percent must go through the cached object (module docstring).

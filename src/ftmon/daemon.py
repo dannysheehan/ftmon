@@ -451,6 +451,21 @@ class DaemonCore:
                 ack_ts=float(row["ack_ts"]) if row["ack_ts"] is not None else None,
             )
             self._istates[key] = GroupState(rungs=rungs, core=core)
+            row_ls = self.conn.execute(
+                "SELECT last_seen FROM entities WHERE monitor = ? AND entity_id = ?",
+                (row["monitor"], row["entity_id"]),
+            ).fetchone()
+            # IN-09: CA-08 grace state is memory-only; without this seed an
+            # entity that vanished during downtime leaves its incident open
+            # forever (rules evaluate None, so clear cycles never accumulate).
+            # No stored row: fall back to now — the full grace re-runs rather
+            # than clearing on hearsay.
+            self.pipeline.seed_seen(
+                row["monitor"],
+                row["entity_id"],
+                float(row_ls["last_seen"])
+                if row_ls and row_ls["last_seen"] is not None else now,
+            )
 
     def _refresh_acks(self) -> None:
         """Acks land in the DB from CLI/MCP/web (PM-03 small writes); the

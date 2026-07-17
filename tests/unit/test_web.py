@@ -1,5 +1,6 @@
 """[TS-07][UI-03][UI-04][UI-06][UI-07][UI-08][SE-02] HTTP-level web dashboard tests."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -389,3 +390,39 @@ def test_generic_leak_trend_and_context_links_ui_12_ts_10(tmp_path):
     assert 'href="/trends/leak/rss-growth"' in dashboard
     incident = client.get("/incidents/2", headers=headers).text
     assert "/trends/leak/rss-growth?entity=firefox%3A7%3A1" in incident
+
+
+def test_incident_detail_shows_display_and_attrs_sa_09(tmp_path):
+    """[SA-09] incident detail reads the matching entities row and shows
+    the sampled display identity plus attrs (exe, cmd_hint, ...); a
+    missing entities row (no attrs sampled yet) must not break the page."""
+    client, paths = _client(tmp_path)
+    entity = "MainThread:9:1"
+    conn = connect(paths.db_file)
+    attrs = json.dumps({
+        "name": "MainThread", "exe": "/home/u/.local/bin/agent",
+        "exe_base": "agent", "display": "agent (MainThread)",
+        "cmd_hint": "agent index.js",
+    })
+    conn.execute(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,attrs) "
+        "VALUES('leak',?,1,1000,?)", (entity, attrs)
+    )
+    conn.execute(
+        "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+        "opened_ts,last_change_ts,notify_count,occurrences) "
+        "VALUES(3,'leak','leak',?,'open',2,'leak-warn',900,900,1,1)", (entity,)
+    )
+    conn.commit()
+    conn.close()
+    headers = {"host": "localhost:8420"}
+
+    page = client.get("/incidents/3", headers=headers)
+    assert page.status_code == 200
+    assert "agent (MainThread)" in page.text
+    assert "exe_base" in page.text and "agent" in page.text
+    assert "cmd_hint" in page.text and "agent index.js" in page.text
+
+    # incident #1 (from _client) has no matching entities row: must still 200.
+    no_attrs = client.get("/incidents/1", headers=headers)
+    assert no_attrs.status_code == 200

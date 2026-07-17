@@ -46,7 +46,7 @@ MAX_REGEX_LEN = 512  # EX-07
 #   e  = sub-expression
 #   re = regex string literal
 #   tw = "HH:MM-HH:MM" string literal
-_SERIES = {"avg", "min", "max", "delta", "rate", "slope", "monot"}
+_SERIES = {"avg", "min", "max", "delta", "rate", "slope", "monot", "coverage"}
 FUNCS: dict[str, tuple[str, ...]] = {
     "last": ("m",),
     "avg": ("m", "w"),
@@ -56,6 +56,7 @@ FUNCS: dict[str, tuple[str, ...]] = {
     "rate": ("m", "w"),
     "slope": ("m", "w"),
     "monot": ("m", "w"),
+    "coverage": ("m", "w"),
     "age": ("m",),
     "baseline": ("m",),
     "pct": ("e", "e"),

@@ -90,6 +90,22 @@ def test_windows_collected_for_ring_sizing():
     assert ("cpu_pct", 300.0) in e.windows
 
 
+def test_coverage_windows_collected_for_ring_sizing():
+    """[CA-01][CA-04] coverage(m, w) compiles and feeds ring sizing like other series fns."""
+    e = compile_expr('coverage(rss_bytes, "45m") >= 0.8', ENV)
+    assert ("rss_bytes", 2700.0) in e.windows
+
+
+def test_coverage_arity_and_window_arg_validated():
+    """[CA-01] coverage is a series fn: wrong arity and a non-window 2nd arg are rejected."""
+    with pytest.raises(ExprSyntaxError):
+        compile_expr("coverage(rss_bytes)", ENV)  # missing window
+    with pytest.raises(ExprSyntaxError):
+        compile_expr('coverage(rss_bytes, "45m", 1)', ENV)  # too many args
+    with pytest.raises(ExprSyntaxError):
+        compile_expr("coverage(rss_bytes, 2700)", ENV)  # number, not duration string
+
+
 def test_parse_duration():
     assert parse_duration("90s") == 90.0
     assert parse_duration("10m") == 600.0
