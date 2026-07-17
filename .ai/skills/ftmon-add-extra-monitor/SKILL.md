@@ -64,8 +64,12 @@ the executable trust contract (ownership, writability, symlinks) without
 running the candidate; include it in the recipe's manual test or operator
 steps so a rejected binary is diagnosed before registration, not after.
 
-For an unavoidable privileged read-only check, use `/usr/bin/sudo -n` with one
-exact root-owned wrapper. Document an argument-free `sudoers` rule, ownership,
+For an unavoidable privileged read-only check, prefer the privileged exporter
+pattern from `docs/external-checks.md`: a root-owned timer snapshots the data
+to a file and the check parses it unprivileged, treating a stale file as
+unknown. `sudo` cannot work under the shipped `NoNewPrivileges=yes` units; only
+on a custom unit without that hardening may `/usr/bin/sudo -n` invoke one exact
+root-owned wrapper — document an argument-free `sudoers` rule, ownership,
 `visudo -c`, and why elevation is required. Keep remediation separate.
 
 Third-party Nagios and JSON executables remain separately installed. Ship a
