@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.15 — every design element
+Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.16 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -531,6 +531,11 @@ Write path: `writer.py` accumulates the tick's samples/events/incident rows and
 commits **one** transaction at step 4 (PM-03). Notifications and their frozen
 initial delivery rows are part of that transaction (NO-04/DM-18); the dispatcher
 claims and updates delivery state afterward through its own short transactions.
+If `BEGIN IMMEDIATE` fails after `busy_timeout` with "database is locked"
+(PM-10), `commit_tick` still clears its pending buffers, the daemon counts
+`sqlite_lock_errors`, emits a self-event for the next successful tick, and
+skips post-commit actions/outbox/retention for the failed tick — it must not
+exit.
 
 ---
 

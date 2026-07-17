@@ -1,8 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.15** — v0.15 makes document-version coherence a tested
-invariant (TS-19) and opens OPEN-8 (container monitoring: core source vs
-recipe, to be resolved during the TS-17 soak window). The v0.12
+Status: **DRAFT v0.16** — v0.16 requires the daemon to survive a tick write
+lock timeout instead of exiting (PM-10). v0.15 made document-version
+coherence a tested invariant (TS-19) and opened OPEN-8 (container monitoring:
+core source vs recipe, to be resolved during the TS-17 soak window). The v0.12
 release-readiness gates (TS-17 soak, TS-18 zero-pending traceability, DO-09
 drift audit; milestone M10) remain in force with the pending list burned down
 to empty. §19 open questions: OPEN-8 is the single open item.
@@ -149,6 +150,15 @@ These were decided during specification and are not open for re-litigation by im
   unprivileged account or the administrator's ordinary account. It MUST NOT run
   as root. The normal web process remains on loopback; remote operational access
   is through an SSH tunnel unless a future authenticated mode is specified.
+- **PM-10** When a tick's write transaction fails because SQLite reports the
+  database is locked after `busy_timeout` is exceeded, the daemon MUST NOT exit.
+  The failed tick's buffered writes MUST be dropped, a `sqlite_lock_errors`
+  self-metric MUST increment, a `self` event MUST record the failure, and the
+  next tick MUST continue. Short contention within `busy_timeout` remains
+  tolerated by the connection pragma (PM-03); this requirement covers only the
+  timeout-exceeded crash path. Operators MUST NOT open a writable SQL client
+  against the live database while the daemon runs — use read-only mode or stop
+  the daemon first.
 
 ### 4.3 Filesystem layout (Linux)
 
@@ -1100,6 +1110,14 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.16 (2026-07-17)** — crash tolerance for tick write lock loss (issue #23).
+An external writable SQL session that outlives `busy_timeout` made
+`commit_tick`'s `BEGIN IMMEDIATE` raise `OperationalError("database is locked")`,
+which escaped `Scheduler.run` and killed the daemon while the web UI kept
+serving stale data. PM-10 requires that path to drop the tick's buffered
+writes, count `sqlite_lock_errors`, emit a self-event, and continue —
+one lost tick is acceptable; a silent daemon exit is not.
 
 **v0.15 (2026-07-12)** — process hardening plus one reopened product
 question. TS-19 turns document-version coherence into a machine-checked

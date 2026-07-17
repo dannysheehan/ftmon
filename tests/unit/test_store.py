@@ -406,6 +406,90 @@ def test_status(tmp_path):
     assert status["open_incidents"] == 1
 
 
+def test_commit_tick_drops_buffers_on_lock_timeout(tmp_path):
+    """[PM-10] BEGIN IMMEDIATE lock failure clears pending buffers (no retry burst)."""
+    path = tmp_path / "ftmon.db"
+    conn = db.connect(path)
+    db.migrate(conn)
+    conn.execute("PRAGMA busy_timeout = 50")
+
+    w = TickWriter(conn)
+    sid = w.series_id("disk", "/", "free_pct", True)
+    w.add_sample(sid, NOW, 10.0)
+    w.set_meta("last_tick_ts", str(NOW))
+
+    locker = db.connect(path)
+    locker.execute("PRAGMA busy_timeout = 0")
+    locker.execute("BEGIN IMMEDIATE")
+    try:
+        try:
+            w.commit_tick()
+            raise AssertionError("expected OperationalError for locked database")
+        except sqlite3.OperationalError as exc:
+            assert "locked" in str(exc).lower()
+    finally:
+        locker.rollback()
+        locker.close()
+
+    assert w._pending_samples == []
+    assert w._pending_series == []
+    assert w._pending_meta == {}
+    assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 0
+
+    # After the lock clears, a fresh buffer commits normally.
+    w.add_sample(sid, NOW + 1, 11.0)
+    w.commit_tick()
+    assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 1
+
+
+def test_series_first_seen_during_lock_timeout_recovers(tmp_path):
+    """[PM-10] a series row dropped with the failed tick is re-created on the
+    next tick — the id cache must not outlive the rolled-back insert, or the
+    samples become unqueryable orphans and the id is reused after restart."""
+    path = tmp_path / "ftmon.db"
+    conn = db.connect(path)
+    db.migrate(conn)
+    conn.execute("PRAGMA busy_timeout = 50")
+    w = TickWriter(conn)
+
+    locker = db.connect(path)
+    locker.execute("PRAGMA busy_timeout = 0")
+    locker.execute("BEGIN IMMEDIATE")
+    try:
+        sid = w.series_id("gpu", "card0", "vram_used", True)
+        w.add_sample(sid, NOW, 5.0)
+        try:
+            w.commit_tick()
+            raise AssertionError("expected OperationalError for locked database")
+        except sqlite3.OperationalError:
+            pass
+    finally:
+        locker.rollback()
+        locker.close()
+
+    sid2 = w.series_id("gpu", "card0", "vram_used", True)
+    w.add_sample(sid2, NOW + 5, 6.0)
+    w.commit_tick()
+
+    visible = conn.execute(
+        "SELECT COUNT(*) FROM samples JOIN series ON samples.series_id = series.id "
+        "WHERE series.metric = 'vram_used'"
+    ).fetchone()[0]
+    assert visible == 1
+
+    # Restart: a fresh writer allocating a new series must not inherit the
+    # vram samples through id reuse.
+    w2 = TickWriter(conn)
+    other = w2.series_id("disk", "/", "free_pct", True)
+    w2.add_sample(other, NOW + 10, 42.0)
+    w2.commit_tick()
+    stolen = conn.execute(
+        "SELECT COUNT(*) FROM samples JOIN series ON samples.series_id = series.id "
+        "WHERE series.metric = 'free_pct'"
+    ).fetchone()[0]
+    assert stolen == 1
+
+
 def test_no_direct_clock_reads_in_store_package():
     """[TS-03] lint: store/*.py never reads a clock directly."""
     store_dir = Path(__file__).resolve().parents[2] / "src" / "ftmon" / "store"

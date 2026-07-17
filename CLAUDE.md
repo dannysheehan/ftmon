@@ -163,8 +163,7 @@ Key invariants:
   database while the daemon is running.** Connections set a 5 s
   `busy_timeout`, but an external write transaction that outlives it makes
   the writer's `BEGIN IMMEDIATE` in `commit_tick` raise
-  `OperationalError("database is locked")`, and the daemon currently dies
-  with a traceback instead of recovering (#23) — the web UI just shows
-  "data is stale" until someone restarts it. For inspection, stop the
-  daemon first or open the DB read-only (`file:...?mode=ro`); for cleanup,
-  stop the daemon.
+  `OperationalError("database is locked")`. The daemon survives that path
+  (PM-10: drop the tick, count `sqlite_lock_errors`, emit a self-event),
+  but the tick is still lost — stop the daemon or open the DB read-only
+  (`file:...?mode=ro`) for inspection; for cleanup, stop the daemon.

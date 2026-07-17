@@ -14,6 +14,7 @@ milestone plan, not oversight.
 from __future__ import annotations
 
 import fcntl
+import sqlite3
 import sys
 from dataclasses import dataclass, field
 from queue import SimpleQueue
@@ -526,7 +527,23 @@ class DaemonCore:
         self.stats.ring_mem_bytes = self.rings.mem_bytes()
         self.rings.evict_if_over(self._is_protected, self.stats.count)
         self.writer.set_meta("last_tick_ts", repr(wall))
-        self.writer.commit_tick()
+        try:
+            self.writer.commit_tick()
+        except sqlite3.OperationalError as exc:
+            # PM-10: busy_timeout exceeded — drop this tick, stay alive.
+            if "locked" not in str(exc).lower():
+                raise
+            self.stats.count("sqlite_lock_errors")
+            # Buffered for the next successful commit (same pattern as
+            # retention self-events); commit_tick already cleared the rest.
+            self.writer.add_event(EventRecord(
+                ts=wall, ingest_ts=wall, source="self", provider="ftmon.store",
+                event_id=None, severity=2,
+                message=f"tick write locked; dropped buffered writes: {exc}",
+            ))
+            self.executor.drain_actions()  # must not fire for uncommitted work
+            self.stats.cycle_s = self.clock.monotonic() - started
+            return
         # AC-02 actions are post-commit so their 30-second timeout cannot
         # extend the daemon's single tick transaction (PM-03).
         self.actions.run_pending(self.executor.drain_actions(), wall)

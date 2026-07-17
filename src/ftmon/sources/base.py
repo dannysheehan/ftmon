@@ -152,6 +152,8 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("source_activity_age_s", "s", "gauge", "Seconds since event reader produced data"),
             _m("eval_unknown_total", "count", "counter", "Rule evaluations returning unknown"),
             _m("samples_rejected", "count", "counter", "NaN/inf samples rejected (DM-01)"),
+            _m("sqlite_lock_errors", "count", "counter",
+               "Tick commits dropped after database lock timeout (PM-10)"),
             _m("external_checks_skipped", "count", "counter",
                "External aliases skipped when their source budget expired"),
             _m("external_check_failures", "count", "counter",

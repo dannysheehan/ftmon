@@ -291,10 +291,15 @@ class TickWriter:
 
     def commit_tick(self) -> None:
         """Execute everything buffered since the last commit_tick() and
-        commit it as a single transaction (PM-03)."""
-        cur = self._conn.cursor()
-        cur.execute("BEGIN IMMEDIATE")
+        commit it as a single transaction (PM-03).
+
+        BEGIN IMMEDIATE sits inside the try/finally so a lock timeout
+        (PM-10) still drops the tick's buffers rather than leaving them
+        queued for a silent retry burst on the next tick.
+        """
         try:
+            cur = self._conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
             if self._pending_series:
                 cur.executemany(
                     "INSERT INTO series(id, monitor, entity_id, metric, durable) "
@@ -419,6 +424,12 @@ class TickWriter:
                     )
         except BaseException:
             self._conn.rollback()
+            # PM-10: the dropped buffers may include series rows, and the
+            # cache would keep issuing ids that never reached the table —
+            # samples become unqueryable orphans and the id can be handed
+            # to a different series after restart. Force re-discovery.
+            self._series_cache.clear()
+            self._next_series_id = None
             raise
         else:
             self._conn.commit()
