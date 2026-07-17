@@ -179,30 +179,136 @@ directory. Do not depend on ambient environment variables.
 
 ## Checks requiring privilege
 
-Keep the FTMON daemon unprivileged. If a read-only SMART, RAID or hardware check
-genuinely needs elevation, register a root-owned wrapper and grant only that
-exact wrapper through `sudoers`:
+Keep the FTMON daemon unprivileged. Some read-only hardware checks (SMART,
+RAID controllers, IPMI) genuinely need root — NVMe SMART, for example, is an
+admin ioctl, not a file you can be granted permission to read.
+
+**`sudo` cannot work from a check under the shipped units.** Both shipped
+services set `NoNewPrivileges=yes`, which makes the kernel ignore setuid bits
+for every descendant — no sudoers rule can override that. The per-user desktop
+unit adds a second, more confusing barrier: its sandbox runs in a user
+namespace where root-owned files appear owned by the overflow uid
+(`nobody`/65534), so sudo refuses to even try, complaining that
+`/usr/bin/sudo` is not owned by uid 0. Do not "fix" this with a drop-in that
+weakens the unit: that trades a permanent daemon-wide protection for one
+check's convenience.
+
+Instead, keep the privilege in a separate root-owned timer and reduce the
+boundary to a file — the **privileged exporter pattern**:
+
+- a root oneshot service runs the privileged read on a timer and atomically
+  writes the raw output to a fixed root-owned, world-readable path;
+- the registered check parses that file unprivileged, and treats a missing or
+  stale file as unknown, so a dead exporter surfaces as an incident instead of
+  masquerading as a healthy device.
+
+Nothing FTMON executes — no monitor definition, no draft, no compromised
+daemon — can influence what runs as root or when: the elevated side takes no
+arguments and reads no configuration a less-privileged identity can write.
+
+`/usr/local/libexec/ftmon-smart-export`, root-owned mode 0755:
+
+```sh
+#!/bin/sh
+set -u
+
+out=/var/lib/ftmon-smart/nvme0.json
+tmp="$out.tmp"
+
+# smartctl's exit code is a bitmask: a failing drive exits nonzero but still
+# emits full JSON. Gate on output, not rc — freezing the file on a failing
+# drive would surface as a stale-file unknown instead of the real critical.
+/usr/sbin/smartctl -a -j /dev/nvme0 >"$tmp" 2>/dev/null || true
+
+if [ -s "$tmp" ]; then
+    chmod 0644 "$tmp"
+    mv "$tmp" "$out"
+else
+    rm -f "$tmp"
+    exit 1
+fi
+```
+
+`/etc/systemd/system/ftmon-smart-export.service`:
+
+```ini
+[Unit]
+Description=Export smartctl JSON for the unprivileged FTMON SMART check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/ftmon-smart-export
+# Root is required for the device ioctls, but nothing else: no network,
+# no home, writable only in the export directory.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ftmon-smart
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+```
+
+`/etc/systemd/system/ftmon-smart-export.timer`:
+
+```ini
+[Unit]
+Description=Periodic smartctl JSON export for FTMON
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+sudo install -d -o root -g root -m 0755 /var/lib/ftmon-smart
+sudo systemctl daemon-reload
+sudo systemctl enable --now ftmon-smart-export.timer
+```
+
+The registered check then needs no privilege at all; `--max-age` should cover
+at least two timer periods so one slow run does not flap:
+
+```toml
+[check.smart]
+argv = [
+  "/path/to/check_smart",
+  "--input", "/var/lib/ftmon-smart/nvme0.json",
+  "--max-age", "900",
+]
+protocol = "ftmon-json"
+timeout = "12s"
+```
+
+Match the timer period to how fast the data actually changes — SMART moves on
+the scale of minutes, so a five-minute snapshot loses nothing. Keep one
+exporter per concern: a generic "run commands as root from a config file"
+exporter rebuilds exactly the vulnerability this pattern exists to avoid. If a
+check needs on-demand or sub-minute privileged reads that a snapshot cannot
+satisfy, that is a long-running privileged companion service with its own
+review, not a wider exporter.
+
+On a custom system unit that does **not** set `NoNewPrivileges` — and only
+there — the classic alternative is `/usr/bin/sudo -n` invoking one exact
+root-owned wrapper, granted through an argument-free `sudoers` rule:
 
 ```sudoers
 ftmon ALL=(root) NOPASSWD: /usr/local/libexec/ftmon/check-smart-health
-```
-
-```toml
-[check.smart_health]
-argv = [
-  "/usr/bin/sudo", "-n",
-  "/usr/local/libexec/ftmon/check-smart-health",
-]
-protocol = "nagios"
-timeout = "15s"
 ```
 
 `-n` makes missing authorization fail immediately rather than wait for a
 password. The wrapper and every parent directory must be root-owned and not
 writable by `ftmon`. Do not use wildcards, a shell, operator-controlled
 arguments, broad `sudo` membership or an unrestricted plugin directory.
-Validate the policy with `visudo -c`. Remediation actions are a separate trust
-boundary and should not be hidden inside a read-only monitoring check.
+Validate the policy with `visudo -c`. Prefer the exporter even here: it keeps
+the hardened unit an option and its root surface is a static command instead
+of a sudo policy.
+
+Either way, remediation actions are a separate trust boundary and should not
+be hidden inside a read-only monitoring check.
 
 ## Credentials and third-party plugins
 

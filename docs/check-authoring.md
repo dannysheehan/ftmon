@@ -219,10 +219,13 @@ executable directly — never through a shell — so write for that:
   timeout it gets `SIGTERM`, then `SIGKILL` a quarter-second later if it
   hasn't exited. A check that spawns children and ignores `SIGTERM` still
   gets reaped — don't rely on cleanup code after the signal.
-- **No elevated privilege.** The daemon itself stays unprivileged; if a
-  check genuinely needs root (SMART, RAID controllers), see "Checks
-  requiring privilege" in [External checks](external-checks.md) for the
-  sudoers wrapper pattern rather than solving it inside the check.
+- **No elevated privilege.** The daemon itself stays unprivileged, and the
+  shipped units set `NoNewPrivileges=yes`, so calling `sudo` from a check can
+  never work — it fails before any sudoers rule is consulted. If a check
+  genuinely needs root (SMART, RAID controllers), see "Checks requiring
+  privilege" in [External checks](external-checks.md) for the privileged
+  exporter pattern: a root timer snapshots the data to a file and the check
+  parses it unprivileged, treating a stale file as unknown.
 
 Practically: keep the check doing one bounded thing, avoid background work,
 and print exactly one line (`nagios`) or one JSON object (`ftmon-json`) and
