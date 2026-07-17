@@ -222,6 +222,8 @@ def _call(node: ir.Call, st: _State) -> object:
             return fx.f_slope(pts)
         if fn == "monot":
             return fx.f_monot(pts)
+        if fn == "coverage":
+            return fx.f_coverage(pts, node.window_s)
     if fn == "last":
         return ctx.metric_last(node.metric)
     if fn == "age":

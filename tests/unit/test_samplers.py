@@ -131,6 +131,105 @@ def test_process_cmdline_truncation_to_256(monkeypatch):
     assert cmdline == " ".join(long_cmdline)[:256]
 
 
+def _fake_proc(pid, name, create_time=1609459200.0, exe=None, cmdline=None):
+    """Bare SimpleNamespace process with the metric methods SA-09 tests
+    don't care about stubbed to harmless constants."""
+    proc = types.SimpleNamespace(
+        pid=pid, name=lambda: name, create_time=lambda: create_time
+    )
+    proc.cmdline = lambda: list(cmdline) if cmdline is not None else []
+    proc.username = lambda: "user"
+    if exe is not None:
+        proc.exe = lambda: exe
+    else:
+        proc.exe = lambda: (_ for _ in ()).throw(__import__("psutil").AccessDenied())
+    proc.memory_info = lambda: types.SimpleNamespace(rss=1000)
+    proc.num_fds = lambda: 1
+    proc.num_threads = lambda: 1
+    proc.io_counters = lambda: types.SimpleNamespace(read_bytes=0, write_bytes=0)
+    proc.cpu_percent = lambda interval: 0.0
+    return proc
+
+
+def test_process_display_identity_from_exe_basename_sa_09(monkeypatch):
+    """[SA-09] MainThread + exe agent -> exe_base/display/cmd_hint recover
+    a recognizable identity from an interpreter-hosted process."""
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(
+        1, "MainThread",
+        exe="/home/u/.local/bin/agent",
+        cmdline=[
+            "/home/u/.local/bin/agent",
+            "--use-system-ca",
+            "/home/u/.local/share/cursor-agent/versions/1.2/index.js",
+        ],
+    )
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    attrs = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={}).entities[0].attrs
+    assert attrs["exe_base"] == "agent"
+    assert attrs["display"] == "agent (MainThread)"
+    assert attrs["cmd_hint"] == "agent index.js"
+
+
+def test_process_display_falls_back_when_exe_basename_matches_name_sa_09(monkeypatch):
+    """[SA-09] exe basename == name -> display is just the name, no noise."""
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(2, "firefox", exe="/usr/bin/firefox", cmdline=["firefox"])
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    attrs = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={}).entities[0].attrs
+    assert attrs["exe_base"] == "firefox"
+    assert attrs["display"] == "firefox"
+
+
+def test_process_display_falls_back_to_name_when_exe_unreadable_sa_09(monkeypatch):
+    """[SA-09][PL-03] exe denied -> no exe_base/cmd_hint; display falls back
+    to the plain kernel name."""
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(3, "restricted", exe=None, cmdline=["restricted", "/etc/x"])
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    attrs = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={}).entities[0].attrs
+    assert "exe_base" not in attrs
+    assert "cmd_hint" not in attrs
+    assert attrs["display"] == "restricted"
+
+
+def test_process_cmd_hint_absent_without_path_like_argument_sa_09(monkeypatch):
+    """[SA-09] no argument contains '/' -> cmd_hint omitted (module's
+    omitted-not-empty pattern), even though display still resolves."""
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(
+        4, "worker", exe="/usr/bin/python3", cmdline=["python3", "script.py"]
+    )
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    attrs = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={}).entities[0].attrs
+    assert attrs["display"] == "python3 (worker)"
+    assert "cmd_hint" not in attrs
+
+
+def test_process_cmd_hint_capped_at_64_chars_sa_09(monkeypatch):
+    """[SA-09] cmd_hint is capped to 64 chars total, derived basenames only."""
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    long_arg = "/very/long/path/" + "x" * 80 + ".js"
+    proc = _fake_proc(
+        5, "node", exe="/usr/bin/node", cmdline=["/usr/bin/node", long_arg]
+    )
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    attrs = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={}).entities[0].attrs
+    expected = f"node {'x' * 80}.js"[:64]
+    assert attrs["cmd_hint"] == expected
+    assert len(attrs["cmd_hint"]) == 64
+
+
 def test_process_access_denied_omits_metric_not_entity(monkeypatch):
     """[PL-03] AccessDenied on one metric -> metric omitted but entity present."""
     clock = FakeClock()

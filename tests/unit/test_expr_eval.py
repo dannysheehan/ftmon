@@ -4,6 +4,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from ftmon.expr import NameEnv, compile_expr
+from ftmon.expr import functions as fx
 from tests.conftest import FakeCtx
 
 ENV = NameEnv(
@@ -49,6 +50,27 @@ def test_monot_boundaries():
     assert ev('monot(m, "10m")', ctx_with([4, 3, 2, 1])) == 0.0
     assert ev('monot(m, "10m")', ctx_with([1, 2, 1, 2])) == 2 / 3
     assert ev('monot(m, "10m")', ctx_with([1])) is None
+
+
+def test_coverage_golden():
+    """[CA-01] coverage: fraction of the window actually observed, clamped to [0, 1]."""
+    # 11 points 60s apart span exactly 600s = the full "10m" window (exact boundary -> 1.0)
+    full = ctx_with(list(range(11)))
+    assert ev('coverage(m, "10m")', full) == 1.0
+    # 3 points span 120s of a 2700s ("45m") window -> 120/2700 == 2/45
+    sparse = ctx_with([1, 2, 3])
+    assert abs(ev('coverage(m, "45m")', sparse) - 2 / 45) < 1e-12
+    # < 2 points -> None (CA-02), including no samples at all
+    assert ev('coverage(m, "10m")', ctx_with([1])) is None
+    assert ev('coverage(m, "10m")', FakeCtx(wall=T0)) is None
+
+
+def test_coverage_clamps_overspan_and_rejects_nonpositive_window():
+    """[CA-01] pathological span > w clamps to 1.0; w <= 0 -> None, mirroring slope's guard."""
+    over = [(0.0, 1.0), (100.0, 2.0)]  # span 100s exceeds a 10s window
+    assert fx.f_coverage(over, 10.0) == 1.0
+    assert fx.f_coverage(over, 0.0) is None
+    assert fx.f_coverage(over, -5.0) is None
 
 
 def test_rate_counter_reset():

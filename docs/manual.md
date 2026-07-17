@@ -157,7 +157,10 @@ out the interval. Three knobs cover most needs:
   rule briefly (e.g. a nightly backup saturating IO).
 - **`exempt`** — name patterns for legitimate heavy processes (compilers,
   encoders). Exempt entities are still recorded — only alerting stops —
-  so you can still ask about them later.
+  so you can still ask about them later. Interpreter-hosted apps often
+  report a generic process name (`MainThread`, `node`), so match on
+  `exe_base` (the executable's basename) instead of `name` when targeting
+  them — alerts likewise show the executable, e.g. `agent (MainThread)`.
 
 For systematic threshold calibration on a live host, see the
 [tuning procedure](tuning-procedure.md) (`tools/tuning/leaky.py` and

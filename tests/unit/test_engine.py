@@ -188,8 +188,11 @@ def _run_cycles(mdef, sampler, cycles, start=1_700_000_000.0, step=60.0):
     return pipe, writer, outcomes, counts
 
 
-def grower(i, eid="leaky:1:100", rss0=1_000_000):
-    return (eid, {"name": "leaky"}, {"rss_bytes": float(rss0 + i * 200_000), "cpu_pct": 1.0})
+def grower(i, eid="leaky:1:100", rss0=1_000_000, attrs=None):
+    return (
+        eid, attrs if attrs is not None else {"name": "leaky"},
+        {"rss_bytes": float(rss0 + i * 200_000), "cpu_pct": 1.0},
+    )
 
 
 def test_pipeline_unknown_then_fires_and_promotes():
@@ -214,6 +217,32 @@ def test_pipeline_unknown_then_fires_and_promotes():
     assert calm.result is TriBool.FALSE
     assert "leaky:1:100" in pipe.promoted("leak")  # [SA-05c]
     assert counts.get("eval_unknown_total", 0) > 0  # early UNKNOWNs were counted
+
+
+def test_pipeline_message_entity_prefers_display_sa_09():
+    """[SA-09] {entity} in a rule message resolves to the sampler's display
+    attr (e.g. 'agent (MainThread)') instead of the generic kernel name."""
+    mdef = load_text(LEAKDEF)
+    s = ScriptedSampler()
+    for i in range(20):
+        s.push(grower(i, attrs={"name": "MainThread", "display": "agent (MainThread)"}))
+    _, _, outcomes, _ = _run_cycles(mdef, s, 20)
+    leaky = [o for o in outcomes if o.entity_id.startswith("leaky")][0]
+    assert leaky.result is TriBool.TRUE
+    assert leaky.message == "agent (MainThread) leaking"
+
+
+def test_pipeline_message_entity_falls_back_to_name_without_display_sa_09():
+    """[SA-09] entities with no display attr still resolve {entity} to name
+    (guards the pre-SA-09 fixture behavior)."""
+    mdef = load_text(LEAKDEF)
+    s = ScriptedSampler()
+    for i in range(20):
+        s.push(grower(i))
+    _, _, outcomes, _ = _run_cycles(mdef, s, 20)
+    leaky = [o for o in outcomes if o.entity_id.startswith("leaky")][0]
+    assert leaky.result is TriBool.TRUE
+    assert leaky.message == "leaky leaking"
 
 
 def test_pipeline_exempt_sampled_but_silent():

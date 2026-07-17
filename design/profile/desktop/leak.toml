@@ -23,25 +23,31 @@ warn_mb_per_h = { value = 96, doc = "Warn when RSS grows faster than this (MB/ho
 crit_mb_per_h = { value = 256, doc = "Error when RSS grows faster than this (MB/hour)" }
 promote_mb = { value = 48, doc = "Growth over 15m that makes a process worth tracking long-term" }
 growth_confidence = { value = 0.85, doc = "Fraction of rising samples that indicates sustained growth" }
+min_coverage = { value = 0.8, doc = "Fraction of the 45m slope window that must actually be observed (v0.19 #20) - otherwise a short-lived spike that vanished after a few minutes can pass for a 45-minute verdict" }
+min_net_mb = { value = 16, doc = "Net RSS growth (MB) the 45m window must show - an earlier rise that has since fallen back is not an active leak" }
 
 [promotion]
 expr = 'monot(rss_bytes, "15m") >= growth_confidence and delta(rss_bytes, "15m") > promote_mb * MB'
 
+# Both rungs gate on coverage + net delta before trusting the 45m slope
+# (v0.19 #20), same rationale as design/builtins/leak.toml: coverage rejects
+# a verdict resting on a handful of samples, and net delta rejects an
+# earlier rise that has since fallen back. monot stays promotion/trend-only.
 [[rule]]
 id = "leak-warn"
 group = "leak"
-when = 'slope(rss_bytes, "45m") * 3600 > warn_mb_per_h * MB'
+when = 'coverage(rss_bytes, "45m") >= min_coverage and delta(rss_bytes, "45m") > min_net_mb * MB and slope(rss_bytes, "45m") * 3600 > warn_mb_per_h * MB'
 severity = "warning"
 confirm_cycles = 9
-message = "{entity} leaking: RSS growing {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
+message = "{entity} sustained RSS growth: {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
 
 [[rule]]
 id = "leak-crit"
 group = "leak"
-when = 'slope(rss_bytes, "45m") * 3600 > crit_mb_per_h * MB'
+when = 'coverage(rss_bytes, "45m") >= min_coverage and delta(rss_bytes, "45m") > min_net_mb * MB and slope(rss_bytes, "45m") * 3600 > crit_mb_per_h * MB'
 severity = "error"
 confirm_cycles = 9
-message = "{entity} leaking fast: RSS growing {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
+message = "{entity} sustained RSS growth, fast: {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
 
 [[derived]]
 name = "rss_slope_mbph"

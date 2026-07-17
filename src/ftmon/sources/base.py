@@ -69,6 +69,11 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _a("cmdline", "Command line, truncated to 256 chars (SE-04)"),
             _a("username", "Owning user"),
             _a("exe", "Executable path"),
+            _a("exe_base", "Basename of exe; a stable target for CA-07 exemptions (SA-09)"),
+            _a("display", "'exe_base (name)', or name alone when they match/exe_base is "
+                          "absent (SA-09); what {entity} resolves to"),
+            _a("cmd_hint", "exe_base plus basename of the first path-like arg, "
+                           "derived basenames only, never raw argv (SA-09/SE-04)"),
         ),
     ),
     "disk": SourceDecl(

@@ -16,30 +16,41 @@ warn_mb_per_h = { value = 32, doc = "Warn when RSS grows faster than this (MB/ho
 crit_mb_per_h = { value = 128, doc = "Error when RSS grows faster than this (MB/hour)" }
 promote_mb = { value = 16, doc = "Growth over 15m that makes a process worth tracking long-term" }
 growth_confidence = { value = 0.8, doc = "Fraction of rising samples that indicates sustained growth" }
+min_coverage = { value = 0.8, doc = "Fraction of the 45m slope window that must actually be observed (v0.19 #20) - otherwise a short-lived spike that vanished after a few minutes can pass for a 45-minute verdict" }
+min_net_mb = { value = 16, doc = "Net RSS growth (MB) the 45m window must show - an earlier rise that has since fallen back is not an active leak" }
 
 # Which processes get long-term history (SA-05c). Evaluated over the short
 # all-process window every cycle.
 [promotion]
 expr = 'monot(rss_bytes, "15m") >= growth_confidence and delta(rss_bytes, "15m") > promote_mb * MB'
 
-# Browsers leak by design; exempt them here if the noise annoys you.
-# exempt = [ 'matches(name, "^(firefox|chrome|chromium)$")' ]
+# Browsers leak by design; exempt by executable identity, not the generic
+# runtime process name (SA-09) - the kernel name is often a helper thread.
+# exempt = [ 'matches(coalesce(exe_base, ""), "^(firefox|chrome)$")' ]
 
+# Both rungs gate on coverage + net delta before trusting the 45m slope
+# (v0.19 #20): coverage rejects a verdict resting on a handful of samples
+# from a process that has already exited, and net delta rejects an earlier
+# rise that has since fallen back (a sawtooth, not a leak). Growth
+# confidence (monot) is deliberately not part of this gate - a genuine
+# stepwise leak (grow, plateau, grow) scores low on consecutive-delta
+# confidence, and with the window covered, slope + net delta already reject
+# oscillation on their own; monot stays the promotion/trend signal (7.7.1).
 [[rule]]
 id = "leak-warn"
 group = "leak"
-when = 'slope(rss_bytes, "45m") * 3600 > warn_mb_per_h * MB'
+when = 'coverage(rss_bytes, "45m") >= min_coverage and delta(rss_bytes, "45m") > min_net_mb * MB and slope(rss_bytes, "45m") * 3600 > warn_mb_per_h * MB'
 severity = "warning"
 confirm_cycles = 3
-message = "{entity} leaking: RSS growing {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
+message = "{entity} sustained RSS growth: {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
 
 [[rule]]
 id = "leak-crit"
 group = "leak"
-when = 'slope(rss_bytes, "45m") * 3600 > crit_mb_per_h * MB'
+when = 'coverage(rss_bytes, "45m") >= min_coverage and delta(rss_bytes, "45m") > min_net_mb * MB and slope(rss_bytes, "45m") * 3600 > crit_mb_per_h * MB'
 severity = "error"
 confirm_cycles = 3
-message = "{entity} leaking fast: RSS growing {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
+message = "{entity} sustained RSS growth, fast: {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
 
 [[derived]]
 name = "rss_slope_mbph"

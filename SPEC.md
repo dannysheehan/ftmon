@@ -1,6 +1,10 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.18** — v0.18 adds authoring discoverability: `ftmon paths`,
+Status: **DRAFT v0.19** — v0.19 hardens leak-detection evidence (issue #20):
+`coverage()` joins the CA-01 function table, §7.7.1 leak rules must require
+window coverage and recent net growth alongside slope, SA-09 separates process
+display identity from stable identity, and IN-09 makes entity-gone clearing
+survive daemon restarts. v0.18 adds authoring discoverability: `ftmon paths`,
 `ftmon monitor rescan`, `ftmon check trust` (CL-06..08) and the read-only MCP
 tools `monitor_paths`/`diagnose_monitor` (MC-06). v0.17 makes SIGHUP a reload
 request instead of the fatal default disposition (PM-11). v0.16 requires the
@@ -284,6 +288,7 @@ sources due? → each needed source runs ONCE → immutable snapshot (single ts)
 
 - **SA-03** `EventSource`s run as supervised subprocess readers (e.g. `journalctl -f -o json --after-cursor=…`) feeding an in-daemon queue, drained each tick. A dead reader is restarted with exponential backoff (1 s → 60 s cap) and a self-event on first death.
 - **SA-08** The event queue is bounded at 10 000 entries; on overflow the oldest are dropped and an `event_overflow` self-event records the count. Malformed lines are skipped and counted (self-metric), never fatal. Reader stall detection: `event_source_last_activity_age` is a self-metric; the `self` monitor warns when it exceeds 10 m while the reader process is alive.
+- **SA-09** Process display identity (v0.19, issue #20). Interpreter-hosted processes often expose a generic runtime thread name (`MainThread`, `node`, `python3`) as the kernel process name, defeating both operator recognition and name-based exemptions. The process sampler MUST additionally collect, where readable: `exe` (executable path, already collected), `exe_base` (its basename), and `cmd_hint` (executable basename plus the basename of the first path-like argument, ≤ 64 chars total — derived basenames only, never raw arguments; SE-04's posture is unchanged). It MUST publish a `display` attr: `"{exe_base} ({name})"` when `exe_base` is present and differs from `name`, else `name`. `{entity}` in rule/notification templates resolves to `display` when present (falling back to `name`, then `entity_id`). All of these are declared attrs (PL-05) so exemptions (CA-07) and rules can target executable identity. Raw `cmdline` remains governed by SE-04 and MUST NOT appear in notifications; loopback surfaces (web incident detail, MCP) SHOULD expose the sampled attrs. Stable identity (DM-02) is unchanged.
 - **SA-04** Built-in samplers v1: `process` (per-process cpu%, rss, and — where available without elevated rights — open fds, threads, io counters), `disk` (per-mount total/used/free bytes, inodes where supported), `system` (load1/5/15, cpu% total, mem available/used, swap, PSI where present), `net` (per-listen-socket presence, per-proto/state connection counts; **no per-process attribution in v1**, NG-06), `unit` (systemd unit active-state + NRestarts via `systemctl show`).
 - **SA-05** The `process` source implements **track-all + promote**: every process is sampled into a bounded in-memory window (last 15 of its samples) each tick it's due; long-term persistence happens only for entities that are (a) on a monitor's watchlist, (b) in the top-N (default 15) by cpu or rss that cycle, or (c) **promoted** by a trend heuristic (§7.6.1). Promotion/demotion transitions are recorded as self-events. This keeps DM-05/DM-16 achievable with hundreds of processes.
 
@@ -571,6 +576,7 @@ Available in all expressions. `w` is a duration string (`"90s"`, `"10m"`, `"3h"`
 | `rate(m, w)` | per-second rate from delta (counter-safe: negative delta → 0, counts a reset) |
 | `slope(m, w)` | least-squares slope, units/second; `None` with < 3 points |
 | `monot(m, w)` | fraction of consecutive deltas > 0 in window (0.0–1.0) — the legacy "Filling" test |
+| `coverage(m, w)` | fraction of the window actually observed: `(t_newest − t_oldest) / w`, clamped to 0.0–1.0; `None` with < 2 points. Window functions treat `w` as a maximum, so a "45m" verdict can otherwise rest on three samples — `coverage` lets a rule demand its window be *represented* (v0.19, issue #20) |
 | `age(m)` | seconds since the last sample of `m` |
 | `baseline(m)` | learned baseline (§7.4); `None` until learned |
 | `pct(a, b)` | `100*a/b`; `None` if `b == 0` |
@@ -607,7 +613,7 @@ Available in all expressions. `w` is a duration string (`"90s"`, `"10m"`, `"3h"`
 v1 ships seven user-facing monitors plus the always-installed **`self`** monitor (§13, RB-02) — `self` is tunable but not deletable. Each ships as a commented TOML file (FS-02); defaults below are starting points reviewable in the file, but the *shape* (parameters, metrics, rule structure) is normative. `OPEN-1`: default numbers need owner review — to be exercised against recorded fixture data and a short real-system observation period before v1.0.
 
 #### 7.7.1 `leak` — per-process memory-leak detector
-Metrics: `rss_bytes` (+ derived `rss_slope_bph` = slope in bytes/hour). Promotion heuristic (SA-05): `monot(rss_bytes, "15m") >= 0.8 and delta(rss_bytes, "15m") > 16*MB`. Rules (one group `leak`): warning when `slope(rss_bytes, "45m") * 3600 > 32*MB` with `confirm_cycles = 3`; error rung when `slope(rss_bytes, "45m") * 3600 > 128*MB`. Exempt-by-default: none (browsers are the *point*); the file shows a commented example.
+Metrics: `rss_bytes` (+ derived `rss_slope_bph` = slope in bytes/hour). Promotion heuristic (SA-05): `monot(rss_bytes, "15m") >= 0.8 and delta(rss_bytes, "15m") > 16*MB`. Rules (one group `leak`, v0.19 shape): both rungs MUST require, alongside their slope threshold, `coverage(rss_bytes, "45m") >= min_coverage` (default 0.8 — a 45-minute verdict needs the window represented, not three samples) and `delta(rss_bytes, "45m") > min_net_mb * MB` (default 16 — an earlier rise followed by a fall is not an active leak): warning when `slope(rss_bytes, "45m") * 3600 > 32*MB` with `confirm_cycles = 3`; error rung when `slope(rss_bytes, "45m") * 3600 > 128*MB`. Growth confidence (`monot`) is deliberately **not** an alert gate: a genuine stepwise leak (grow, plateau, grow) scores low on consecutive-delta confidence, and with the window covered, full-window slope plus net delta already reject oscillation; `monot` remains the promotion/trend signal. Messages say "sustained RSS growth", not "leaking" — slope is evidence of growth, not proof of a leak. Exempt-by-default: none (browsers are the *point*); the file shows a commented example targeting executable identity (`exe_base`, SA-09) rather than the generic runtime process name.
 
 #### 7.7.2 `hog` — CPU hog detector
 Metrics: `cpu_pct`. Rules (group `hog`): warning when `avg(cpu_pct, "5m") > 80` for `confirm_cycles = 5`; error rung at `avg(cpu_pct, "15m") > 90`. Default exempt examples (commented): `matches(name, "^(cc1|rustc|ld|clang|make|cargo|ffmpeg)")`.
@@ -746,6 +752,7 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 - **IN-06** The state machine is implemented as a pure function `(state, evaluations, now, config) → (state', effects)` with effects (`enqueue_notification`, `run_action`, `record`) executed by the caller — this is a hard requirement so it can be exhaustively table-driven-tested (§16.3).
 - **IN-07** Entity disappearance interacts with incidents per CA-08 (`entity_gone` clearing after `gone_grace`).
 - **IN-08** **Episodes** (event rules) are incidents whose identity is `(rule, provider, event_id|msg_hash)` (§7.7.3) and whose lifecycle differs in exactly three ways: a matching event opens (no confirm cycles unless `confirm_count > 1` within `confirm_window`), refreshes `last_seen`, and increments `occurrences`; renotification is governed by `cooldown` instead of the IN-02 backoff; clearing is by `clear_after` quiet period (`clear_reason = quiet_period`) instead of false evaluations. Everything else (ack, flap, history, outbox) is shared.
+- **IN-09** Startup reconciliation (v0.19, issue #20). CA-08's disappearance tracking is in-memory; a restart between an entity's last sample and `gone_grace` expiry would otherwise strand its incident open forever (rules evaluate `None`, so clear cycles never accumulate). On startup, after rebuilding open incidents (IN-02), the daemon MUST seed disappearance tracking for each open/acked incident's discovered entity from the stored entity `last_seen`, so an entity that vanished while the daemon was down still clears with `clear_reason = entity_gone` once `gone_grace` has elapsed since it was genuinely last seen. Restarts do not manufacture immortal incidents; CA-08/IN-07 semantics hold across restarts.
 
 ### 9.2 Notification contract
 
@@ -1127,6 +1134,23 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.19 (2026-07-17)** — leak evidence quality and generic-process identity
+(issue #20). A desktop leak warning identified Cursor's background agent only
+as `MainThread`, fired after ~10 minutes because window functions treat
+`"45m"` as a maximum rather than a requirement, and its incident survived a
+daemon restart as permanently open because CA-08's grace state was
+memory-only. Three changes: `coverage(m, w)` joins the CA-01 table so a
+windowed verdict can demand its window be observed, and §7.7.1 rules require
+coverage plus recent net growth alongside slope — growth confidence (`monot`)
+deliberately stays out of the alert gate because a genuine stepwise leak
+(grow, plateau, grow) scores low on consecutive-delta confidence, and
+suppressing it would hide the detector's target (the deterministic
+sawtooth/step fixtures pin this); messages now claim "sustained RSS growth",
+not "leaking". SA-09 gives processes a display identity (`exe_base`,
+`display`, `cmd_hint`) distinct from DM-02's stable identity, keeping SE-04's
+cmdline posture. IN-09 seeds disappearance tracking from stored `last_seen`
+at startup so entity-gone clearing survives restarts.
 
 **v0.18 (2026-07-17)** — authoring discoverability (issue #25). An AI agent
 adding a monitor from the docs alone guessed wrong four times: wrong drafts
