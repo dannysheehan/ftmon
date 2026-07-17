@@ -219,6 +219,17 @@ finite `scale` defaults to 1. Fixed names are `plugin_state`, `plugin_ok`,
 the expression environment before derived expressions, rules and Trends are
 validated (MD-11).
 
+**Values are stored in the unit the plugin emits.** `check_disk` reports
+bytes, so the metric stores bytes; `check_iowait` reports percent, so it
+stores percent. The metric name and `unit` describe what is actually stored —
+they never trigger a conversion. `scale` exists only for the rare genuine
+conversion (a plugin whose output unit you cannot use directly) and is
+multiplied into the stored value; do not set `scale = 1048576` because
+`unit = "bytes"` sits next to a plugin that already emits bytes — that stores
+every sample a million-fold wrong and the bad rows have to be purged. When in
+doubt, leave `scale` out and name the metric after the plugin's native unit
+(`used_bytes`, `cpu_iowait_pct`), as every shipped recipe does.
+
 The definition cannot contain argv or executable paths. Register the alias in
 the separate `checks.toml` authority described by
 [External checks](external-checks.md); to write a new check executable, see
