@@ -1,7 +1,8 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.16** — v0.16 requires the daemon to survive a tick write
-lock timeout instead of exiting (PM-10). v0.15 made document-version
+Status: **DRAFT v0.17** — v0.17 makes SIGHUP a reload request instead of the
+fatal default disposition (PM-11). v0.16 requires the daemon to survive a tick
+write lock timeout instead of exiting (PM-10). v0.15 made document-version
 coherence a tested invariant (TS-19) and opened OPEN-8 (container monitoring:
 core source vs recipe, to be resolved during the TS-17 soak window). The v0.12
 release-readiness gates (TS-17 soak, TS-18 zero-pending traceability, DO-09
@@ -159,6 +160,13 @@ These were decided during specification and are not open for re-litigation by im
   timeout-exceeded crash path. Operators MUST NOT open a writable SQL client
   against the live database while the daemon runs — use read-only mode or stop
   the daemon first.
+- **PM-11** The daemon MUST treat `SIGHUP` as a reload request rather than the
+  fatal default disposition. The signal handler MUST only record the request —
+  no filesystem or database access — and the next tick MUST perform the same
+  refresh as the periodic rescan (PM-04): notification channels, the
+  external-check registry, monitor definitions, and acknowledgements. A reload
+  request MUST NOT interrupt an in-progress tick. The packaged daemon systemd
+  units MUST expose this via `ExecReload=` so `systemctl reload` works.
 
 ### 4.3 Filesystem layout (Linux)
 
@@ -1110,6 +1118,14 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.17 (2026-07-17)** — SIGHUP reloads instead of killing the daemon
+(issue #24). Only SIGTERM/SIGINT had handlers, so the conventional Unix
+reload signal fell through to the default disposition and terminated the
+monitor — a trap that took down a live install during monitor authoring.
+PM-11 makes the handler set a flag that the next tick's rescan path
+consumes (same refresh as PM-04), and the packaged units gain
+`ExecReload=` so `systemctl reload ftmon` works.
 
 **v0.16 (2026-07-17)** — crash tolerance for tick write lock loss (issue #23).
 An external writable SQL session that outlives `busy_timeout` made

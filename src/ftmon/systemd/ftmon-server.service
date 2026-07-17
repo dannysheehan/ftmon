@@ -29,6 +29,9 @@ UMask=0077
 # The executable lives outside every service-writable path so a compromised
 # daemon cannot replace itself and persist across a restart.
 ExecStart=/usr/local/bin/ftmon daemon
+# SIGHUP re-reads definitions, channels, and the check registry without
+# dropping monitor state (PM-11).
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 

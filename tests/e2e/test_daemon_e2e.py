@@ -295,3 +295,30 @@ def test_leak_profile_real_daemon_to_generic_http_ts_10(tmp_path):
         assert panels["projection"] is None
     finally:
         h.stop()
+
+
+def test_sighup_reloads_without_exit_pm_11(harness):
+    """[PM-11] SIGHUP requests a reload at the next tick instead of taking the
+    daemon down (the pre-v0.17 default disposition — the original outage)."""
+    h = harness
+    h.start()
+    h.step()  # first tick performs and commits the initial load
+
+    mdef = h.paths.monitors_dir / "leak.toml"
+    mdef.write_text(mdef.read_text().replace("version = 1", "version = 2"))
+
+    def load_hashes():
+        conn = _db(h)
+        try:
+            return {r["hash"] for r in conn.execute(
+                "SELECT hash FROM monitor_loads WHERE monitor = 'leak'")}
+        finally:
+            conn.close()
+
+    before = load_hashes()
+    assert before
+    h.proc.send_signal(signal.SIGHUP)
+    # Four 5 s steps keep total sim time inside the 30 s PM-04 window, so a
+    # new load hash here can only be the SIGHUP-driven rescan.
+    h.step_until(lambda: len(load_hashes() - before) == 1, max_steps=4)
+    assert h.proc.poll() is None

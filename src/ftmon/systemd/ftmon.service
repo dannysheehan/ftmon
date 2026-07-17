@@ -6,6 +6,9 @@ After=graphical-session.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/ftmon daemon
+# SIGHUP re-reads definitions, channels, and the check registry without
+# dropping monitor state (PM-11).
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 

@@ -421,3 +421,42 @@ def test_daemon_rethrows_non_lock_operational_errors_pm_10(tmp_path, monkeypatch
     except sqlite3.OperationalError as exc:
         assert "disk I/O error" in str(exc)
     assert core.stats.counters.get("sqlite_lock_errors", 0) == 0
+
+
+def test_sighup_reload_request_applies_next_tick_pm_11(tmp_path):
+    """[PM-11] request_reload() runs the PM-04 refresh on the next tick,
+    without waiting out the 30 s rescan window."""
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths
+
+    env = {
+        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+        "FTMON_DATA_DIR": str(tmp_path / "data"),
+        "FTMON_STATE_DIR": str(tmp_path / "state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
+    }
+    paths = get_paths(env)
+    paths.ensure()
+    (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
+
+    clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+    core = DaemonCore(paths=paths, clock=clock)
+    scripted = ScriptedSampler()
+    for i in range(3):
+        scripted.push(grower(i))
+    core.samplers["process"] = scripted
+
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)  # startup rescan
+
+    text = (paths.monitors_dir / "leak.toml").read_text()
+    (paths.monitors_dir / "leak.toml").write_text(text.replace("version = 1", "version = 2"))
+    old_hash = core.monitors["leak"].content_hash
+
+    clock.advance(5)
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)
+    assert core.monitors["leak"].content_hash == old_hash  # window not out, no request
+
+    core.request_reload()
+    clock.advance(5)
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)
+    assert core.monitors["leak"].content_hash != old_hash
