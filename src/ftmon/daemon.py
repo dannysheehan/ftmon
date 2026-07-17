@@ -136,6 +136,7 @@ class DaemonCore:
         self._istates: dict[IncidentKey, GroupState] = {}
         self._group_rungs: dict[tuple[str, str], tuple[inc.RungConfig, ...]] = {}
         self._last_rescan = -_RESCAN_EVERY_S
+        self._reload_requested = False
         # Event pipeline (M3): engine exists iff a source was injected;
         # started lazily once an events-source monitor is actually loaded.
         self.event_monitors: dict[str, MonitorDef] = {}
@@ -482,7 +483,8 @@ class DaemonCore:
         started = self.clock.monotonic()
         if gap_s:
             self.stats.count("clock_gaps")
-        if mono - self._last_rescan >= _RESCAN_EVERY_S:
+        if self._reload_requested or mono - self._last_rescan >= _RESCAN_EVERY_S:
+            self._reload_requested = False
             self._last_rescan = mono
             self._reload_channels()
             self._reload_check_registry()
@@ -601,6 +603,11 @@ class DaemonCore:
                 st = self.executor.apply(cfg, st, effects, wall)
             self._istates[key] = st
 
+    def request_reload(self) -> None:
+        """PM-11: the SIGHUP handler may only record the request — the reload
+        itself runs at the top of the next tick, never inside the handler."""
+        self._reload_requested = True
+
     def _overrun(self) -> None:
         self.stats.tick_overruns += 1
 
@@ -664,8 +671,14 @@ def run(args) -> int:
     def _stop(_sig, _frame):
         core.stop = True
 
+    def _reload(_sig, _frame):
+        # PM-11: the default disposition for SIGHUP terminates the process —
+        # exactly wrong for the conventional Unix reload signal.
+        core.request_reload()
+
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGHUP, _reload)
 
     tick_s = core.config.tick_seconds if core.config else 5.0
     total = len(core.monitors) + len(core.event_monitors)

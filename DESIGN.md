@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.16 — every design element
+Status: **DRAFT v0.9**. Companion to `SPEC.md` v0.17 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -657,6 +657,12 @@ worker at an attempt boundary, then changes the writer's policy for future
 notifications. Existing delivery rows are never added retroactively. A malformed
 or removed file retains the last known-good snapshot; a valid but individually
 invalid channel fails closed while the other channels reload (NO-10).
+
+`SIGHUP` triggers this same rescan out of cycle (PM-11): the handler sets a
+flag on `DaemonCore` and the top of the next tick consumes it — the handler
+itself never touches the filesystem or database, so it cannot race the tick
+loop or block in a signal context. The packaged daemon units map it to
+`ExecReload=`.
 
 ### 10.8 External check execution and projection (EC-*, MD-11, SE-07)
 
