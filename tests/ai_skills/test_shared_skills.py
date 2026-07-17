@@ -44,6 +44,7 @@ def test_extra_monitor_skill_covers_both_protocols_and_repository_authority():
         "SPEC.md",
         "DESIGN.md",
         "docs/external-checks.md",
+        "docs/check-authoring.md",
         "extra-monitors/README.md",
         "extra-monitors/_template/",
         "tests/extra_monitors/test_recipes.py",
@@ -52,6 +53,7 @@ def test_extra_monitor_skill_covers_both_protocols_and_repository_authority():
         "real-system-verified",
         "recipe-only",
         "FTMON JSON",
+        "ftmon check trust",
     ):
         assert required in text
     for path in (
@@ -59,6 +61,7 @@ def test_extra_monitor_skill_covers_both_protocols_and_repository_authority():
         ROOT / "SPEC.md",
         ROOT / "DESIGN.md",
         ROOT / "docs/external-checks.md",
+        ROOT / "docs/check-authoring.md",
         ROOT / "extra-monitors/README.md",
         ROOT / "extra-monitors/_template",
         ROOT / "tests/extra_monitors/test_recipes.py",
