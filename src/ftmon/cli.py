@@ -1,10 +1,12 @@
-"""Command-line interface (CL-01..05).
+"""Command-line interface (CL-01..08).
 
 Entry point: main(argv). Implements version/init/check/status plus list
-commands (incidents/events/monitors), monitor management (monitor) and
-maintenance (doctor/baseline/demo); top/query/incident remain stubs.
-All read paths work with daemon down (PM-01). Every list subcommand supports
---json (CL-03). Status exit codes: 0 all-clear, 1 warnings, 2 errors+ (CL-04).
+commands (incidents/events/monitors), monitor management (monitor),
+maintenance (doctor/baseline/demo), and authoring discoverability
+(paths, monitor rescan, check trust — CL-06..08); top/query/incident remain
+stubs. All read paths work with daemon down (PM-01). Every list subcommand
+supports --json (CL-03). Status exit codes: 0 all-clear, 1 warnings,
+2 errors+ (CL-04).
 """
 
 from __future__ import annotations
@@ -494,13 +496,82 @@ def cmd_monitors(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_paths(args: argparse.Namespace) -> int:
+    """CL-06: print the resolved layout so authors stop guessing where files
+    go. Paths only, never contents; works with the daemon down (PM-01)."""
+    paths = get_paths()
+    layout = {
+        "config_dir": paths.config_dir,
+        "config_file": paths.config_file,
+        "monitors_dir": paths.monitors_dir,
+        "drafts_dir": paths.drafts_dir,
+        "actions_dir": paths.actions_dir,
+        "check_registry": paths.check_registry_file,
+        "data_dir": paths.data_dir,
+        "db_file": paths.db_file,
+        "state_dir": paths.state_dir,
+        "log_file": paths.log_file,
+        "notifications_file": paths.notifications_file,
+        "runtime_dir": paths.runtime_dir,
+        "lock_file": paths.lock_file,
+    }
+    if args.json:
+        print(json.dumps({k: str(v) for k, v in layout.items()}, indent=2))
+        return 0
+    width = max(len(k) for k in layout)
+    for key, value in layout.items():
+        print(f"{key:<{width}}  {value}")
+    return 0
+
+
+def _monitor_rescan(paths) -> int:
+    """CL-07: SIGHUP the daemon recorded in the PM-02 lock file. Acquiring
+    the flock proves no daemon holds it — never signal a stale pid."""
+    import fcntl
+    import os
+    import signal
+
+    try:
+        f = open(paths.lock_file)
+    except OSError:
+        print("daemon not running (no lock file); start it with `ftmon daemon`",
+              file=sys.stderr)
+        return 1
+    with f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            print("daemon not running (lock not held); start it with "
+                  "`ftmon daemon`", file=sys.stderr)
+            return 1
+        except BlockingIOError:
+            pass
+        pid_text = f.read().strip()
+    if not pid_text.isdigit():
+        print("daemon lock held but no pid recorded — daemon predates "
+              "CL-07; send SIGHUP manually or restart it", file=sys.stderr)
+        return 1
+    try:
+        os.kill(int(pid_text), signal.SIGHUP)
+    except (ProcessLookupError, PermissionError) as exc:
+        print(f"cannot signal daemon pid {pid_text}: {exc}", file=sys.stderr)
+        return 1
+    print(f"reload requested (SIGHUP to pid {pid_text}); "
+          "applied at the next tick")
+    return 0
+
+
 def cmd_monitor(args: argparse.Namespace) -> int:
-    """MD-05 lifecycle: approve a draft into monitors/ (PM-06d), or flip a
-    monitor's `enabled` line in place. The daemon notices within 30s
-    (PM-04); no restart."""
+    """MD-05 lifecycle: approve a draft into monitors/ (PM-06d), flip a
+    monitor's `enabled` line in place, or request an immediate reload
+    (CL-07). The daemon notices edits within 30s (PM-04); no restart."""
     from ftmon.definitions import manage
 
     paths = get_paths()
+    if args.action == "rescan":
+        return _monitor_rescan(paths)
+    if not args.name:
+        print(f"monitor {args.action}: missing monitor name", file=sys.stderr)
+        return 2
     check_aliases: frozenset[str] = frozenset()
     if paths.check_registry_file.exists():
         try:
@@ -662,6 +733,29 @@ def _dispatch_check_install(argv: list[str]) -> int | None:
     return cmd_recipe(args)
 
 
+def _dispatch_check_trust(argv: list[str]) -> int | None:
+    """CL-08: `ftmon check trust <path>` shares `check` without breaking
+    `check <path>`, mirroring the `check install` shim. Reports every failed
+    condition of the EC-01/SE-07 predicate; never executes the candidate."""
+    if len(argv) < 2 or argv[0] != "check" or argv[1] != "trust":
+        return None
+    parser = argparse.ArgumentParser(prog="ftmon check trust")
+    parser.add_argument(
+        "executable", help="Absolute path to a candidate check executable"
+    )
+    args = parser.parse_args(argv[2:])
+    from ftmon.checks.trust import trust_failures
+
+    failures = trust_failures(args.executable)
+    if not failures:
+        print(f"trusted: {args.executable}")
+        return 0
+    print(f"not trusted: {args.executable}", file=sys.stderr)
+    for reason in failures:
+        print(f"  {reason}", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point (CL-01). Returns exit code.
 
@@ -677,6 +771,9 @@ def main(argv: list[str] | None = None) -> int:
     install_rc = _dispatch_check_install(argv)
     if install_rc is not None:
         return install_rc
+    trust_rc = _dispatch_check_trust(argv)
+    if trust_rc is not None:
+        return trust_rc
 
     parser = argparse.ArgumentParser(
         prog="ftmon",
@@ -839,13 +936,24 @@ def main(argv: list[str] | None = None) -> int:
     # monitor
     monitor_parser = subparsers.add_parser(
         "monitor",
-        help="Monitor management (approve, enable, disable)"
+        help="Monitor management (approve, enable, disable, rescan)"
     )
     monitor_parser.add_argument(
-        "action", choices=["approve", "enable", "disable"],
+        "action", choices=["approve", "enable", "disable", "rescan"],
         help="Action to take"
     )
-    monitor_parser.add_argument("name", help="Monitor name")
+    monitor_parser.add_argument(
+        "name", nargs="?", default=None,
+        help="Monitor name (not used by rescan)"
+    )
+
+    # paths
+    paths_parser = subparsers.add_parser(
+        "paths", help="Print the resolved filesystem layout (CL-06)"
+    )
+    paths_parser.add_argument(
+        "--json", action="store_true", help="Machine-readable output (CL-03)"
+    )
 
     # baseline
     baseline_parser = subparsers.add_parser(
@@ -938,6 +1046,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_monitors(args)
     elif args.command == "monitor":
         return cmd_monitor(args)
+    elif args.command == "paths":
+        return cmd_paths(args)
     elif args.command == "recipe":
         return cmd_recipe(args)
     elif args.command == "baseline":

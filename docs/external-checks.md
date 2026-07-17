@@ -11,6 +11,11 @@ definitions, drafts, MCP and the web interface may only reference that alias.
 This separation means an AI-authored or web-approved definition cannot grant
 itself command-execution authority (EC-01, SE-07).
 
+This page covers granting an existing executable authority to run. For
+writing the executable itself — where it should live, the trust contract,
+and the two output protocols — see
+[Writing an external check](check-authoring.md).
+
 ## Register a check
 
 Desktop installations use `~/.config/ftmon/checks.toml`, created as a private

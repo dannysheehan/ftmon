@@ -430,3 +430,116 @@ class TestAck:
         conn.close()
         err = assert_err(api.ack_incident(inc_id), "invalid_params")
         assert "not open" in err["message"]
+
+
+# --- MC-06: authoring discoverability ---------------------------------------
+
+
+EXTERNAL_DIAG_DEF = """
+schema = 1
+[monitor]
+name = "gpu_ext"
+description = "external diag fixture"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "15s"
+source = "external"
+
+[source_options]
+check = "gpu_probe"
+entity = "card0"
+
+[[source_options.perfdata]]
+label = "vram"
+metric = "vram_bytes"
+plugin_uom = "B"
+unit = "bytes"
+kind = "gauge"
+
+[[rule]]
+id = "present"
+when = "vram_bytes >= 0"
+severity = "warning"
+message = "{entity} vram sampled"
+"""
+
+
+class TestDiscoverability:
+    def test_monitor_paths_reports_layout_mc_06(self, core_env):  # noqa: F811
+        """[MC-06] the JSON form of `ftmon paths` (CL-06): paths only, all
+        strings, nothing secret."""
+        paths = core_env
+        res = McpApi(paths).monitor_paths()
+        assert res["monitors_dir"] == str(paths.monitors_dir)
+        assert res["drafts_dir"] == str(paths.drafts_dir)
+        assert res["check_registry"] == str(paths.check_registry_file)
+        assert all(isinstance(v, str) for v in res.values())
+
+    def test_diagnose_missing_monitor_mc_06(self, core_env):  # noqa: F811
+        """[MC-06] a missing name reports where it was looked for."""
+        res = McpApi(core_env).diagnose_monitor("ghost")
+        assert res["found"] == "missing"
+        assert "monitors_dir" in res["hint"]
+
+    def test_diagnose_draft_mc_06(self, core_env):  # noqa: F811
+        """[MC-06] a draft is found in drafts_dir and validated."""
+        api = McpApi(core_env)
+        api.define_monitor(DRAFT2)
+        res = api.diagnose_monitor("leak2")
+        assert res["found"] == "draft"
+        assert res["valid"] is True
+
+    def test_diagnose_invalid_file_mc_06(self, core_env):  # noqa: F811
+        """[MC-06] validation errors surface verbatim, like get_monitor."""
+        paths = core_env
+        (paths.monitors_dir / "broken.toml").write_text('name = 3\n')
+        res = McpApi(paths).diagnose_monitor("broken")
+        assert res["valid"] is False
+        assert res["errors"]
+
+    def test_diagnose_reports_load_state_mc_06(self, populated):
+        """[MC-06] last load hash and age come from PM-07 history."""
+        _paths, _clock, api = populated
+        res = api.diagnose_monitor("leak")
+        assert res["found"] == "enabled"
+        assert res["valid"] is True
+        assert res["last_load"]["hash"]
+        assert res["last_load"]["age_s"] >= 0
+
+    def test_diagnose_external_alias_trust_mc_06(self, core_env, tmp_path):  # noqa: F811
+        """[MC-06] external monitors report alias registration and executable
+        trust as booleans — never argv (SE-07)."""
+        paths = core_env
+        (paths.monitors_dir / "gpu_ext.toml").write_text(EXTERNAL_DIAG_DEF)
+
+        api = McpApi(paths)
+        res = api.diagnose_monitor("gpu_ext")
+        assert res["check"]["alias"] == "gpu_probe"
+        assert res["check"]["registered"] is False
+
+        exe = tmp_path / "gpu_probe.sh"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o700)
+        paths.check_registry_file.write_text(
+            f'[check.gpu_probe]\nargv=["{exe}"]\nprotocol="ftmon-json"\n')
+        paths.check_registry_file.chmod(0o600)
+        res = api.diagnose_monitor("gpu_ext")
+        assert res["check"]["registered"] is True
+        assert res["check"]["executable_trusted"] is True
+        assert "argv" not in json.dumps(res)
+
+    def test_define_monitor_next_steps_mc_06(self, core_env):  # noqa: F811
+        """[MC-06] the response names both approval routes structurally."""
+        res = McpApi(core_env).define_monitor(DRAFT2)
+        vias = {step["via"] for step in res["next_steps"]}
+        assert vias == {"cli", "web"}
+        assert any("ftmon monitor approve leak2" in step["action"]
+                   for step in res["next_steps"])
+
+    def test_get_monitor_not_found_names_dirs_mc_06(self, core_env):  # noqa: F811
+        """[MC-06] not_found distinguishes a path problem from a validation
+        problem by naming the directories searched."""
+        err = assert_err(McpApi(core_env).get_monitor("ghost"), "not_found")
+        assert "monitors_dir" in err["message"]
+        assert "monitor_paths" in err["hint"]

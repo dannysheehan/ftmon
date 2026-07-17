@@ -137,6 +137,34 @@ Key invariants:
 - Respect SPEC §1.1 non-goals (fleet monitoring, plugin loading, etc.) — they
   are enforced scope, not TODOs.
 
+## Monitor & check authoring (quick recipe)
+
+Every trap below has taken a live install down or wasted an agent's session —
+don't rediscover them.
+
+- **Layout:** run `uv run ftmon paths` (or the MCP `monitor_paths` tool)
+  instead of guessing. The four author-relevant locations: `monitors/`
+  (enabled definitions), `monitors/drafts/` (pending approval — note it is
+  *inside* `monitors/`), `actions/`, and `checks.toml` (the admin-only
+  external-check authority). Check executables follow the convention
+  `~/.local/lib/ftmon/checks/` (desktop) or `/usr/local/lib/ftmon/checks/`
+  (server, root-owned) — `docs/check-authoring.md`.
+- **Trust:** an external-check executable must be an absolute, symlink-free
+  regular file, owned by root or the daemon's euid, not group/other-writable,
+  and executable (EC-01/SE-07). `uv run ftmon check trust <path>` prints every
+  failing condition; it never runs the candidate.
+- **Reload:** the daemon rescans every 30 s (PM-04); `ftmon monitor rescan`
+  or SIGHUP (`systemctl reload ftmon`) applies changes at the next tick
+  (PM-11). Never kill-and-restart the daemon just to pick up an edit.
+- **Approval:** drafts are never loaded by the daemon; a human approves with
+  `ftmon monitor approve <name>` or the web UI (MD-05). The MCP
+  `diagnose_monitor` tool answers "why isn't this monitor running?" in one
+  call (location, validation, load state, alias trust).
+- **Perfdata units are native:** values are stored in the unit the plugin
+  emits — `unit` describes what is stored, and `scale` is a real conversion
+  factor (rare), not a unit label. Do not scale MiB into "bytes" that are
+  already bytes.
+
 ## Conventions
 
 - Lint rules are enforced as tests; `uv run pytest -q` is the gate for

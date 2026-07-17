@@ -145,10 +145,10 @@ open incidents already filtered to that monitor.
 
 Open the monitor's TOML file; every parameter has a comment saying what it
 does. Change the value, run `ftmon check`, done — the daemon picks up
-edits within 30 seconds, no restart. To apply a change immediately, send
-`SIGHUP` (`systemctl reload ftmon` with the packaged units, or
-`kill -HUP <pid>`) — it runs the same rescan at the next tick instead of
-waiting out the interval. Three knobs cover most needs:
+edits within 30 seconds, no restart. To apply a change immediately, run
+`ftmon monitor rescan` (or send `SIGHUP` — `systemctl reload ftmon` with the
+packaged units) — the same rescan runs at the next tick instead of waiting
+out the interval. Three knobs cover most needs:
 
 - **Thresholds** (`warn_pct`, `crit_mb_per_h`, ...) — the numbers ship as
   sensible defaults but *your* machine's normal is the real reference;
@@ -275,7 +275,9 @@ ftmon recipe install http-tls
 ```
 
 The daemon picks up the new monitor and check alias within ~30 seconds — no
-restart required (`SIGHUP` / `systemctl reload ftmon` skips the wait).
+restart required (`ftmon monitor rescan` or `systemctl reload ftmon` skips
+the wait). `ftmon paths` prints where definitions, drafts, and the check
+registry live on this machine.
 
 ### Don't poke the live database
 
