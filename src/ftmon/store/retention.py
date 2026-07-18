@@ -65,6 +65,9 @@ class Retention:
         self._r1h_keep_durable = r1h_keep_durable_s
         self._r1h_keep_process = r1h_keep_process_s
         self._events_keep = events_keep_s
+        if half_life_s <= 0:
+            raise ValueError("half_life_s must be positive")
+        self._half_life_s = float(half_life_s)
         self._alpha = 1.0 - 2.0 ** (-ROLLUP5M_S / half_life_s)
         self._span = max_bucket_span_s
         self._batch = delete_batch
@@ -154,23 +157,34 @@ class Retention:
         ordered = sorted(rollup_rows, key=lambda r: (r["series_id"], r["bucket"]))
         for r in ordered:
             row = cur.execute(
-                "SELECT value, updates, updated_bucket FROM baselines WHERE series_id = ?",
+                "SELECT value, updates, updated_bucket, half_life_s "
+                "FROM baselines WHERE series_id = ?",
                 (r["series_id"],),
             ).fetchone()
             if row is None:
                 cur.execute(
-                    "INSERT INTO baselines(series_id, value, updates, updated_bucket) "
-                    "VALUES (?, ?, 1, ?)",
-                    (r["series_id"], r["avg"], r["bucket"]),
+                    "INSERT INTO baselines(series_id, value, updates, updated_bucket, "
+                    "half_life_s) VALUES (?, ?, 1, ?, ?)",
+                    (r["series_id"], r["avg"], r["bucket"], self._half_life_s),
                 )
                 self.baselines_updated += 1
             elif r["bucket"] > row["updated_bucket"]:
-                new_value = row["value"] + self._alpha * (r["avg"] - row["value"])
-                cur.execute(
-                    "UPDATE baselines SET value = ?, updates = ?, updated_bucket = ? "
-                    "WHERE series_id = ?",
-                    (new_value, row["updates"] + 1, r["bucket"], r["series_id"]),
-                )
+                if row["half_life_s"] != self._half_life_s:
+                    # Changing alpha makes older states impossible to reverse
+                    # without a history table. Treat the first bucket under the
+                    # new policy as a fresh seed, matching an operator reset.
+                    cur.execute(
+                        "UPDATE baselines SET value = ?, updates = 1, "
+                        "updated_bucket = ?, half_life_s = ? WHERE series_id = ?",
+                        (r["avg"], r["bucket"], self._half_life_s, r["series_id"]),
+                    )
+                else:
+                    new_value = row["value"] + self._alpha * (r["avg"] - row["value"])
+                    cur.execute(
+                        "UPDATE baselines SET value = ?, updates = ?, updated_bucket = ? "
+                        "WHERE series_id = ?",
+                        (new_value, row["updates"] + 1, r["bucket"], r["series_id"]),
+                    )
                 self.baselines_updated += 1
 
     def _rollup_1h(self, cur: sqlite3.Cursor, now: float) -> None:

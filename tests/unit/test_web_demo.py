@@ -94,6 +94,11 @@ def test_demo_factory_accepts_the_real_seeded_builder_contract_ui_15_ui_16(tmp_p
         assert f'data-monitor="{monitor}" data-state="{state}"' in response.text
     assert "Daemon data is stale" in response.text
     assert "3600 seconds old" not in response.text
+    baselines = TestClient(create_demo_app(db, "demo.ftmon.org")).get(
+        "/baselines", headers={"host": "demo.ftmon.org"}
+    )
+    assert baselines.status_code == 200
+    assert "learning" in baselines.text and "ready" in baselines.text
     for monitor, profile, entity in (
         ("disk", "space-growth", "mount:/srv/demo"),
         ("leak", "rss-growth", "process:demo-worker"),

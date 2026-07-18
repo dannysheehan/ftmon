@@ -16,7 +16,11 @@ document.querySelectorAll('[data-metric-entity]').forEach(select=>select.addEven
    the interpreted chart about gaps and time positioning (D14/UI-13). */
 const alignTimeSeries=(sets)=>{const xs=[...new Set(sets.flatMap(s=>s.map(p=>p[0])))].sort((a,b)=>a-b);return [xs,...sets.map(s=>{const m=new Map(s);return xs.map(x=>m.has(x)?m.get(x):null)})]};
 const incidentMarkerPlugin=(items)=>({hooks:{draw:[u=>{const ctx=u.ctx;ctx.save();ctx.strokeStyle='#c01c28';ctx.setLineDash([4,4]);items.forEach(i=>{const x=Math.round(u.valToPos(i.opened_ts,'x',true));ctx.beginPath();ctx.moveTo(x,u.bbox.top);ctx.lineTo(x,u.bbox.top+u.bbox.height);ctx.stroke()});ctx.restore()}]}});
-const timeChartOptions=(container,title,series,incidents,scales={},syncKey='ftmon-chart')=>({title,width:Math.max(320,container.clientWidth-24),height:260,scales:{x:{time:true},...scales},axes:[{},{}],series,cursor:{drag:{x:true,y:false,setScale:true},sync:{key:syncKey}},plugins:[incidentMarkerPlugin(incidents)]});
+/* Baselines keep their native five-minute timestamps. Drawing from the points
+   directly avoids inserting nulls at raw/hourly timestamps, while the exact
+   delta check prevents a dashed stroke from claiming evidence across a gap. */
+const baselinePlugin=(points)=>({hooks:{draw:[u=>{if(!points.length)return;const ctx=u.ctx;ctx.save();ctx.strokeStyle='#6f42c1';ctx.lineWidth=2;ctx.setLineDash([7,5]);points.forEach((point,index)=>{const x=u.valToPos(point[0],'x',true),y=u.valToPos(point[1],'y',true);ctx.beginPath();ctx.arc(x,y,2,0,Math.PI*2);ctx.fillStyle='#6f42c1';ctx.fill();if(index&&point[0]-points[index-1][0]===300){const previous=points[index-1];ctx.beginPath();ctx.moveTo(u.valToPos(previous[0],'x',true),u.valToPos(previous[1],'y',true));ctx.lineTo(x,y);ctx.stroke()}});ctx.restore()}]}});
+const timeChartOptions=(container,title,series,incidents,scales={},syncKey='ftmon-chart',plugins=[])=>({title,width:Math.max(320,container.clientWidth-24),height:260,scales:{x:{time:true},...scales},axes:[{},{}],series,cursor:{drag:{x:true,y:false,setScale:true},sync:{key:syncKey}},plugins:[incidentMarkerPlugin(incidents),...plugins]});
 
 /* Trends use one timestamp union per panel. Nulls are intentional gaps: joining
    across a suspend or missing rollup would imply evidence FTMON never saw. */
@@ -31,4 +35,4 @@ if(panels.projection){const projection=alignTimeSeries([panels.projection.points
 }
 
 const metricNode=document.getElementById('metric-data');
-if(metricNode&&window.uPlot){const metric=JSON.parse(metricNode.textContent),panel=metric.panel,container=document.querySelector('[data-metric-chart]'),data=alignTimeSeries([panel.points,panel.lower,panel.upper]),series=[{}, {label:`${metric.metric} (${metric.unit})`,stroke:'#3273dc',width:2},{label:'Minimum',stroke:'#3273dc88',width:1},{label:'Maximum',stroke:'#3273dc88',width:1}],opts=timeChartOptions(container,metric.metric,series,metric.incidents,metric.unit==='percent'?{y:{range:[0,100]}}:{});opts.bands=[{series:[2,3],fill:'#3273dc22'}];new uPlot(opts,data,container)}
+if(metricNode&&window.uPlot){const metric=JSON.parse(metricNode.textContent),panel=metric.panel,container=document.querySelector('[data-metric-chart]'),data=alignTimeSeries([panel.points,panel.lower,panel.upper]),series=[{}, {label:`${metric.metric} (${metric.unit})`,stroke:'#3273dc',width:2},{label:'Minimum',stroke:'#3273dc88',width:1},{label:'Maximum',stroke:'#3273dc88',width:1}],plugins=metric.baseline?[baselinePlugin(metric.baseline.points)]:[],opts=timeChartOptions(container,metric.metric,series,metric.incidents,metric.unit==='percent'?{y:{range:[0,100]}}:{},'ftmon-chart',plugins);opts.bands=[{series:[2,3],fill:'#3273dc22'}];new uPlot(opts,data,container)}

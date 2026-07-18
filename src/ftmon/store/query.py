@@ -9,15 +9,23 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+from base64 import urlsafe_b64decode, urlsafe_b64encode
+from binascii import Error as BinasciiError
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-__all__ = ["SeriesPoint", "SeriesResult", "IncidentDetail", "IncidentHistoryEntry",
-           "Query", "lttb"]
+__all__ = [
+    "BaselineHistory", "BaselinePage", "BaselineRecord", "SeriesPoint", "SeriesResult",
+    "IncidentDetail", "IncidentHistoryEntry", "Query", "lttb",
+]
 
 _RAW_RECENT_S = 48 * 3600
 _RAW_MAX_SPAN_S = 12 * 3600
 _ROLLUP5M_MAX_SPAN_S = 30 * 86400
+_ROLLUP5M_S = 300
+_BASELINE_MIN_UPDATES = 240
+_BASELINE_DEFAULT_LIMIT = 100
+_BASELINE_MAX_LIMIT = 500
 
 
 @dataclass(frozen=True)
@@ -37,6 +45,33 @@ class SeriesResult:
     lower: list[SeriesPoint] | None = None
     upper: list[SeriesPoint] | None = None
     downsampled: bool = False
+
+
+@dataclass(frozen=True)
+class BaselineRecord:
+    monitor: str
+    entity_id: str
+    metric: str
+    level: float
+    updates: int
+    required_updates: int
+    coverage: float
+    ready: bool
+    updated_at: int
+    half_life_s: float
+
+
+@dataclass(frozen=True)
+class BaselineHistory:
+    baseline: BaselineRecord
+    points: tuple[SeriesPoint, ...]
+    history_truncated: bool
+
+
+@dataclass(frozen=True)
+class BaselinePage:
+    baselines: tuple[BaselineRecord, ...]
+    next_cursor: str | None
 
 
 @dataclass(frozen=True)
@@ -106,6 +141,186 @@ def lttb(points: list[SeriesPoint], n: int) -> list[SeriesPoint]:
 class Query:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
+
+    @staticmethod
+    def _baseline_record(row: sqlite3.Row) -> BaselineRecord:
+        updates = int(row["updates"])
+        return BaselineRecord(
+            monitor=row["monitor"],
+            entity_id=row["entity_id"],
+            metric=row["metric"],
+            level=float(row["value"]),
+            updates=updates,
+            required_updates=_BASELINE_MIN_UPDATES,
+            coverage=min(updates / _BASELINE_MIN_UPDATES, 1.0),
+            ready=updates >= _BASELINE_MIN_UPDATES,
+            updated_at=int(row["updated_bucket"]),
+            half_life_s=float(row["half_life_s"]),
+        )
+
+    def current_baseline(
+        self, monitor: str, entity_id: str, metric: str
+    ) -> BaselineRecord | None:
+        """Return learned state even before it is ready for rule evaluation."""
+        row = self._conn.execute(
+            "SELECT s.monitor, s.entity_id, s.metric, b.value, b.updates, "
+            "b.updated_bucket, b.half_life_s FROM baselines b "
+            "JOIN series s ON s.id = b.series_id "
+            "WHERE s.monitor = ? AND s.entity_id = ? AND s.metric = ?",
+            (monitor, entity_id, metric),
+        ).fetchone()
+        return None if row is None else self._baseline_record(row)
+
+    @staticmethod
+    def _baseline_filters(
+        monitor: str | None, entity_id: str | None, metric: str | None, ready: bool | None
+    ) -> dict[str, str | bool | None]:
+        if ready is not None and not isinstance(ready, bool):
+            raise ValueError("ready must be a boolean")
+        return {
+            "monitor": monitor,
+            "entity_id": entity_id,
+            "metric": metric,
+            "ready": ready,
+        }
+
+    @staticmethod
+    def _encode_baseline_cursor(
+        key: tuple[str, str, str], filters: dict[str, str | bool | None]
+    ) -> str:
+        raw = json.dumps(
+            {"v": 1, "after": list(key), "filters": filters},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return urlsafe_b64encode(raw).decode().rstrip("=")
+
+    @staticmethod
+    def _decode_baseline_cursor(
+        cursor: str, filters: dict[str, str | bool | None]
+    ) -> tuple[str, str, str]:
+        try:
+            if not isinstance(cursor, str) or not cursor:
+                raise ValueError
+            raw = urlsafe_b64decode(cursor.encode("ascii") + b"=" * (-len(cursor) % 4))
+            payload = json.loads(raw)
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"v", "after", "filters"}
+                or payload["v"] != 1
+                or payload["filters"] != filters
+                or not isinstance(payload["after"], list)
+                or len(payload["after"]) != 3
+                or not all(isinstance(value, str) for value in payload["after"])
+            ):
+                raise ValueError
+            return tuple(payload["after"])
+        except (BinasciiError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid baseline cursor or cursor/filter mismatch") from exc
+
+    def list_baselines(
+        self,
+        *,
+        monitor: str | None = None,
+        entity_id: str | None = None,
+        metric: str | None = None,
+        ready: bool | None = None,
+        limit: int = _BASELINE_DEFAULT_LIMIT,
+        cursor: str | None = None,
+    ) -> BaselinePage:
+        """List stored rows with deterministic, filter-bound keyset pagination."""
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= _BASELINE_MAX_LIMIT
+        ):
+            raise ValueError(f"limit must be an integer from 1 to {_BASELINE_MAX_LIMIT}")
+        filters = self._baseline_filters(monitor, entity_id, metric, ready)
+        after = self._decode_baseline_cursor(cursor, filters) if cursor is not None else None
+
+        sql = (
+            "SELECT s.monitor, s.entity_id, s.metric, b.value, b.updates, "
+            "b.updated_bucket, b.half_life_s FROM baselines b "
+            "JOIN series s ON s.id = b.series_id WHERE 1=1"
+        )
+        params: list[object] = []
+        for column, value in (
+            ("s.monitor", monitor), ("s.entity_id", entity_id), ("s.metric", metric)
+        ):
+            if value is not None:
+                sql += f" AND {column} = ?"  # noqa: S608 -- column names are fixed above
+                params.append(value)
+        if ready is not None:
+            sql += " AND b.updates >= ?" if ready else " AND b.updates < ?"
+            params.append(_BASELINE_MIN_UPDATES)
+        if after is not None:
+            sql += " AND (s.monitor, s.entity_id, s.metric) > (?, ?, ?)"
+            params.extend(after)
+        sql += " ORDER BY s.monitor, s.entity_id, s.metric LIMIT ?"
+        params.append(limit + 1)
+        rows = self._conn.execute(sql, params).fetchall()
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        records = tuple(self._baseline_record(row) for row in page_rows)
+        next_cursor = None
+        if has_more:
+            last = records[-1]
+            next_cursor = self._encode_baseline_cursor(
+                (last.monitor, last.entity_id, last.metric), filters
+            )
+        return BaselinePage(baselines=records, next_cursor=next_cursor)
+
+    def baseline_history(
+        self,
+        monitor: str,
+        entity_id: str,
+        metric: str,
+        *,
+        start: float,
+        end: float,
+    ) -> BaselineHistory | None:
+        """Reverse retained EWMA inputs into native five-minute states (CA-05)."""
+        row = self._conn.execute(
+            "SELECT s.id AS series_id, s.monitor, s.entity_id, s.metric, b.value, "
+            "b.updates, b.updated_bucket, b.half_life_s FROM baselines b "
+            "JOIN series s ON s.id = b.series_id "
+            "WHERE s.monitor = ? AND s.entity_id = ? AND s.metric = ?",
+            (monitor, entity_id, metric),
+        ).fetchone()
+        if row is None:
+            return None
+        baseline = self._baseline_record(row)
+        rollups = self._conn.execute(
+            "SELECT bucket, avg FROM rollup5m WHERE series_id = ? AND bucket <= ? "
+            "ORDER BY bucket DESC LIMIT ?",
+            (row["series_id"], baseline.updated_at, baseline.updates),
+        ).fetchall()
+
+        states = [SeriesPoint(baseline.updated_at, baseline.level)]
+        remaining = baseline.updates
+        level = baseline.level
+        alpha = 1.0 - 2.0 ** (-_ROLLUP5M_S / baseline.half_life_s)
+        # The current bucket's rollup is required to reverse its update. The
+        # next retained row supplies the timestamp of the predecessor state.
+        if rollups and rollups[0]["bucket"] == baseline.updated_at:
+            for index in range(len(rollups) - 1):
+                if remaining <= 1:
+                    break
+                current_rollup = rollups[index]
+                level = (level - alpha * current_rollup["avg"]) / (1.0 - alpha)
+                remaining -= 1
+                states.append(SeriesPoint(int(rollups[index + 1]["bucket"]), level))
+
+        reached_seed = remaining == 1
+        states.reverse()
+        points = tuple(point for point in states if start <= point.ts <= end)
+        first_bucket_in_range = math.ceil(start / _ROLLUP5M_S) * _ROLLUP5M_S
+        history_truncated = first_bucket_in_range < states[0].ts and not reached_seed
+        return BaselineHistory(
+            baseline=baseline,
+            points=points,
+            history_truncated=history_truncated,
+        )
 
     def _resolution(self, now: float, start: float, end: float) -> str:
         span = end - start

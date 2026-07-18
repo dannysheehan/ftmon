@@ -35,7 +35,7 @@ def test_ui_pages_security_and_escaping_ts_07_ui_02_ui_08_se_02(tmp_path):
     """[TS-07][UI-08][SE-02] Pages escape untrusted strings and set CSP headers."""
     client, _paths = _client(tmp_path)
     headers = {"host": "localhost:8420"}
-    for url in ("/", "/incidents", "/incidents/1", "/metrics", "/events",
+    for url in ("/", "/incidents", "/incidents/1", "/metrics", "/baselines", "/events",
                 "/monitors", "/self"):
         response = client.get(url, headers=headers)
         assert response.status_code == 200
@@ -240,7 +240,116 @@ def test_series_api_uplot_contract_envelope_gaps_incidents_and_trend_ts_11(tmp_p
     assert any(point[1] is None for point in data["panel"]["points"])
     assert data["incidents"][0]["id"] == 3
     assert data["matching_trends"][0]["id"] == "space-growth"
+    assert data["baseline"] is None
     assert "panels" not in data  # Metrics never fabricates interpreted panels
+
+
+def test_metrics_baseline_overlay_uses_native_points_and_accessible_summary_ui_13_ts_11(
+    tmp_path,
+):
+    """[UI-13][TS-11] Baselines expose retained 5m evidence without bridging gaps."""
+    client, paths = _client(tmp_path)
+    conn = connect(paths.db_file)
+    conn.execute(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(1,'load','host','load1',1)"
+    )
+    conn.executemany(
+        "INSERT INTO rollup5m(series_id,bucket,avg,min,max,last,cnt) "
+        "VALUES(1,?,?,?,?,?,1)",
+        [(300, 1.0, 1.0, 1.0, 1.0), (600, 2.0, 2.0, 2.0, 2.0),
+         (900, 3.0, 3.0, 3.0, 3.0)],
+    )
+    conn.execute(
+        "INSERT INTO baselines(series_id,value,updates,updated_bucket,half_life_s) "
+        "VALUES(1,2.5,3,900,259200)"
+    )
+    conn.commit()
+    conn.close()
+    headers = {"host": "localhost:8420"}
+    api = client.get(
+        "/api/series?monitor=load&entity=host&metric=load1&range=7d",
+        headers=headers,
+    )
+    assert api.status_code == 200
+    baseline = api.json()["baseline"]
+    assert baseline["level"] == 2.5
+    assert baseline["updates"] == 3
+    assert baseline["required_updates"] == 240
+    assert baseline["coverage"] == 3 / 240
+    assert baseline["ready"] is False
+    assert baseline["updated_at"] == 900
+    assert baseline["half_life_s"] == 259200
+    assert [point[0] for point in baseline["points"]] == [300, 600, 900]
+    page = client.get(
+        "/metrics?monitor=load&entity=host&metric=load1&range=7d",
+        headers=headers,
+    )
+    assert "Baseline level 2.5" in page.text
+    assert "1% learned (3 of 240 updates), still learning" in page.text
+    assert "gaps are not connected" in page.text
+    script = client.get("/static/ftmon.js", headers=headers).text
+    assert "point[0]-points[index-1][0]===300" in script
+    assert "spanGaps" not in script
+
+
+def test_baselines_index_filters_paginates_links_and_rejects_bad_state_ui_02(tmp_path):
+    """[UI-02] Baseline inventory shares bounded keyset semantics and Metrics links."""
+    client, paths = _client(tmp_path)
+    conn = connect(paths.db_file)
+    for sid, monitor, entity, metric, updates in (
+        (1, "disk", "/home", "used_pct", 30),
+        (2, "disk", "/var", "used_pct", 240),
+        (3, "load", "host", "load1", 250),
+    ):
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) VALUES(?,?,?,?,1)",
+            (sid, monitor, entity, metric),
+        )
+        conn.execute(
+            "INSERT INTO baselines(series_id,value,updates,updated_bucket,half_life_s) "
+            "VALUES(?,?,?,?,259200)",
+            (sid, float(sid), updates, 900),
+        )
+    conn.commit()
+    conn.close()
+    headers = {"host": "localhost:8420"}
+    first = client.get("/baselines?monitor=disk&limit=1", headers=headers)
+    assert first.status_code == 200
+    assert "/home" in first.text and "/var" not in first.text
+    assert "12% — learning" in first.text
+    assert "/metrics?monitor=disk&amp;entity=%2Fhome&amp;metric=used_pct" in first.text
+    assert '<a rel="next"' in first.text
+    next_href = first.text.split('<a rel="next" href="', 1)[1].split('"', 1)[0]
+    second = client.get(next_href.replace("&amp;", "&"), headers=headers)
+    assert second.status_code == 200
+    assert "/var" in second.text and "100% — ready" in second.text
+    assert "load1" not in second.text
+    for url in (
+        "/baselines?limit=0", "/baselines?limit=nope", "/baselines?ready=maybe",
+        "/baselines?cursor=not-a-cursor",
+        next_href.replace("&amp;", "&").replace("monitor=disk", "monitor=load"),
+    ):
+        assert client.get(url, headers=headers).status_code == 400
+
+
+def test_baselines_index_empty_and_missing_database_states_ui_02(tmp_path):
+    """[UI-02] Operators can distinguish no matches from no database."""
+    client, _paths = _client(tmp_path)
+    headers = {"host": "localhost:8420"}
+    empty = client.get("/baselines", headers=headers)
+    assert "No stored baselines match these filters" in empty.text
+
+    paths = get_paths({
+        "FTMON_CONFIG_DIR": str(tmp_path / "missing-config"),
+        "FTMON_DATA_DIR": str(tmp_path / "missing-data"),
+        "FTMON_STATE_DIR": str(tmp_path / "missing-state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "missing-run"),
+    })
+    missing = TestClient(create_app(paths, FakeClock(wall=1000, mono=1000))).get(
+        "/baselines", headers=headers,
+    )
+    assert "database is not available yet" in missing.text
 
 
 @pytest.mark.parametrize(

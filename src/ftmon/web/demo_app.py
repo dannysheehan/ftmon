@@ -22,6 +22,7 @@ from ftmon.store.query import Query
 from ftmon.web.app import (
     _CSP,
     _demo_definitions,
+    baselines,
     dashboard,
     disk_trend_api,
     disks_redirect,
@@ -147,6 +148,7 @@ def create_demo_app(db_path: Path, hostname: str) -> Starlette:
     routes = [
         Route("/", dashboard), Route("/incidents", incidents),
         Route("/incidents/{id:int}", incident_detail), Route("/metrics", metrics),
+        Route("/baselines", baselines),
         Route("/events", events), Route("/trends", trends),
         Route("/trends/{monitor:str}/{profile:str}", trends),
         Route("/api/trend", trend_api), Route("/api/series", series_api),
