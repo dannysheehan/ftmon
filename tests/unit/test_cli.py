@@ -387,7 +387,7 @@ class TestIncident:
                 "INSERT INTO incidents(id, monitor, grp, entity_id, state, severity, "
                 "owning_rule, opened_ts, last_change_ts, notify_count, occurrences, flapping) "
                 "VALUES (42, 'leak', 'rss', 'firefox:7:1', 'open', 2, 'rss-growth', "
-                "1_700_000_000, 1_700_000_100, 2, 1, 1)"
+                "1700000000, 1700000100, 2, 1, 1)"
             )
             conn.executemany(
                 "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
@@ -457,11 +457,11 @@ class TestIncident:
                 "INSERT INTO incidents(id, monitor, grp, entity_id, state, severity, "
                 "owning_rule, opened_ts, last_change_ts, notify_count, occurrences, flapping) "
                 "VALUES (8, 'leak', 'rss', 'firefox:7:1', 'open', 2, 'rss-growth', "
-                "1_700_000_000, 1_700_000_100, 1, 1, 0)"
+                "1700000000, 1700000100, 1, 1, 0)"
             )
             conn.execute(
                 "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
-                "VALUES (8, 1, 1_700_000_000, 'opened', '{\"severity\":2}')"
+                "VALUES (8, 1, 1700000000, 'opened', '{\"severity\":2}')"
             )
 
         _seed_db(tmp_path, monkeypatch, setup)
@@ -479,11 +479,11 @@ class TestIncident:
                 "INSERT INTO incidents(id, monitor, grp, entity_id, state, severity, "
                 "owning_rule, opened_ts, last_change_ts, notify_count, occurrences, flapping) "
                 "VALUES (9, 'leak', 'rss', 'firefox:7:1', 'open', 2, 'rss-growth', "
-                "1_700_000_000, 1_700_000_100, 1, 1, 0)"
+                "1700000000, 1700000100, 1, 1, 0)"
             )
             conn.execute(
                 "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
-                "VALUES (9, 1, 1_700_000_000, 'opened', 'not-json{')"
+                "VALUES (9, 1, 1700000000, 'opened', 'not-json{')"
             )
 
         _seed_db(tmp_path, monkeypatch, setup)
