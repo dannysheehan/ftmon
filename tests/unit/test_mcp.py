@@ -17,7 +17,8 @@ from ftmon.clock import FakeClock
 from ftmon.daemon import DaemonCore
 from ftmon.definitions import loader, manage
 from ftmon.mcp_server import TOOL_NAMES, McpApi, build_server
-from ftmon.store.db import connect
+from ftmon.store.db import connect, migrate
+from ftmon.store.writer import TickWriter
 from tests.unit.test_engine import LEAKDEF, ScriptedSampler, grower
 from tests.unit.test_m2_integration import core_env, tick_n  # noqa: F401 - fixture
 
@@ -465,6 +466,26 @@ message = "{entity} vram sampled"
 """
 
 
+def _seed_plugin_result(
+    paths, monitor: str, entity_id: str, *, ts: float,
+    state: float, ok: float, duration: float, message: str,
+) -> None:
+    """Persist one coherent EC-05 plugin result via the production writer."""
+    conn = connect(paths.db_file)
+    migrate(conn)
+    writer = TickWriter(conn)
+    for metric, value in (
+        ("plugin_state", state),
+        ("plugin_ok", ok),
+        ("duration_s", duration),
+    ):
+        sid = writer.series_id(monitor, entity_id, metric, True)
+        writer.add_sample(sid, ts, value)
+    writer.upsert_entity(monitor, entity_id, ts, {"plugin_message": message})
+    writer.commit_tick()
+    conn.close()
+
+
 class TestDiscoverability:
     def test_monitor_paths_reports_layout_mc_06(self, core_env):  # noqa: F811
         """[MC-06] the JSON form of `ftmon paths` (CL-06): paths only, all
@@ -499,13 +520,15 @@ class TestDiscoverability:
         assert res["errors"]
 
     def test_diagnose_reports_load_state_mc_06(self, populated):
-        """[MC-06] last load hash and age come from PM-07 history."""
+        """[MC-06] last load hash and age come from PM-07 history; non-external
+        monitors have no last_result."""
         _paths, _clock, api = populated
         res = api.diagnose_monitor("leak")
         assert res["found"] == "enabled"
         assert res["valid"] is True
         assert res["last_load"]["hash"]
         assert res["last_load"]["age_s"] >= 0
+        assert res["last_result"] is None
 
     def test_diagnose_external_alias_trust_mc_06(self, core_env, tmp_path):  # noqa: F811
         """[MC-06] external monitors report alias registration and executable
@@ -517,6 +540,7 @@ class TestDiscoverability:
         res = api.diagnose_monitor("gpu_ext")
         assert res["check"]["alias"] == "gpu_probe"
         assert res["check"]["registered"] is False
+        assert res["last_result"] is None
 
         exe = tmp_path / "gpu_probe.sh"
         exe.write_text("#!/bin/sh\nexit 0\n")
@@ -528,6 +552,49 @@ class TestDiscoverability:
         assert res["check"]["registered"] is True
         assert res["check"]["executable_trusted"] is True
         assert "argv" not in json.dumps(res)
+        assert res["last_result"] is None
+
+    def test_diagnose_last_result_from_tickwriter_mc_06(self, core_env):  # noqa: F811
+        """[MC-06][EC-05] last_result re-exposes the coherent stored plugin
+        fields for the configured entity (sample_age_s, not last_load.age_s)."""
+        paths = core_env
+        (paths.monitors_dir / "gpu_ext.toml").write_text(EXTERNAL_DIAG_DEF)
+        sample_ts = WALL0 - 30
+        _seed_plugin_result(
+            paths, "gpu_ext", "card0", ts=sample_ts,
+            state=3.0, ok=0.0, duration=0.04,
+            message="sudo: a password is required",
+        )
+        api = McpApi(paths, clock=FakeClock(wall=WALL0, mono=1000.0))
+        res = api.diagnose_monitor("gpu_ext")
+        assert res["last_result"] == {
+            "entity_id": "card0",
+            "plugin_state": 3,
+            "plugin_ok": False,
+            "plugin_message": "sudo: a password is required",
+            "duration_s": 0.04,
+            "sample_age_s": 30,
+        }
+
+    def test_diagnose_last_result_ignores_stale_entity_mc_06(self, core_env):  # noqa: F811
+        """[MC-06] after source_options.entity changes, samples under the old
+        entity must not surface as last_result."""
+        paths = core_env
+        (paths.monitors_dir / "gpu_ext.toml").write_text(EXTERNAL_DIAG_DEF)
+        _seed_plugin_result(
+            paths, "gpu_ext", "old_card", ts=WALL0 - 10,
+            state=2.0, ok=0.0, duration=0.1,
+            message="CRITICAL: old entity",
+        )
+        api = McpApi(paths, clock=FakeClock(wall=WALL0, mono=1000.0))
+        res = api.diagnose_monitor("gpu_ext")
+        assert res["last_result"] is None
+
+    def test_diagnose_missing_has_no_last_result_key_mc_06(self, core_env):  # noqa: F811
+        """[MC-06] the missing early-return stays unchanged (no last_result)."""
+        res = McpApi(core_env).diagnose_monitor("ghost")
+        assert res["found"] == "missing"
+        assert "last_result" not in res
 
     def test_define_monitor_next_steps_mc_06(self, core_env):  # noqa: F811
         """[MC-06] the response names both approval routes structurally."""

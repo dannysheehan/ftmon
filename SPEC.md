@@ -1,28 +1,30 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.21** — v0.21 resolves OPEN-8: FTMON 2.0 container
-monitoring ships as an external-check recipe, not a core source. Rootful
-container-socket or container-engine-group authority is outside SE-01; the
-supported recipe precondition is a rootless socket already owned by the same
-user that runs FTMON. v0.20 bounds the desktop notifier's tray footprint
-(issue #40): NO-02 sends renotify/recover transient, reuses one replaceable
-notification slot per incident, and reserves `critical` urgency for severity 4,
-degrading per-flag on older `notify-send`. v0.19 hardens leak-detection
-evidence (issue #20):
-`coverage()` joins the CA-01 function table, §7.7.1 leak rules must require
-window coverage and recent net growth alongside slope, SA-09 separates process
-display identity from stable identity, and IN-09 makes entity-gone clearing
-survive daemon restarts. v0.18 adds authoring discoverability: `ftmon paths`,
+Status: **DRAFT v0.22** — v0.22 extends MC-06 so `diagnose_monitor` surfaces
+the last persisted external-check result (`plugin_state`, `plugin_ok`,
+`duration_s`, `plugin_message`, `sample_age_s`) for the configured entity
+(issue #36), closing the agent loop between "loaded" and "producing". v0.21
+resolves OPEN-8: FTMON 2.0 container monitoring ships as an external-check
+recipe, not a core source. Rootful container-socket or container-engine-group
+authority is outside SE-01; the supported recipe precondition is a rootless
+socket already owned by the same user that runs FTMON. v0.20 bounds the
+desktop notifier's tray footprint (issue #40): NO-02 sends renotify/recover
+transient, reuses one replaceable notification slot per incident, and reserves
+`critical` urgency for severity 4, degrading per-flag on older `notify-send`.
+v0.19 hardens leak-detection evidence (issue #20): `coverage()` joins the
+CA-01 function table, §7.7.1 leak rules must require window coverage and
+recent net growth alongside slope, SA-09 separates process display identity
+from stable identity, and IN-09 makes entity-gone clearing survive daemon
+restarts. v0.18 adds authoring discoverability: `ftmon paths`,
 `ftmon monitor rescan`, `ftmon check trust` (CL-06..08) and the read-only MCP
 tools `monitor_paths`/`diagnose_monitor` (MC-06). v0.17 makes SIGHUP a reload
 request instead of the fatal default disposition (PM-11). v0.16 requires the
 daemon to survive a tick write lock timeout instead of exiting (PM-10). v0.15
-made document-version
-coherence a tested invariant (TS-19) and opened OPEN-8 (container monitoring:
-core source vs recipe), now resolved by v0.21. The v0.12
-release-readiness gates (TS-17 soak, TS-18 zero-pending traceability, DO-09
-drift audit; milestone M10) remain in force with the pending list burned down
-to empty. §19 has no open items.
+made document-version coherence a tested invariant (TS-19) and opened OPEN-8
+(container monitoring: core source vs recipe), now resolved by v0.21. The
+v0.12 release-readiness gates (TS-17 soak, TS-18 zero-pending traceability,
+DO-09 drift audit; milestone M10) remain in force with the pending list burned
+down to empty. §19 has no open items.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -840,7 +842,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 | `explain_incident` | (id) | rule text + parameter values, evaluation series around opening, related events ±10 m, full history (DM-12) |
 | `list_monitors` / `get_monitor` | (name) | definitions incl. drafts (marked), validation status, load history (PM-07) |
 | `monitor_paths` | () | resolved filesystem layout an author needs (monitors, drafts, actions, check registry, db) — the JSON form of `ftmon paths` (CL-06) |
-| `diagnose_monitor` | (name) | where the file lives (enabled/draft/missing), validation errors, enabled state, last load hash and age, and for external monitors whether the alias is registered and its executable trusted (no argv exposure, SE-07) |
+| `diagnose_monitor` | (name) | where the file lives (enabled/draft/missing), validation errors, enabled state, last load hash and age, for external monitors whether the alias is registered and its executable trusted (no argv exposure, SE-07), and `last_result` for the configured `source_options.entity` (`plugin_state`/`plugin_ok`/`duration_s`/`plugin_message`/`sample_age_s`, or null when never sampled / non-external / no DB) |
 | `validate_monitor` ✎(no writes) | (toml_text) | full validation, returns errors or normalized form |
 | `define_monitor` ✎ | (toml_text) | validate → write to `drafts/` (PM-06) → return draft path plus structured `next_steps` (CLI approve command and web UI) |
 | `ack_incident` ✎ | (id, note?) | sets acked with `by = "mcp"`, note into history |
@@ -850,7 +852,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 - **MC-03** `define_monitor` MUST refuse (not silently overwrite) a name that already exists as enabled/disabled; drafts may be overwritten (iterating on a draft is the normal flow).
 - **MC-04** Error responses are structured (`code`, `message`, `hint`) — a less capable model must be able to self-correct from validation errors (MD-01's quality bar applies).
 - **MC-05** The server exposes one MCP **resource**: the monitor-definition guide (DO-01) — so a model authoring a definition can pull the reference without leaving the session. The full SPEC is not exposed (operational noise).
-- **MC-06** `monitor_paths` and `diagnose_monitor` are strictly read-only diagnostics: they answer "where do files go?" and "why isn't this monitor running?" in one round-trip each. `diagnose_monitor` may surface validation errors verbatim (already exposed by `get_monitor`) but MUST NOT expose registry argv or credentials — trust status is reported as booleans and stable categories only (SE-07). Write paths remain exactly drafts (`define_monitor`) and `ack_incident`; approval stays a human action (MD-05).
+- **MC-06** `monitor_paths` and `diagnose_monitor` are strictly read-only diagnostics: they answer "where do files go?" and "why isn't this monitor running?" in one round-trip each. `diagnose_monitor` may surface validation errors verbatim (already exposed by `get_monitor`) but MUST NOT expose registry argv or credentials — trust status is reported as booleans and stable categories only (SE-07). For every found monitor it also returns `last_result`: null when there is no DB, the monitor is non-external, or the **currently configured** `source_options.entity` has never produced a coherent EC-05 sample; otherwise the stored `plugin_state` (0–3), `plugin_ok`, `duration_s`, sanitized `plugin_message`, and `sample_age_s` for that entity at one shared sample timestamp (re-exposing SE-07-bounded ingest only — no stderr or secrets). Write paths remain exactly drafts (`define_monitor`) and `ack_incident`; approval stays a human action (MD-05).
 
 ---
 
@@ -1149,6 +1151,16 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.22 (2026-07-18)** — `diagnose_monitor` last runtime result (issue #36).
+MC-06 already answered location, validation, load state, and external-alias
+trust, but an agent could see a monitor as loaded and trusted while the check
+failed every tick — the exact `plugin_message` lived only in
+`entities.attrs`, reachable by raw SQL against the live DB (explicitly warned
+against). `diagnose_monitor` now returns `last_result` for the configured
+external entity (`plugin_state`/`plugin_ok`/`duration_s`/`plugin_message`/
+`sample_age_s`) or null when N/A; message text remains the sanitized stored
+form (SE-07/EC-05). No new write authority.
 
 **v0.21 (2026-07-18)** — resolves OPEN-8 without expanding the frozen daemon.
 The deciding security fact is now explicit: rootful Docker socket access and

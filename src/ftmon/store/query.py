@@ -416,6 +416,56 @@ class Query:
         sql += " ORDER BY entity_id"
         return self._conn.execute(sql, params).fetchall()
 
+    def last_plugin_result(
+        self, monitor: str, entity_id: str, *, now: float,
+    ) -> dict | None:
+        """MC-06/EC-05: coherent last external-check result for one entity.
+
+        Caller passes the definition's current ``source_options.entity`` so a
+        rename cannot surface a stale prior configuration. ``plugin_ok`` and
+        ``duration_s`` are read at the same sample timestamp as
+        ``plugin_state`` — incomplete storage returns None rather than a
+        partial block (EC-05 persists all three on every completed run).
+        """
+        state = self._conn.execute(
+            "SELECT s.ts, s.value FROM samples s "
+            "JOIN series se ON se.id = s.series_id "
+            "WHERE se.monitor=? AND se.entity_id=? AND se.metric='plugin_state' "
+            "ORDER BY s.ts DESC LIMIT 1",
+            (monitor, entity_id),
+        ).fetchone()
+        if state is None:
+            return None
+        ts = state["ts"]
+        siblings = {
+            row["metric"]: row["value"]
+            for row in self._conn.execute(
+                "SELECT se.metric, s.value FROM samples s "
+                "JOIN series se ON se.id = s.series_id "
+                "WHERE se.monitor=? AND se.entity_id=? "
+                "AND se.metric IN ('plugin_ok', 'duration_s') AND s.ts=?",
+                (monitor, entity_id, ts),
+            )
+        }
+        if "plugin_ok" not in siblings or "duration_s" not in siblings:
+            return None
+        attrs_row = self._conn.execute(
+            "SELECT attrs FROM entities WHERE monitor=? AND entity_id=?",
+            (monitor, entity_id),
+        ).fetchone()
+        attrs = json.loads(attrs_row["attrs"] or "{}") if attrs_row else {}
+        message = attrs.get("plugin_message", "")
+        if not isinstance(message, str):
+            message = "" if message is None else str(message)
+        return {
+            "entity_id": entity_id,
+            "plugin_state": int(state["value"]),
+            "plugin_ok": bool(siblings["plugin_ok"]),
+            "plugin_message": message,
+            "duration_s": float(siblings["duration_s"]),
+            "sample_age_s": round(now - ts),
+        }
+
     def events(
         self,
         *,

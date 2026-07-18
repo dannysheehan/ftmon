@@ -475,8 +475,10 @@ class McpApi:
 
     def diagnose_monitor(self, name: str) -> dict:
         """MC-06: answer "why isn't this monitor running?" in one call:
-        location, validity, load state, and (external) alias trust — as
-        booleans and categories, never registry argv (SE-07)."""
+        location, validity, load state, (external) alias trust, and the
+        last persisted plugin result for the configured entity — as
+        booleans/categories and stored EC-05 fields, never registry argv
+        (SE-07)."""
         now = self._clock.now()
         out: dict = {"tz": _tz_name(now), "name": name}
         path = None
@@ -509,7 +511,14 @@ class McpApi:
             out["last_load"] = (
                 {"hash": row["hash"], "age_s": round(now - row["loaded_ts"])}
                 if row else None)  # never loaded (PM-07)
+        # Always present for found monitors: null when non-external, no DB,
+        # unknown entity, or the configured entity has never sampled.
+        out["last_result"] = None
         if d is not None and d.source == "external":
+            entity = d.source_options.get("entity")
+            if q is not None and entity:
+                out["last_result"] = q.last_plugin_result(
+                    name, entity, now=now)
             alias = d.source_options.get("check")
             check: dict = {"alias": alias}
             try:
@@ -631,8 +640,9 @@ def build_server(paths: Paths):
                 "(MC-06)")(api.monitor_paths)
     server.tool(name="diagnose_monitor",
                 description="Why isn't this monitor running? Location, "
-                "validation, load state, and external-alias trust in one "
-                "call")(api.diagnose_monitor)
+                "validation, load state, external-alias trust, and last "
+                "plugin result (state/message/sample age) in one call")(
+                api.diagnose_monitor)
     server.tool(name="validate_monitor",
                 description="Validate a monitor TOML without writing "
                 "anything")(api.validate_monitor)
