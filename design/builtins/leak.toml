@@ -5,7 +5,7 @@ schema = 1
 [monitor]
 name = "leak"
 description = "Detects processes whose memory grows steadily (memory leaks)"
-version = 2
+version = 3
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -18,6 +18,15 @@ promote_mb = { value = 16, doc = "Growth over 15m that makes a process worth tra
 growth_confidence = { value = 0.8, doc = "Fraction of rising samples that indicates sustained growth" }
 min_coverage = { value = 0.8, doc = "Fraction of the 45m slope window that must actually be observed (v0.19 #20) - otherwise a short-lived spike that vanished after a few minutes can pass for a 45-minute verdict" }
 min_net_mb = { value = 16, doc = "Net RSS growth (MB) the 45m window must show - an earlier rise that has since fallen back is not an active leak" }
+
+[glance]
+metric = "rss_slope_mbph"
+unit = "MiB/hour"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "warn_mb_per_h" },
+  { label = "error", parameter = "crit_mb_per_h" },
+]
 
 # Which processes get long-term history (SA-05c). Evaluated over the short
 # all-process window every cycle.

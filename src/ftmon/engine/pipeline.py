@@ -112,11 +112,14 @@ class Pipeline:
                     vals[name] = float(v)
             derived_vals[ent.entity_id] = vals
 
+        exempt_entities: set[str] = set()
         outcomes: list[EvalOutcome] = []
         for ent in snap.entities:
             ctx = self._ctx(mdef, ent.entity_id, ent.attrs, now)
-            # CA-07: exempt entities are sampled (above) but no rules fire.
+            # CA-07 needs this tick's transient context to decide exclusion,
+            # but excluded entities must never enter persistent history.
             if any(e.eval(ctx, counter=self._counter) is True for e in mdef.exempt):
+                exempt_entities.add(ent.entity_id)
                 continue
             # Message values are this cycle's numbers; rendered only for TRUE
             # results because that is the only case a notification can use.
@@ -138,7 +141,7 @@ class Pipeline:
                     EvalOutcome(mdef.name, ent.entity_id, rule.id, rule.group, result, message)
                 )
 
-        self._persist(mdef, snap, derived_vals, st, now, writer)
+        self._persist(mdef, snap, derived_vals, exempt_entities, st, now, writer)
         self._track_gone(mdef, st, now, writer)
         return outcomes
 
@@ -163,13 +166,20 @@ class Pipeline:
         mdef: MonitorDef,
         snap: Snapshot,
         derived_vals: dict[str, dict[str, float]],
+        exempt_entities: set[str],
         st: _MonitorState,
         now: float,
         writer,
     ) -> None:
         selected = self._select_persisted(mdef, snap, st, now)
+        selected.difference_update(exempt_entities)
         durable = mdef.source in _DURABLE_SOURCES
         for ent in snap.entities:
+            if ent.entity_id in exempt_entities:
+                # Purging handles definitions or attributes that become exempt
+                # after this monitor already retained history (CA-07).
+                writer.forget_entity(mdef.name, ent.entity_id)
+                continue
             if ent.entity_id not in selected:
                 continue
             writer.upsert_entity(mdef.name, ent.entity_id, now, dict(ent.attrs))

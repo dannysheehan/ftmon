@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 __all__ = [
-    "BaselineHistory", "BaselinePage", "BaselineRecord", "SeriesPoint", "SeriesResult",
+    "BaselineHistory", "BaselinePage", "BaselineRecord", "GlanceSample", "SeriesPoint",
+    "SeriesResult",
     "IncidentDetail", "IncidentHistoryEntry", "Query", "lttb",
 ]
 
@@ -45,6 +46,14 @@ class SeriesResult:
     lower: list[SeriesPoint] | None = None
     upper: list[SeriesPoint] | None = None
     downsampled: bool = False
+
+
+@dataclass(frozen=True)
+class GlanceSample:
+    entity_id: str
+    ts: int
+    value: float
+    attrs: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -141,6 +150,60 @@ def lttb(points: list[SeriesPoint], n: int) -> list[SeriesPoint]:
 class Query:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
+
+    def glance_samples(
+        self, monitor: str, metric: str, *, not_before: float
+    ) -> tuple[GlanceSample, ...]:
+        """Return latest current values for active entities (UI-17).
+
+        The correlated MAX uses the existing samples primary key. Selecting
+        latest-per-entity here lets presentation apply the definition's exempt
+        expressions before its declared aggregate chooses a winner.
+        """
+        rows = self._conn.execute(
+            "SELECT se.entity_id, sa.ts, sa.value, en.attrs FROM series se "
+            "JOIN entities en ON en.monitor=se.monitor AND en.entity_id=se.entity_id "
+            "AND en.gone_ts IS NULL "
+            "JOIN samples sa ON sa.series_id=se.id "
+            "AND sa.ts=(SELECT MAX(latest.ts) FROM samples latest "
+            "WHERE latest.series_id=se.id) "
+            "WHERE se.monitor=? AND se.metric=? AND sa.ts>=? "
+            "ORDER BY se.entity_id",
+            (monitor, metric, not_before),
+        ).fetchall()
+        return tuple(
+            GlanceSample(
+                entity_id=row["entity_id"],
+                ts=int(row["ts"]),
+                value=float(row["value"]),
+                attrs=json.loads(row["attrs"]) if row["attrs"] else {},
+            )
+            for row in rows
+        )
+
+    def entity_metric_last(
+        self, monitor: str, entity_id: str, metric: str
+    ) -> SeriesPoint | None:
+        """Return one persisted raw value for read-side expression context."""
+        row = self._conn.execute(
+            "SELECT sa.ts,sa.value FROM series se JOIN samples sa ON sa.series_id=se.id "
+            "WHERE se.monitor=? AND se.entity_id=? AND se.metric=? "
+            "ORDER BY sa.ts DESC LIMIT 1",
+            (monitor, entity_id, metric),
+        ).fetchone()
+        return None if row is None else SeriesPoint(int(row["ts"]), float(row["value"]))
+
+    def entity_metric_window(
+        self, monitor: str, entity_id: str, metric: str, *, start: float
+    ) -> list[tuple[float, float]]:
+        """Return bounded raw evidence for read-side exemption evaluation."""
+        rows = self._conn.execute(
+            "SELECT sa.ts,sa.value FROM series se JOIN samples sa ON sa.series_id=se.id "
+            "WHERE se.monitor=? AND se.entity_id=? AND se.metric=? AND sa.ts>=? "
+            "ORDER BY sa.ts LIMIT 10000",
+            (monitor, entity_id, metric, start),
+        ).fetchall()
+        return [(float(row["ts"]), float(row["value"])) for row in rows]
 
     @staticmethod
     def _baseline_record(row: sqlite3.Row) -> BaselineRecord:

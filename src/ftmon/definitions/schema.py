@@ -23,6 +23,10 @@ __all__ = [
     "RULE_KEYS_EVENT",
     "RULE_REQUIRED",
     "DERIVED_KEYS",
+    "GLANCE_KEYS",
+    "GLANCE_THRESHOLD_KEYS",
+    "GLANCE_AGGREGATES",
+    "MAX_GLANCE_THRESHOLDS",
     "TREND_KEYS",
     "PARAM_KEYS",
     "PLATFORMS",
@@ -67,7 +71,7 @@ RULE_SEVERITIES = ("notice", "warning", "error", "critical")
 TOP_LEVEL_KEYS = frozenset(
     {
         "schema", "monitor", "source_options", "parameters", "promotion",
-        "derived", "exempt", "rule", "trend",
+        "derived", "exempt", "rule", "trend", "glance",
     }
 )
 
@@ -97,6 +101,12 @@ PARAM_KEYS = frozenset({"value", "doc"})
 
 # --- [[derived]] ---
 DERIVED_KEYS = frozenset({"name", "expr"})
+
+# --- [glance] (MD-12) ---
+GLANCE_KEYS = frozenset({"metric", "unit", "aggregate", "thresholds"})
+GLANCE_THRESHOLD_KEYS = frozenset({"label", "parameter"})
+GLANCE_AGGREGATES = frozenset({"max", "min"})
+MAX_GLANCE_THRESHOLDS = 4
 
 # --- [[trend]] (MD-10) ---
 TREND_KEYS = frozenset({

@@ -30,6 +30,14 @@ source = "process"              # where entities and metrics come from
 [parameters]                    # user-tunable knobs, referenced by name
 warn_bph = { value = 10000000, doc = "warn at this many bytes/hour" }
 
+[glance]                        # optional current-value tile readout
+metric = "growth_bph"
+unit = "bytes/hour"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "warn_bph" },
+]
+
 [[derived]]                     # computed metrics; can window over history
 name = "growth_bph"
 expr = 'slope(rss_bytes, "15m") * 3600'
@@ -51,11 +59,43 @@ Section reference:
 | `[monitor]` | yes | `name, description, version, source, platforms` required; `interval` for sampler sources (min 15 s) |
 | `[source_options]` | no | source-specific: `watchlist` (unit/net), `top_n` 5–50 (process), `store_min_severity` (events) |
 | `[parameters]` | no | each entry `{ value = <number>, doc = "..." }`; the doc is mandatory kindness |
+| `[glance]` | no | sampler-only explicit primary metric, unit, entity aggregate and labelled threshold parameters; see below |
 | `[[derived]]` | no | `name`, `expr`; may reference earlier deriveds (evaluation is dependency-ordered) |
-| `exempt` | no | top-level array of boolean expressions; a TRUE exempts the entity from *rules only* — it is still recorded |
+| `exempt` | no | top-level array of boolean expressions; a TRUE prevents rules and all persistent metric/baseline history for that entity |
 | `[promotion]` | no | process source only: `expr` marking entities worth persisting beyond the top-N |
 | `[[rule]]` | yes (≥1) | see below |
 | `[[trend]]` | no | validated presentation profile joining persisted value/rate metrics; see below |
+
+### Dashboard glance readouts
+
+`[glance]` is optional and sampler-only. It tells the dashboard which one
+already-persisted value can honestly summarize a monitor; it never changes
+sampling, rules, incidents, or health color. Nothing is guessed from rule or
+metric names.
+
+```toml
+[glance]
+metric = "used_pct"
+unit = "percent"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "space_warn_pct" },
+  { label = "error", parameter = "space_crit_pct" },
+]
+```
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `metric` | yes | existing persisted raw or derived metric |
+| `unit` | yes | display unit, 1–32 characters; `percent` renders as `%` |
+| `aggregate` | yes | `max` or `min` across each active entity's latest value |
+| `thresholds` | no | up to four ordered `{label, parameter}` entries; labels and parameters must each be unique |
+
+The dashboard omits the line when the daemon or sample is stale, the monitor is
+disabled or invalid, or no active non-exempt entity has that metric. The same
+`exempt` expressions that suppress rules also remove entities from glance
+aggregation. It never substitutes a retained rollup or a value from an entity that has disappeared. Units are
+display metadata only and do not convert stored values.
 
 Rule keys — sampler sources (`process`, `disk`, `system`, `unit`, `net`,
 `self`):
@@ -373,8 +413,12 @@ exempt = [ 'matches(name, "^(gcc|clang|cargo|ffmpeg)$")',
            'username != "myuser"' ]
 ```
 
-Exempt entities are still recorded — you can still ask `top_consumers`
-about them — they just never alert.
+Exempt entities are sampled only in the daemon's bounded in-memory context so
+the exemption can be evaluated. They do not alert and are not persisted, so
+they do not appear in Metrics, Trends, Baselines, glance, or historical
+`top_consumers` results. If an entity becomes exempt after accumulating data,
+that monitor/entity's stored samples, rollups and baselines are removed on the
+next successful tick.
 
 ## 5. Authoring via MCP (`define_monitor`)
 

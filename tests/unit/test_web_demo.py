@@ -79,8 +79,8 @@ def test_demo_is_visibly_synthetic_get_only_and_immutable_ui_15_ts_14(tmp_path):
     assert not db.with_name(f"{db.name}-shm").exists()
 
 
-def test_demo_factory_accepts_the_real_seeded_builder_contract_ui_15_ui_16(tmp_path):
-    """[UI-15][UI-16] Web startup and WP29 share one marker/version contract."""
+def test_demo_factory_accepts_the_real_seeded_builder_contract_ui_15_ui_16_ui_17(tmp_path):
+    """[UI-15][UI-16][UI-17] Demo startup includes the declared disk glance."""
     db = build(tmp_path / "built-demo.db")
     response = TestClient(create_demo_app(db, "demo.ftmon.org")).get(
         "/", headers={"host": "demo.ftmon.org"}
@@ -94,6 +94,8 @@ def test_demo_factory_accepts_the_real_seeded_builder_contract_ui_15_ui_16(tmp_p
         assert f'data-monitor="{monitor}" data-state="{state}"' in response.text
     assert "Daemon data is stale" in response.text
     assert "3600 seconds old" not in response.text
+    assert '<p class="tile-glance"><strong>mount:/srv/demo</strong>' in response.text
+    assert "· warn 92% · error 97%" in response.text
     baselines = TestClient(create_demo_app(db, "demo.ftmon.org")).get(
         "/baselines", headers={"host": "demo.ftmon.org"}
     )

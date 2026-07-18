@@ -141,6 +141,15 @@ green; only recovery clears the condition. A stale dashboard also never claims
 green because old data cannot prove present health. Click a yellow/red tile to
 open incidents already filtered to that monitor.
 
+Some monitor definitions declare a primary glance readout below the state,
+such as `/home 94% · warn 92% · error 97%`. The definition explicitly chooses
+the metric, unit, `max|min` entity summary and labelled thresholds; FTMON does
+not guess them from alert rules. Only a fresh raw value from an active entity is
+shown, and entities matching the monitor's `exempt` expressions are excluded.
+Missing or old data, disappeared entities, disabled monitors and stale
+dashboard state omit the readout rather than presenting history as current.
+The glance line is context only and never changes the tile's health state.
+
 ## 4. Tuning
 
 Open the monitor's TOML file; every parameter has a comment saying what it
@@ -155,9 +164,10 @@ out the interval. Three knobs cover most needs:
   prefer baseline-relative rules where offered.
 - **`confirm_cycles`** — raise it if something legitimate keeps tripping a
   rule briefly (e.g. a nightly backup saturating IO).
-- **`exempt`** — name patterns for legitimate heavy processes (compilers,
-  encoders). Exempt entities are still recorded — only alerting stops —
-  so you can still ask about them later. Interpreter-hosted apps often
+- **`exempt`** — name patterns for entities that should be completely outside
+  this monitor (compilers, encoders, read-only filesystems). Exempt entities
+  neither alert nor retain samples, rollups, baselines, or graph history.
+  Interpreter-hosted apps often
   report a generic process name (`MainThread`, `node`), so match on
   `exe_base` (the executable's basename) instead of `name` when targeting
   them — alerts likewise show the executable, e.g. `agent (MainThread)`.

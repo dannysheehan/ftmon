@@ -1,7 +1,8 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.25** — v0.25 adds the read-only Baselines index (issue #18),
-after v0.24 adds the bounded `list_baselines` MCP tool (issue #46) and v0.23
+Status: **DRAFT v0.26** — v0.26 adds explicit current-value glance metadata
+and dashboard readouts (issue #16), after v0.25 adds the read-only Baselines
+index (issue #18), v0.24 adds the bounded `list_baselines` MCP tool (issue #46), and v0.23
 makes CA-05 learning visible on Metrics at its honest retained five-minute
 resolution (issue #17). Baseline rows persist the immutable effective half-life
 so reverse reconstruction cannot mix EWMA coefficients; a coefficient change
@@ -614,7 +615,7 @@ Available in all expressions. `w` is a duration string (`"90s"`, `"10m"`, `"3h"`
 
 ### 7.5 Exemptions
 
-- **CA-07** Every monitor supports an `exempt` list of entity-match expressions evaluated before rules (e.g. process name regexes for compilers/browsers on the hog monitor; fs types on the disk monitor, succeeding legacy `SKIP_FS_P`). Exempt entities are still *sampled* (history remains queryable) but no rules fire.
+- **CA-07** Every monitor supports an `exempt` list of entity-match expressions evaluated before rules (e.g. process name regexes for compilers/browsers on the hog monitor; fs types on the disk monitor, succeeding legacy `SKIP_FS_P`). Exempt entities are sampled only into the bounded in-memory context required to evaluate exemptions; no rules fire and no entity, sample, rollup or baseline state is persisted. When an entity first matches, any previously persisted metric/baseline state for that monitor/entity is removed atomically, so Metrics, Trends, Baselines and glance cannot retain an excluded entity.
 
 ### 7.6 Entity disappearance
 
@@ -628,10 +629,10 @@ Available in all expressions. `w` is a duration string (`"90s"`, `"10m"`, `"3h"`
 v1 ships seven user-facing monitors plus the always-installed **`self`** monitor (§13, RB-02) — `self` is tunable but not deletable. Each ships as a commented TOML file (FS-02); defaults below are starting points reviewable in the file, but the *shape* (parameters, metrics, rule structure) is normative. `OPEN-1`: default numbers need owner review — to be exercised against recorded fixture data and a short real-system observation period before v1.0.
 
 #### 7.7.1 `leak` — per-process memory-leak detector
-Metrics: `rss_bytes` (+ derived `rss_slope_bph` = slope in bytes/hour). Promotion heuristic (SA-05): `monot(rss_bytes, "15m") >= 0.8 and delta(rss_bytes, "15m") > 16*MB`. Rules (one group `leak`, v0.19 shape): both rungs MUST require, alongside their slope threshold, `coverage(rss_bytes, "45m") >= min_coverage` (default 0.8 — a 45-minute verdict needs the window represented, not three samples) and `delta(rss_bytes, "45m") > min_net_mb * MB` (default 16 — an earlier rise followed by a fall is not an active leak): warning when `slope(rss_bytes, "45m") * 3600 > 32*MB` with `confirm_cycles = 3`; error rung when `slope(rss_bytes, "45m") * 3600 > 128*MB`. Growth confidence (`monot`) is deliberately **not** an alert gate: a genuine stepwise leak (grow, plateau, grow) scores low on consecutive-delta confidence, and with the window covered, full-window slope plus net delta already reject oscillation; `monot` remains the promotion/trend signal. Messages say "sustained RSS growth", not "leaking" — slope is evidence of growth, not proof of a leak. Exempt-by-default: none (browsers are the *point*); the file shows a commented example targeting executable identity (`exe_base`, SA-09) rather than the generic runtime process name.
+Metrics: `rss_bytes` (+ derived `rss_slope_bph` = slope in bytes/hour). Promotion heuristic (SA-05): `monot(rss_bytes, "15m") >= 0.8 and delta(rss_bytes, "15m") > 16*MB`. Rules (one group `leak`, v0.19 shape): both rungs MUST require, alongside their slope threshold, `coverage(rss_bytes, "45m") >= min_coverage` (default 0.8 — a 45-minute verdict needs the window represented, not three samples) and `delta(rss_bytes, "45m") > min_net_mb * MB` (default 16 — an earlier rise followed by a fall is not an active leak): warning when `slope(rss_bytes, "45m") * 3600 > 32*MB` with `confirm_cycles = 3`; error rung when `slope(rss_bytes, "45m") * 3600 > 128*MB`. Growth confidence (`monot`) is deliberately **not** an alert gate: a genuine stepwise leak (grow, plateau, grow) scores low on consecutive-delta confidence, and with the window covered, full-window slope plus net delta already reject oscillation; `monot` remains the promotion/trend signal. Messages say "sustained RSS growth", not "leaking" — slope is evidence of growth, not proof of a leak. Exempt-by-default: none (browsers are the *point*); the file shows a commented example targeting executable identity (`exe_base`, SA-09) rather than the generic runtime process name. Glance: maximum `rss_slope_mbph`, labelled with the matching warning and error rate parameters.
 
 #### 7.7.2 `hog` — CPU hog detector
-Metrics: `cpu_pct`. Rules (group `hog`): warning when `avg(cpu_pct, "5m") > 80` for `confirm_cycles = 5`; error rung at `avg(cpu_pct, "15m") > 90`. Default exempt examples (commented): `matches(name, "^(cc1|rustc|ld|clang|make|cargo|ffmpeg)")`.
+Metrics: `cpu_pct`. Rules (group `hog`): warning when `avg(cpu_pct, "5m") > 80` for `confirm_cycles = 5`; error rung at `avg(cpu_pct, "15m") > 90`. Default exempt examples (commented): `matches(name, "^(cc1|rustc|ld|clang|make|cargo|ffmpeg)")`. Glance: maximum five-minute CPU average with only its matching warning parameter; the fifteen-minute error threshold MUST NOT be presented as though it applied to that value.
 
 #### 7.7.3 `events` — journal/event-log entries of interest
 Consumes the event stream; rules are **episode** rules (IN-08). Example shipped enabled: `severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")`; a specific-ID example (`event_id == "6008"`, styled for future Windows use) ships commented. Episode identity: `(rule, provider, event_id if present else msg_hash)`. `msg_hash` is normatively defined: lowercase the message, collapse whitespace, replace digit runs and hex runs (≥ 8 chars) with `#`, then SHA-256, first 16 hex chars — collisions merely group unrelated events, which is harmless. Per-rule `cooldown` (default `"10m"`) limits renotification; `clear_after` (default `"30m"` without a matching event) closes the episode with `clear_reason = quiet_period` and **no recovery notification** by default (`notify_recovery = false` for event rules). A new matching event after clearing opens a new episode; the flap guard (IN-05) applies.
@@ -640,7 +641,7 @@ Consumes the event stream; rules are **episode** rules (IN-08). Example shipped 
 Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`.
 
 #### 7.7.5 `load` — system pressure
-Metrics: `load1`, `cpu_pct`, `mem_available_bytes`, `mem_total_bytes`, `swap_used_pct`, PSI `psi_some_cpu`/`psi_some_mem`/`psi_some_io` (60 s avg) where present. Rules: group `pressure` — warning when `avg(psi_some_cpu, "5m") > 40` or `pct(mem_available_bytes, mem_total_bytes) < 5` for 5 cycles; error rung on `slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > 25`.
+Metrics: `load1`, `cpu_pct`, `mem_available_bytes`, `mem_total_bytes`, `swap_used_pct`, PSI `psi_some_cpu`/`psi_some_mem`/`psi_some_io` (60 s avg) where present. Rules: group `pressure` — warning when `avg(psi_some_cpu, "5m") > 40` or `pct(mem_available_bytes, mem_total_bytes) < 5` for 5 cycles; error rung on `slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > 25`. Glance: five-minute CPU PSI with its warning parameter. On kernels without PSI the readout is absent rather than replaced by an inferred secondary metric.
 
 #### 7.7.6 `service` — process/unit presence
 Watchlist-driven (no auto-discovery): each target is a systemd unit or process-name regex, expected state, optional `during` schedule. Metrics: `present` (0/1), `restarts`. Rules: error when `present == 0` for `confirm_cycles = 2`; notice on flapping (`delta(restarts, "30m") >= 3`).
@@ -743,6 +744,13 @@ message = "Disk {entity} at {used_pct:.0f}% used"
   a distinct readiness warning, while approval/enabling requires resolution.
   Mapping changes are ordinary schema changes under MD-06: removed metrics stop
   sampling and age out; they are never silently renamed or reinterpreted.
+- **MD-12** Sampler monitor definitions MAY declare one validated `[glance]`
+  primary readout with required persisted `metric`, explicit display `unit`,
+  and required `aggregate = "max"|"min"`. It MAY contain up to four ordered,
+  uniquely labelled threshold references to existing parameters. Metrics,
+  units, aggregation and threshold meaning are definition metadata; the loader
+  and presentation layer MUST NOT infer them from rules, metric names,
+  parameter names or trend profiles. Event monitors cannot declare a glance.
 
 ## 9. Incident lifecycle and notifications
 
@@ -897,6 +905,15 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   matching five-minute history. It is regenerated from a versioned seeded scenario
   at deployment/startup, is never mutated by visitors, and may be replaced on a
   schedule without schema migration or preserving visitor state.
+- **UI-17** A dashboard tile with declared MD-12 metadata MAY show one current
+  primary value and its ordered labelled thresholds without affecting UI-14
+  state. The read side reduces the latest raw sample per active entity using
+  the declared `max|min` after applying that definition's CA-07 exemptions
+  against persisted metric/attribute context, with deterministic ties by newest
+  timestamp then entity ID. It omits the readout for stale dashboard state, unknown, disabled
+  or configuration-error tiles, and when no active sample is newer than twice
+  the monitor interval. Retained rollups and disappeared entities MUST NOT be
+  used as current evidence.
 
 ## 13. Resource budget (self-enforced)
 
@@ -997,7 +1014,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 - **TS-10** Generic trend tests MUST cover profile schema and cross-reference errors, optional-panel `null` semantics, disk compatibility, leak value/rate/confidence history, profile-aware thresholds and incident groups, contextual links, `/disks` redirect preservation, and one real-daemon-to-HTTP leak journey. Tests assert data and accessibility contracts, not chart pixels.
 - **TS-11** Metrics visualization tests MUST cover the `/api/series` contract, catalog selectors, all rollup statistics, aligned min/max envelopes, missing-data gaps, incident filtering, unit discovery/fallback, the 2 000-point cap, hostile labels, accessible summary, matching-Trend links, absence of invented panels, baseline learning/readiness, exact inverse reconstruction, range-relative truncation, and contiguous native-five-minute rendering without spanning gaps. Browser-library behavior remains tested at the HTTP/data boundary rather than by pixel snapshots.
-- **TS-12** Dashboard tile tests MUST cover clear, warning, error/critical, acknowledged, disabled, stale/no-data, and configuration-error states; precedence conflicts; incident counts and filtered links; escaping; icon+text accessibility; and absence of flashing/animation dependence.
+- **TS-12** Dashboard tile tests MUST cover clear, warning, error/critical, acknowledged, disabled, stale/no-data, and configuration-error states; precedence conflicts; incident counts and filtered links; escaping; icon+text accessibility; absence of flashing/animation dependence; and declared glance aggregation, active/fresh sample filtering, threshold rendering, omission and state independence.
 - **TS-13** Notification tests cover configuration validation, severity fan-out,
   quiet-hours digests, independent channel success/failure, exact retry classes
   and schedule, restart recovery, the kill-after-send duplicate bound per
@@ -1147,7 +1164,7 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M7** | Historical disk trends (DM-17, CA-09, UI-10/11, TS-09) | honest capacity forecasting |
 | **M7.1** | Generic trend profiles (MD-10, CA-10, UI-12, TS-10) | reusable growth investigation |
 | **M7.2** | Shared Metrics/Trends chart foundation (UI-13, TS-11) | consistent single-series diagnostics |
-| **M7.3** | Accessible legacy-style dashboard health tiles (UI-14, TS-12) | at-a-glance operational status |
+| **M7.3** | Accessible legacy-style dashboard health tiles and declared current-value glances (MD-12, UI-14/17, TS-12) | at-a-glance operational status |
 | **M7.4** | Baseline visibility in Metrics, MCP and a read-only index (CA-05, MC-07, UI-02/13, TS-11) | learned normals operators and agents can inspect and trust |
 | **M8** | Server profile, per-channel outbox, ntfy/webhook/SMTP, server service/docs (PM-08/09, DM-18, NO-05..10, SE-05, TS-13, DO-06) | lightweight single-server monitor |
 | **M8.1** | Synthetic read-only public demo mode and deployment (UI-15/16, SE-06, TS-14, DO-06) | safe `demo.ftmon.org` experience |
@@ -1160,6 +1177,15 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.26 (2026-07-18)** — explicit dashboard glance values (issue #16).
+Sampler definitions can declare one primary persisted metric, display unit,
+`max|min` entity reduction and labelled threshold parameters. The web app
+shows only fresh raw values from active, non-exempt entities and never lets this additional
+context alter UI-14 health state. CA-07 now also makes exemptions persistence
+exclusions, atomically removing prior series/baselines. The shipped disk, load,
+hog and leak definitions plus compatible temperature and iowait recipes declare
+honest primary readouts; no database schema changes.
 
 **v0.25 (2026-07-18)** — read-only Baselines index (issue #18). The primary
 navigation now exposes every stored CA-05 row through bounded keyset pagination,

@@ -45,9 +45,14 @@ warning and critical rules confirm for **three** cycles before notifying.
 Separately, a **Trends** growth profile tracks sustained climb: over a **2 h**
 window, if the fitted slope exceeds **8 °C/h** with mostly rising samples,
 FTMON warns (group `thermal-rise`). That catches fan failure / stuck load
-warming while still below the absolute plugin thresholds. Tune
-`rise_celsius_per_h` and `rise_confidence_min` in the monitor TOML; absolute
-°C thresholds stay in `checks.toml` argv.
+warming while still below the absolute plugin thresholds. The dashboard tile
+shows the hottest current temperature beside the warning and critical values.
+Tune `rise_celsius_per_h` and `rise_confidence_min` in the monitor TOML.
+
+The absolute values are deliberately present in two declarative places:
+`-w`/`-c` in `checks.toml` control plugin alert state, while `warn_celsius` and
+`crit_celsius` in the monitor TOML label the dashboard readout. Change both
+copies together so the displayed thresholds continue to describe the plugin.
 
 To pin a stable sensor (package temp, ACPI zone, …), list zones and edit the
 registry argv:
@@ -59,7 +64,8 @@ registry argv:
 
 The monitor entity stays `thermal:max` so history remains one series when the
 hottest zone changes between polls. Raise or lower `-w`/`-c` in `checks.toml`
-for your chassis; leave FTMON's rule expressions alone unless you change groups.
+for your chassis and update the matching monitor parameters; leave FTMON's rule
+expressions alone unless you change groups.
 
 ## Test
 

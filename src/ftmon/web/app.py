@@ -1,4 +1,4 @@
-"""Server-rendered, loopback-only web dashboard (UI-01..09, UI-13, SE-02)."""
+"""Server-rendered, loopback-only web dashboard (UI-01..17, SE-02)."""
 
 from __future__ import annotations
 
@@ -47,6 +47,58 @@ class MonitorTile:
     incident_count: int
     max_severity: int | None
     trends: tuple
+    glance: TileGlance | None
+
+
+@dataclass(frozen=True)
+class TileGlanceThreshold:
+    label: str
+    value: str
+
+
+@dataclass(frozen=True)
+class TileGlance:
+    entity_id: str
+    value: str
+    thresholds: tuple[TileGlanceThreshold, ...]
+
+
+@dataclass(frozen=True)
+class _StoredEntityCtx:
+    """Persisted expression context used only to honor CA-07 in glance."""
+
+    query: Query
+    monitor: str
+    entity_id: str
+    attrs: dict[str, str]
+    params: dict[str, float]
+    wall: float
+
+    def metric_last(self, metric: str) -> float | None:
+        point = self.query.entity_metric_last(self.monitor, self.entity_id, metric)
+        return None if point is None else point.value
+
+    def metric_last_ts(self, metric: str) -> float | None:
+        point = self.query.entity_metric_last(self.monitor, self.entity_id, metric)
+        return None if point is None else point.ts
+
+    def metric_window(self, metric: str, seconds: float) -> list[tuple[float, float]]:
+        return self.query.entity_metric_window(
+            self.monitor, self.entity_id, metric, start=self.wall - seconds
+        )
+
+    def attr(self, name: str) -> str | None:
+        return self.attrs.get(name)
+
+    def param(self, name: str) -> float:
+        return self.params[name]
+
+    def baseline(self, metric: str) -> float | None:
+        record = self.query.current_baseline(self.monitor, self.entity_id, metric)
+        return None if record is None else record.level
+
+    def now(self) -> float:
+        return self.wall
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
@@ -139,9 +191,9 @@ async def dashboard(request: Request):
         incidents = [] if q is None else q.incidents(state=None)
         incidents = [r for r in incidents if r["state"] != "cleared"][:10]
         tiles = (
-            _demo_monitor_tiles(defs, q)
+            _demo_monitor_tiles(defs, q, request.app.state.clock.now())
             if getattr(request.app.state, "demo", False)
-            else _monitor_tiles(defs, errors, q, status)
+            else _monitor_tiles(defs, errors, q, status, request.app.state.clock.now())
         )
     return _render("dashboard.html", request, title="Dashboard", status=status,
                    tiles=tiles, config_errors=errors, incidents=incidents,
@@ -179,7 +231,7 @@ def _demo_definitions(q: Query | None):
     return definitions, []
 
 
-def _demo_monitor_tiles(definitions, q: Query | None) -> list[MonitorTile]:
+def _demo_monitor_tiles(definitions, q: Query | None, now: float) -> list[MonitorTile]:
     """Render seeded examples independently of real daemon precedence (UI-16)."""
     if q is None:
         return []
@@ -201,14 +253,17 @@ def _demo_monitor_tiles(definitions, q: Query | None) -> list[MonitorTile]:
     for mdef in definitions:
         state = summaries.get(mdef.name, "unknown")
         icon, label = presentation.get(state, ("?", "unknown"))
+        glance = _compose_glance(mdef, q, state, now)
         tiles.append(MonitorTile(
             mdef.name, mdef.description, mdef.enabled,
-            state, icon, label, live.get(mdef.name, 0), None, mdef.trends,
+            state, icon, label, live.get(mdef.name, 0), None, mdef.trends, glance,
         ))
     return sorted(tiles, key=lambda tile: tile.name)
 
 
-def _monitor_tiles(defs, errors, q: Query | None, status: dict) -> list[MonitorTile]:
+def _monitor_tiles(
+    defs, errors, q: Query | None, status: dict, now: float
+) -> list[MonitorTile]:
     """Apply fixed health precedence to evidence and live incidents (UI-14)."""
     live_by_monitor: dict[str, list] = {}
     if q is not None:
@@ -242,9 +297,10 @@ def _monitor_tiles(defs, errors, q: Query | None, status: dict) -> list[MonitorT
             state, icon, label = "warning", "▲", "warning"
         else:
             state, icon, label = "clear", "✓", "clear"
+        glance = _compose_glance(mdef, q, state, now)
         tiles.append(MonitorTile(
             mdef.name, mdef.description, mdef.enabled, state, icon, label,
-            len(live), maximum, mdef.trends,
+            len(live), maximum, mdef.trends, glance,
         ))
 
     # Invalid files have no MonitorDef; omitting them would hide the highest
@@ -252,9 +308,61 @@ def _monitor_tiles(defs, errors, q: Query | None, status: dict) -> list[MonitorT
     for path, error in errors:
         tiles.append(MonitorTile(
             path.stem, str(error)[:200], False, "config-error", "?",
-            "config error", 0, None, (),
+            "config error", 0, None, (), None,
         ))
     return sorted(tiles, key=lambda tile: tile.name)
+
+
+def _format_glance_value(value: float, unit: str) -> str:
+    """Format bounded numeric metadata without accepting a template (MD-12)."""
+    number = format(value, ".3g")
+    return f"{number}%" if unit == "percent" else f"{number} {unit}"
+
+
+def _compose_glance(mdef, q: Query | None, state: str, now: float) -> TileGlance | None:
+    """Add context only after UI-14 has established a trustworthy state."""
+    if q is None or mdef.glance is None or state not in {"clear", "warning", "error"}:
+        return None
+    samples = q.glance_samples(
+        mdef.name,
+        mdef.glance.metric,
+        not_before=now - 2 * mdef.interval_s,
+    )
+    eligible = [
+        sample
+        for sample in samples
+        if not any(
+            expression.eval(_StoredEntityCtx(
+                query=q,
+                monitor=mdef.name,
+                entity_id=sample.entity_id,
+                attrs=sample.attrs,
+                params=mdef.parameters,
+                wall=now,
+            )) is True
+            for expression in mdef.exempt
+        )
+    ]
+    if not eligible:
+        return None
+    if mdef.glance.aggregate == "max":
+        sample = min(eligible, key=lambda item: (-item.value, -item.ts, item.entity_id))
+    else:
+        sample = min(eligible, key=lambda item: (item.value, -item.ts, item.entity_id))
+    thresholds = tuple(
+        TileGlanceThreshold(
+            label=threshold.label,
+            value=_format_glance_value(
+                mdef.parameters[threshold.parameter], mdef.glance.unit
+            ),
+        )
+        for threshold in mdef.glance.thresholds
+    )
+    return TileGlance(
+        entity_id=sample.entity_id,
+        value=_format_glance_value(sample.value, mdef.glance.unit),
+        thresholds=thresholds,
+    )
 
 
 async def incidents(request: Request):

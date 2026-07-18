@@ -7,7 +7,7 @@ exempt = [ 'matches(fstype, "^(tmpfs|iso9660|squashfs|overlay)$")' ]
 [monitor]
 name = "disk"
 description = "Disk space thresholds, inode thresholds, and filling-rate detection"
-version = 4
+version = 5
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -21,6 +21,15 @@ inode_notice_pct = { value = 75, doc = "Notice threshold, percent inodes used" }
 inode_warn_pct = { value = 80, doc = "Warning threshold, percent inodes used" }
 inode_crit_pct = { value = 90, doc = "Error threshold, percent inodes used" }
 filling_frac = { value = 0.90, doc = "Fraction of consecutive growth samples (70m) that counts as filling" }
+
+[glance]
+metric = "used_pct"
+unit = "percent"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "space_warn_pct" },
+  { label = "error", parameter = "space_crit_pct" },
+]
 
 [[derived]]
 name = "filling"

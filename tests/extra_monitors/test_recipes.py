@@ -127,6 +127,27 @@ def test_recipe_registry_and_monitor_agree_without_granting_authority(recipe):
     assert "argv" not in definition_text
 
 
+def test_numeric_recipe_glances_are_explicit_and_status_only_recipe_omits_one():
+    """[MD-12][XR-03] Recipe tiles expose only honest primary numeric signals."""
+    expected = {
+        "temperature": (
+            ("temp_celsius", "celsius", "max"),
+            [("warn", "warn_celsius"), ("critical", "crit_celsius")],
+        ),
+        "iowait": (
+            ("iowait_avg_15m", "percent", "max"),
+            [("sustained", "sustained_iowait_pct")],
+        ),
+    }
+    for name, (primary, thresholds) in expected.items():
+        glance = load_file(CATALOGUE / name / "monitor.toml").glance
+        assert glance is not None
+        assert (glance.metric, glance.unit, glance.aggregate) == primary
+        assert [(item.label, item.parameter) for item in glance.thresholds] == thresholds
+
+    assert load_file(CATALOGUE / "sensors" / "monitor.toml").glance is None
+
+
 def test_recipe_fixtures_match_documented_protocol_and_metrics(recipe):
     """[XR-03][TS-16] Offline fixtures prove state and perfdata compatibility."""
     path, manifest = recipe
