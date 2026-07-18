@@ -111,7 +111,7 @@ ftmon incidents         # open/acked problems (--all includes cleared)
 ftmon ack 42            # stop re-notifying, keep watching
 ftmon baseline reset leak         # forget learned "normal" (e.g. after an upgrade)
 ftmon events --min-severity error   # stored journal events (--provider, --hours)
-ftmon incident 42       # full story of one incident
+ftmon incident 42       # state, severity, rule, lifecycle, ack, ordered history
 ftmon top rss --range 3h  # what was eating memory
 ftmon doctor            # database integrity, WAL, orphans and config
 ```
@@ -297,8 +297,11 @@ daemon first; for any cleanup or bulk changes, always stop the daemon.
 
 ## 8. Notifications & quiet hours
 
-Notifications are deliberately short; depth lives in `ftmon incident <id>` and
-the web UI. An audit trail of every notification is kept at
+Notifications are deliberately short; depth lives in `ftmon incident <id>`
+(state, severity, monitor/group/entity, owning rule, opened/changed/cleared
+times, clear reason, acknowledgment, notification count, occurrences,
+flapping flag, and ordered history with JSON details) and the web UI. An audit
+trail of every notification is kept at
 `~/.local/state/ftmon/notifications.jsonl`. Desktop popups are enabled by the
 desktop initialization profile and disabled by the server profile.
 

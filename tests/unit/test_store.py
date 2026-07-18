@@ -406,6 +406,82 @@ def test_status(tmp_path):
     assert status["open_incidents"] == 1
 
 
+def _insert_incident(conn, incident_id, *, monitor="leak", grp="rss", entity_id="firefox:7:1"):
+    conn.execute(
+        "INSERT INTO incidents(id, monitor, grp, entity_id, state, severity, owning_rule, "
+        "opened_ts, last_change_ts, cleared_ts, clear_reason, ack_by, ack_ts, "
+        "notify_count, occurrences, flapping) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            incident_id, monitor, grp, entity_id, "open", 2, "rss-growth",
+            1_000, 1_100, None, None, None, None, 1, 1, 0,
+        ),
+    )
+
+
+def test_incident_detail_unknown(tmp_path):
+    """[DM-11] incident_detail returns None for an unknown id."""
+    conn = _fresh(tmp_path)
+    assert Query(conn).incident_detail(404) is None
+
+
+def test_incident_detail_complete_row_and_history(tmp_path):
+    """[DM-11][DM-12] incident_detail returns the full row and ordered history."""
+    conn = _fresh(tmp_path)
+    _insert_incident(conn, 7)
+    conn.executemany(
+        "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            (7, 1, 1_000, "opened", '{"severity":2}'),
+            (7, 2, 1_050, "renotify", '{"severity":2}'),
+            (7, 3, 1_100, "acked", '{"by":"cli","note":"seen"}'),
+        ],
+    )
+    conn.commit()
+
+    detail = Query(conn).incident_detail(7)
+    assert detail is not None
+    row = detail.incident
+    assert row["id"] == 7
+    assert row["monitor"] == "leak"
+    assert row["grp"] == "rss"
+    assert row["entity_id"] == "firefox:7:1"
+    assert row["state"] == "open"
+    assert row["severity"] == 2
+    assert row["owning_rule"] == "rss-growth"
+    assert row["opened_ts"] == 1_000
+    assert row["last_change_ts"] == 1_100
+    assert row["notify_count"] == 1
+    assert row["occurrences"] == 1
+    assert row["flapping"] == 0
+    assert [entry.kind for entry in detail.history] == ["opened", "renotify", "acked"]
+    assert detail.history[2].detail == {"by": "cli", "note": "seen"}
+
+
+def test_incident_detail_no_cross_incident_leakage(tmp_path):
+    """[DM-12] history is scoped to the requested incident id."""
+    conn = _fresh(tmp_path)
+    _insert_incident(conn, 1, monitor="hog", grp="hog", entity_id="evil")
+    _insert_incident(conn, 2, monitor="disk", grp="space", entity_id="/")
+    conn.executemany(
+        "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            (1, 1, 900, "opened", '{"severity":3}'),
+            (2, 1, 910, "opened", '{"severity":1}'),
+            (1, 2, 920, "cleared", '{"reason":"recovered"}'),
+        ],
+    )
+    conn.commit()
+
+    detail = Query(conn).incident_detail(1)
+    assert detail is not None
+    assert detail.incident["monitor"] == "hog"
+    assert [entry.kind for entry in detail.history] == ["opened", "cleared"]
+    assert all(entry.seq in (1, 2) for entry in detail.history)
+
+
 def test_commit_tick_drops_buffers_on_lock_timeout(tmp_path):
     """[PM-10] BEGIN IMMEDIATE lock failure clears pending buffers (no retry burst)."""
     path = tmp_path / "ftmon.db"
