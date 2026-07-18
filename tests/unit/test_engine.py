@@ -155,6 +155,7 @@ class NullWriter:
         self.samples: list[tuple[str, str, str, float]] = []
         self.entities: dict[tuple[str, str], dict] = {}
         self.gone: list[str] = []
+        self.forgotten: list[tuple[str, str]] = []
         self._sids: dict[tuple, tuple] = {}
 
     def series_id(self, monitor, entity_id, metric, durable):
@@ -167,6 +168,9 @@ class NullWriter:
         self.entities[(monitor, entity_id)] = attrs
         if gone_ts is not None:
             self.gone.append(entity_id)
+
+    def forget_entity(self, monitor, entity_id):
+        self.forgotten.append((monitor, entity_id))
 
 
 def _run_cycles(mdef, sampler, cycles, start=1_700_000_000.0, step=60.0):
@@ -245,8 +249,8 @@ def test_pipeline_message_entity_falls_back_to_name_without_display_sa_09():
     assert leaky.message == "leaky leaking"
 
 
-def test_pipeline_exempt_sampled_but_silent():
-    """[CA-07] exempt entities produce samples/history but no evaluations."""
+def test_pipeline_exempt_is_transient_only_and_purges_history_ca_07():
+    """[CA-07] Exempt context stays in rings but never reaches persistence."""
     mdef = load_text(LEAKDEF)
     s = ScriptedSampler()
     for i in range(6):
@@ -256,7 +260,9 @@ def test_pipeline_exempt_sampled_but_silent():
         )
     pipe, writer, outcomes, _ = _run_cycles(mdef, s, 6)
     assert outcomes == []  # no rule evaluations for the exempt entity
-    assert any(e == "skipme:9:100" for _m, e, _met, _v in writer.samples)  # still recorded
+    assert not any(e == "skipme:9:100" for _m, e, _met, _v in writer.samples)
+    assert writer.forgotten == [("leak", "skipme:9:100")] * 6
+    assert pipe._rings.window("leak", "skipme:9:100", "rss_bytes", 0)
 
 
 def test_pipeline_source_shared_once_per_tick():

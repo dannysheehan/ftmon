@@ -133,6 +133,82 @@ def test_dashboard_stale_precedence_never_claims_clear_ui_14_ts_12(tmp_path):
     assert 'data-monitor="disk" data-state="clear"' not in page
 
 
+def test_dashboard_glance_renders_fresh_active_value_without_changing_state_ui_17_ts_12(
+    tmp_path,
+):
+    """[UI-17][TS-12] Declared context is escaped, current and health-neutral."""
+    client, paths = _client(tmp_path)
+    builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/disk.toml"
+    (paths.monitors_dir / "disk.toml").write_text(builtin.read_text())
+    conn = connect(paths.db_file)
+    conn.execute(
+        "INSERT INTO monitor_loads(monitor,loaded_ts,hash,normalized) "
+        "VALUES('disk',990,'disk','disk')"
+    )
+    conn.executemany(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts,attrs) "
+        "VALUES('disk',?,900,999,?,NULL)",
+        [("/home<script>", None), ("/old", None), ("/gone", 999)],
+    )
+    conn.execute(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts,attrs) "
+        "VALUES('disk','/snap/read-only',900,999,NULL,?)",
+        (json.dumps({"fstype": "squashfs", "device": "/dev/loop0"}),),
+    )
+    conn.executemany(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(?,'disk',?,'used_pct',1)",
+        [(10, "/home<script>"), (11, "/old"), (12, "/gone"),
+         (13, "/snap/read-only")],
+    )
+    conn.executemany(
+        "INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)",
+        [(10, 995, 94), (11, 800, 99), (12, 999, 100), (13, 999, 100)],
+    )
+    conn.execute(
+        "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+        "opened_ts,last_change_ts,notify_count,occurrences) "
+        "VALUES(20,'disk','space','/home','acked',2,'space-warn',995,995,1,1)"
+    )
+    conn.commit()
+    conn.close()
+
+    page = client.get("/", headers={"host": "localhost:8420"}).text
+    assert 'data-monitor="disk" data-state="warning"' in page
+    assert '<p class="tile-glance"><strong>/home&lt;script&gt;</strong> 94%' in page
+    assert "· warn 92% · error 97%" in page
+    assert "/home<script>" not in page
+    assert "/snap/read-only" not in page
+
+
+def test_dashboard_glance_is_omitted_for_disabled_tile_ui_17_ts_12(tmp_path):
+    """[UI-17][TS-12] A retained value cannot make a disabled tile look current."""
+    client, paths = _client(tmp_path)
+    builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/disk.toml"
+    text = builtin.read_text().replace("enabled = true", "enabled = false", 1)
+    (paths.monitors_dir / "disk.toml").write_text(text)
+    conn = connect(paths.db_file)
+    conn.execute(
+        "INSERT INTO monitor_loads(monitor,loaded_ts,hash,normalized) "
+        "VALUES('disk',990,'disk','disk')"
+    )
+    conn.execute(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,attrs) "
+        "VALUES('disk','/',900,999,NULL)"
+    )
+    conn.execute(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(10,'disk','/','used_pct',1)"
+    )
+    conn.execute("INSERT INTO samples(series_id,ts,value) VALUES(10,995,94)")
+    conn.commit()
+    conn.close()
+
+    page = client.get("/", headers={"host": "localhost:8420"}).text
+    assert 'data-monitor="disk" data-state="disabled"' in page
+    assert "tile-glance" not in page
+
+
 def test_ui_ack_requires_origin_and_reuses_small_writes_ui_03_ui_08(tmp_path):
     """[UI-03][UI-08] Ack POST requires Origin and hits the same path as CLI."""
     client, paths = _client(tmp_path)

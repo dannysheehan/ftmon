@@ -1,4 +1,4 @@
-"""[MD-01..09][CA-04][CA-07] definitions schema/loader tests.
+"""[MD-01..12][CA-04][CA-07] definitions schema/loader tests.
 
 Covers: the eight built-in definitions load and validate (MD-07); an
 invalid-TOML corpus asserting specific structured error codes/paths; the
@@ -106,6 +106,35 @@ def test_builtin_trend_profiles_are_explicit_and_valid_md_10():
 
 
 @pytest.mark.parametrize(
+    ("name", "expected", "thresholds"),
+    [
+        (
+            "disk",
+            ("used_pct", "percent", "max"),
+            [("warn", "space_warn_pct"), ("error", "space_crit_pct")],
+        ),
+        (
+            "load",
+            ("psi_cpu_5m", "percent", "max"),
+            [("warn", "psi_cpu_warn")],
+        ),
+        ("hog", ("cpu_5m", "percent", "max"), [("warn", "warn_pct")]),
+        (
+            "leak",
+            ("rss_slope_mbph", "MiB/hour", "max"),
+            [("warn", "warn_mb_per_h"), ("error", "crit_mb_per_h")],
+        ),
+    ],
+)
+def test_builtin_glances_are_explicit_and_valid_md_12(name, expected, thresholds):
+    """[MD-12] Reference readouts declare every display interpretation."""
+    glance = load_file(BUILTINS_DIR / f"{name}.toml").glance
+    assert glance is not None
+    assert (glance.metric, glance.unit, glance.aggregate) == expected
+    assert [(item.label, item.parameter) for item in glance.thresholds] == thresholds
+
+
+@pytest.mark.parametrize(
     ("addition", "path"),
     [
         ('''
@@ -183,6 +212,87 @@ severity = "warning"
 confirm_cycles = 1
 message = "hi {entity}"
 """
+
+
+def _sampler_with_glance(body: str = "") -> str:
+    declaration = '''
+[parameters]
+warn_pct = { value = 80, doc = "Warning threshold" }
+error_pct = { value = 90, doc = "Error threshold" }
+
+[glance]
+metric = "used_pct"
+unit = "percent"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "warn_pct" },
+  { label = "error", parameter = "error_pct" },
+]
+'''
+    return VALID_SAMPLER.replace("\n[[rule]]", declaration + body + "\n[[rule]]", 1)
+
+
+def test_glance_schema_loads_and_absence_stays_optional_md_12():
+    """[MD-12] Explicit metadata round-trips without becoming mandatory."""
+    assert load_text(VALID_SAMPLER).glance is None
+    glance = load_text(_sampler_with_glance()).glance
+    assert glance is not None
+    assert glance.metric == "used_pct"
+    assert glance.thresholds[0].parameter == "warn_pct"
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "path"),
+    [
+        ('metric = "used_pct"', 'metric = "missing"', "glance.metric"),
+        ('aggregate = "max"', 'aggregate = "latest"', "glance.aggregate"),
+        ('parameter = "warn_pct"', 'parameter = "missing"', "glance.thresholds[0].parameter"),
+        ('label = "error"', 'label = "warn"', "glance.thresholds[1].label"),
+        ('parameter = "error_pct"', 'parameter = "warn_pct"',
+         "glance.thresholds[1].parameter"),
+        ('unit = "percent"', 'unit = ""', "glance.unit"),
+        ('aggregate = "max"', '', "glance.aggregate"),
+        ('aggregate = "max"', 'aggregate = "max"\nbogus = true', "glance.bogus"),
+        ('label = "warn"', f'label = "{"x" * 21}"', "glance.thresholds[0].label"),
+    ],
+)
+def test_glance_cross_references_and_bounds_fail_validation_md_12(old, new, path):
+    """[MD-12] Invalid display semantics fail in the shared definition loader."""
+    with pytest.raises(ValidationError) as exc:
+        load_text(_sampler_with_glance().replace(old, new))
+    assert any(error["path"] == path for error in exc.value.errors)
+
+
+def test_event_monitor_cannot_declare_glance_md_12():
+    """[MD-12] Event episodes do not expose persisted per-entity sampler values."""
+    declaration = '''
+[glance]
+metric = "severity"
+unit = "level"
+aggregate = "max"
+'''
+    with pytest.raises(ValidationError) as exc:
+        load_text(VALID_EVENTS.replace("\n[[rule]]", declaration + "\n[[rule]]", 1))
+    assert any(error["path"] == "glance" for error in exc.value.errors)
+
+
+def test_glance_threshold_count_is_bounded_md_12():
+    """[MD-12] A tile cannot acquire unbounded definition-controlled content."""
+    extra = (
+        '  { label = "three", parameter = "error_pct" },\n'
+        '  { label = "four", parameter = "warn_pct" },\n'
+        '  { label = "five", parameter = "error_pct" },\n'
+    )
+    text = _sampler_with_glance().replace(
+        '  { label = "error", parameter = "error_pct" },\n',
+        '  { label = "error", parameter = "error_pct" },\n' + extra,
+    )
+    with pytest.raises(ValidationError) as exc:
+        load_text(text)
+    assert any(
+        error["path"] == "glance.thresholds" and error["code"] == "too_many_items"
+        for error in exc.value.errors
+    )
 
 VALID_EXTERNAL = """
 schema = 1

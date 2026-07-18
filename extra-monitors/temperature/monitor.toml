@@ -3,7 +3,7 @@ schema = 1
 [monitor]
 name = "temperature"
 description = "Hardware temperature via check_temperature (hottest thermal zone)"
-version = 2
+version = 3
 enabled = false
 platforms = ["linux"]
 interval = "60s"
@@ -21,8 +21,21 @@ unit = "celsius"
 kind = "gauge"
 
 [parameters]
+warn_celsius = { value = 80, doc = "Warning threshold also configured as -w in checks.toml" }
+crit_celsius = { value = 90, doc = "Critical threshold also configured as -c in checks.toml" }
 rise_celsius_per_h = { value = 8, doc = "Sustained °C/hour climb over 2h before warning (cooling / load)" }
 rise_confidence_min = { value = 0.8, doc = "Required fraction of rising temperature samples in the window" }
+
+# External plugin configuration remains authoritative for alert state. These explicit
+# parameters let the dashboard show the same operator-maintained thresholds.
+[glance]
+metric = "temp_celsius"
+unit = "celsius"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "warn_celsius" },
+  { label = "critical", parameter = "crit_celsius" },
+]
 
 [[derived]]
 name = "temp_rate_cph"

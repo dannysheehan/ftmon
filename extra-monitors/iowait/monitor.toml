@@ -3,7 +3,7 @@ schema = 1
 [monitor]
 name = "iowait"
 description = "CPU I/O wait via check_iowait"
-version = 1
+version = 2
 enabled = false
 platforms = ["linux"]
 interval = "60s"
@@ -50,6 +50,16 @@ kind = "gauge"
 
 [parameters]
 sustained_iowait_pct = { value = 15, doc = "Warn when 15m average iowait exceeds this percent" }
+
+# The 15-minute average is the stable operator signal. Instantaneous plugin
+# warning/critical values use a different window and are intentionally omitted.
+[glance]
+metric = "iowait_avg_15m"
+unit = "percent"
+aggregate = "max"
+thresholds = [
+  { label = "sustained", parameter = "sustained_iowait_pct" },
+]
 
 [[derived]]
 name = "iowait_avg_15m"

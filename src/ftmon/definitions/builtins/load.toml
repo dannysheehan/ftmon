@@ -7,7 +7,7 @@ schema = 1
 [monitor]
 name = "load"
 description = "System-wide CPU/memory/IO pressure and swap growth"
-version = 1
+version = 2
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -17,6 +17,16 @@ source = "system"
 psi_cpu_warn = { value = 40, doc = "Warn when avg CPU pressure (PSI some, 5m) exceeds this" }
 mem_avail_pct_warn = { value = 5, doc = "Warn when available memory drops below this percent of total" }
 psi_mem_crit = { value = 25, doc = "With swap growing, error when memory pressure exceeds this" }
+
+# CPU PSI is the primary load signal: it reports time runnable work was stalled,
+# unlike load average whose meaning varies with CPU count.
+[glance]
+metric = "psi_cpu_5m"
+unit = "percent"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "psi_cpu_warn" },
+]
 
 [[rule]]
 id = "pressure-warn"

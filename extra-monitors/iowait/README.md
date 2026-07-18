@@ -54,6 +54,8 @@ status line. Three confirm cycles damp short bursts.
 A separate FTMON rule warns when the **15-minute average** iowait exceeds
 **15%** (`sustained_iowait_pct`), even if individual plugin samples dip below
 the instant thresholds — useful for backups that keep disks warm for a while.
+The dashboard tile shows that same 15-minute average and its sustained
+threshold; it does not mislabel the plugin's separate instantaneous limits.
 
 ### Why there is no Trends growth profile
 

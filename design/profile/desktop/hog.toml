@@ -7,7 +7,7 @@ exempt = [ 'matches(name, "^ftmon$")' ]
 [monitor]
 name = "hog"
 description = "Detects processes with sustained high CPU use"
-version = 2
+version = 3
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -16,6 +16,16 @@ source = "process"
 [parameters]
 warn_pct = { value = 80, doc = "Warn when average CPU%% over 5m exceeds this" }
 crit_pct = { value = 90, doc = "Error when average CPU%% over 15m exceeds this" }
+
+# The warning and critical rules use different windows, so only the matching
+# five-minute warning threshold belongs beside this five-minute readout.
+[glance]
+metric = "cpu_5m"
+unit = "percent"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "warn_pct" },
+]
 
 [[rule]]
 id = "hog-warn"

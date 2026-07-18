@@ -213,6 +213,79 @@ def test_entity_attrs_under_cap_untouched(tmp_path):
     assert decoded == {"fstype": "ext4", "device": "/dev/sda1"}
 
 
+def test_glance_selects_latest_active_entities_with_deterministic_aggregate_ui_17(tmp_path):
+    """[UI-17] Current raw evidence is reduced only after latest-per-entity selection."""
+    conn = _fresh(tmp_path)
+    conn.executemany(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts,attrs) "
+        "VALUES('disk',?,?,1000,?,NULL)",
+        [
+            ("/a", 800, None),
+            ("/b", 800, None),
+            ("/c", 800, None),
+            ("/gone", 800, 999),
+            ("/stale", 700, None),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(?,'disk',?,'used_pct',1)",
+        [(1, "/a"), (2, "/b"), (3, "/gone"), (4, "/stale"), (5, "/c")],
+    )
+    conn.executemany(
+        "INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)",
+        [
+            (1, 900, 99), (1, 990, 80),
+            (2, 995, 80),
+            (3, 999, 100),
+            (4, 700, 1),
+            (5, 990, 70),
+        ],
+    )
+    query = Query(conn)
+    samples = query.glance_samples("disk", "used_pct", not_before=880)
+    assert [(item.entity_id, item.ts, item.value) for item in samples] == [
+        ("/a", 990, 80),
+        ("/b", 995, 80),
+        ("/c", 990, 70),
+    ]
+    assert query.glance_samples("disk", "used_pct", not_before=996) == ()
+
+
+def test_forget_entity_removes_samples_rollups_baseline_and_catalog_state_ca_07(tmp_path):
+    """[CA-07] Exemption purges every metric surface in the tick transaction."""
+    conn = _fresh(tmp_path)
+    conn.execute(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,attrs) "
+        "VALUES('disk','/snap',100,200,'{}')"
+    )
+    conn.execute(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(1,'disk','/snap','used_pct',1)"
+    )
+    conn.execute("INSERT INTO samples(series_id,ts,value) VALUES(1,200,100)")
+    conn.execute(
+        "INSERT INTO rollup5m(series_id,bucket,avg,min,max,last,cnt) "
+        "VALUES(1,0,100,100,100,100,1)"
+    )
+    conn.execute(
+        "INSERT INTO rollup1h(series_id,bucket,avg,min,max,last,cnt) "
+        "VALUES(1,0,100,100,100,100,1)"
+    )
+    conn.execute(
+        "INSERT INTO baselines(series_id,value,updates,updated_bucket,half_life_s) "
+        "VALUES(1,100,240,0,259200)"
+    )
+    conn.commit()
+
+    writer = TickWriter(conn)
+    writer.forget_entity("disk", "/snap")
+    writer.commit_tick()
+
+    for table in ("entities", "series", "samples", "rollup5m", "rollup1h", "baselines"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
 def test_series_id_interned_across_writer_instances(tmp_path):
     """series_id() is stable across separate TickWriter instances/connections."""
     path = tmp_path / "ftmon.db"

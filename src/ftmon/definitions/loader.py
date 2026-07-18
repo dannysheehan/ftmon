@@ -1,4 +1,4 @@
-"""TOML monitor definitions -> `MonitorDef` (DESIGN.md section 7, MD-01..09).
+"""TOML monitor definitions -> `MonitorDef` (DESIGN.md section 7, MD-01..12).
 
 Pipeline (MD-01's "same validator everywhere"): `tomllib` parse -> schema-table
 key check (MD-03) -> `NameEnv` build from `SOURCE_DECLS` (PL-05) -> compile
@@ -40,6 +40,8 @@ from ftmon.sources.base import SOURCE_DECLS
 
 __all__ = [
     "RuleDef",
+    "GlanceDef",
+    "GlanceThreshold",
     "TrendProfile",
     "MonitorDef",
     "ValidationError",
@@ -86,6 +88,24 @@ class TrendProfile:
 
 
 @dataclass(frozen=True)
+class GlanceThreshold:
+    """One explicitly labelled parameter reference for a glance (MD-12)."""
+
+    label: str
+    parameter: str
+
+
+@dataclass(frozen=True)
+class GlanceDef:
+    """Validated current-value presentation metadata (MD-12)."""
+
+    metric: str
+    unit: str
+    aggregate: str
+    thresholds: tuple[GlanceThreshold, ...]
+
+
+@dataclass(frozen=True)
 class MonitorDef:
     name: str
     description: str
@@ -100,6 +120,7 @@ class MonitorDef:
     derived: tuple[tuple[str, CompiledExpr], ...]  # topologically ordered (MD-08)
     exempt: tuple[CompiledExpr, ...]
     rules: tuple[RuleDef, ...]
+    glance: GlanceDef | None
     trends: tuple[TrendProfile, ...]
     windows: tuple[tuple[str, float], ...]  # union of all expressions' .windows (CA-04)
     normalized_toml: str
@@ -863,6 +884,121 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
             )
         )
 
+    # --- [glance] (MD-12) -----------------------------------------------------
+    # Glance is parsed only after the persisted metric and parameter namespaces
+    # are complete: display metadata must not expand collection or infer names.
+    glance_raw = parsed.get("glance")
+    glance: GlanceDef | None = None
+    available_metrics = decl_metrics | derived_names
+    if glance_raw is not None:
+        if is_events:
+            errors.append(_err("glance", "unknown_key", "[glance] is sampler-only"))
+        if not isinstance(glance_raw, dict):
+            errors.append(_err("glance", "invalid_type", "[glance] must be a table"))
+            glance_raw = {}
+        else:
+            _check_unknown_keys(glance_raw, schema.GLANCE_KEYS, "glance", errors)
+
+        for key in ("metric", "unit", "aggregate"):
+            if key not in glance_raw:
+                errors.append(_err(f"glance.{key}", "missing_key", f"missing glance.{key}"))
+
+        glance_metric = glance_raw.get("metric")
+        if not isinstance(glance_metric, str) or glance_metric not in available_metrics:
+            errors.append(_err(
+                "glance.metric", "unknown_name",
+                "glance.metric must name a persisted raw or derived metric",
+                _suggest(glance_metric, sorted(available_metrics))
+                if isinstance(glance_metric, str) else None,
+            ))
+            glance_metric = None
+
+        glance_unit = glance_raw.get("unit")
+        if not isinstance(glance_unit, str) or not glance_unit or len(glance_unit) > 32:
+            errors.append(_err(
+                "glance.unit", "invalid_value", "glance.unit must be 1..32 characters"
+            ))
+            glance_unit = None
+
+        aggregate = glance_raw.get("aggregate")
+        if aggregate not in schema.GLANCE_AGGREGATES:
+            errors.append(_err(
+                "glance.aggregate", "invalid_value", "glance.aggregate must be max or min"
+            ))
+            aggregate = None
+
+        thresholds_raw = glance_raw.get("thresholds", [])
+        if not isinstance(thresholds_raw, list):
+            errors.append(_err(
+                "glance.thresholds", "invalid_type", "glance.thresholds must be an array"
+            ))
+            thresholds_raw = []
+        elif len(thresholds_raw) > schema.MAX_GLANCE_THRESHOLDS:
+            errors.append(_err(
+                "glance.thresholds", "too_many_items",
+                f"glance.thresholds has {len(thresholds_raw)} entries; maximum is "
+                f"{schema.MAX_GLANCE_THRESHOLDS}",
+            ))
+
+        thresholds: list[GlanceThreshold] = []
+        seen_labels: set[str] = set()
+        seen_parameters: set[str] = set()
+        for i, item in enumerate(thresholds_raw[:schema.MAX_GLANCE_THRESHOLDS]):
+            path = f"glance.thresholds[{i}]"
+            if not isinstance(item, dict):
+                errors.append(_err(path, "invalid_type", f"{path} must be a table"))
+                continue
+            _check_unknown_keys(item, schema.GLANCE_THRESHOLD_KEYS, path, errors)
+            for key in ("label", "parameter"):
+                if key not in item:
+                    errors.append(_err(f"{path}.{key}", "missing_key", f"missing {path}.{key}"))
+            label = item.get("label")
+            parameter = item.get("parameter")
+            valid = True
+            if not isinstance(label, str) or not label or len(label) > 20:
+                errors.append(_err(
+                    f"{path}.label", "invalid_value", "label must be 1..20 characters"
+                ))
+                valid = False
+            elif label in seen_labels:
+                errors.append(_err(
+                    f"{path}.label", "duplicate_name", f"duplicate glance label {label!r}"
+                ))
+                valid = False
+            else:
+                seen_labels.add(label)
+            if not isinstance(parameter, str) or parameter not in param_names:
+                errors.append(_err(
+                    f"{path}.parameter", "unknown_name",
+                    "glance threshold must name a parameter",
+                    _suggest(parameter, sorted(param_names))
+                    if isinstance(parameter, str) else None,
+                ))
+                valid = False
+            elif parameter in seen_parameters:
+                errors.append(_err(
+                    f"{path}.parameter", "duplicate_name",
+                    f"duplicate glance parameter {parameter!r}",
+                ))
+                valid = False
+            else:
+                seen_parameters.add(parameter)
+            if valid:
+                thresholds.append(GlanceThreshold(label=label, parameter=parameter))
+
+        if (
+            not is_events
+            and glance_metric is not None
+            and glance_unit is not None
+            and aggregate is not None
+        ):
+            glance = GlanceDef(
+                metric=glance_metric,
+                unit=glance_unit,
+                aggregate=aggregate,
+                thresholds=tuple(thresholds),
+            )
+
     # --- [[trend]] (MD-10) ----------------------------------------------------
     # Profiles are parsed after rules/deriveds so every cross-reference can be
     # checked once here. They never compile expressions or expand collection.
@@ -876,7 +1012,6 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
         errors.append(_err("trend", "invalid_type", "[[trend]] must be an array of tables"))
         trend_raw = []
 
-    available_metrics = decl_metrics | derived_names
     available_groups = {rule.group for rule in rules}
     for i, item in enumerate(trend_raw):
         path = f"trend[{i}]"
@@ -1038,6 +1173,7 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
         derived=tuple(derived_ordered),
         exempt=exempt,
         rules=tuple(rules),
+        glance=glance,
         trends=tuple(trends),
         windows=windows,
         normalized_toml=normalized_toml,

@@ -74,6 +74,7 @@ class TickWriter:
         self._pending_series: list[tuple[int, str, str, str, int]] = []
         self._pending_samples: list[tuple[int, int, float]] = []
         self._pending_entities: list[tuple[str, str, int, int, int | None, str]] = []
+        self._pending_forgotten_entities: set[tuple[str, str]] = set()
         self._pending_events: list[tuple] = []
         self._pending_cursors: dict[str, tuple[str, int]] = {}
         self._pending_meta: dict[str, str] = {}
@@ -163,6 +164,14 @@ class TickWriter:
                 attrs_json,
             )
         )
+
+    def forget_entity(self, monitor: str, entity_id: str) -> None:
+        """Atomically remove persistence for an entity excluded by CA-07."""
+        self._pending_forgotten_entities.add((monitor, entity_id))
+        for key in [
+            key for key in self._series_cache if key[:2] == (monitor, entity_id)
+        ]:
+            del self._series_cache[key]
 
     def add_event(self, ev: EventRecord) -> int:
         event_id = self._alloc_event_id()
@@ -300,6 +309,20 @@ class TickWriter:
         try:
             cur = self._conn.cursor()
             cur.execute("BEGIN IMMEDIATE")
+            for monitor, entity_id in self._pending_forgotten_entities:
+                series_params = (monitor, entity_id)
+                for table in ("baselines", "samples", "rollup5m", "rollup1h"):
+                    cur.execute(
+                        f"DELETE FROM {table} WHERE series_id IN ("
+                        "SELECT id FROM series WHERE monitor=? AND entity_id=?)",
+                        series_params,
+                    )
+                cur.execute(
+                    "DELETE FROM entities WHERE monitor=? AND entity_id=?", series_params
+                )
+                cur.execute(
+                    "DELETE FROM series WHERE monitor=? AND entity_id=?", series_params
+                )
             if self._pending_series:
                 cur.executemany(
                     "INSERT INTO series(id, monitor, entity_id, metric, durable) "
@@ -437,6 +460,7 @@ class TickWriter:
             self._pending_series.clear()
             self._pending_samples.clear()
             self._pending_entities.clear()
+            self._pending_forgotten_entities.clear()
             self._pending_events.clear()
             self._pending_cursors.clear()
             self._pending_meta.clear()

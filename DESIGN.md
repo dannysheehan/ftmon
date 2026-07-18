@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.12**. Companion to `SPEC.md` v0.25 — every design element
+Status: **DRAFT v0.13**. Companion to `SPEC.md` v0.26 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -433,6 +433,7 @@ class SmallWrites:
 | `parameters.*` | `{value: num, doc: str}` | all |
 | `promotion.expr` | expression (bool) — SA-05(c) heuristic | process |
 | `derived[].name/expr` | metric name / expression | sampler sources |
+| `glance` | `{metric, unit, aggregate=max|min, thresholds=[{label, parameter}]}`; ≤4 thresholds (MD-12) | sampler sources |
 | `trend[]` | declarative value/rate/confidence/projection presentation profile (MD-10) | sampler sources |
 | `exempt[]` | expression (bool) over entity ns (CA-07) | sampler sources |
 | `rule[].id` | `[a-z0-9-]{1,32}`, unique in monitor | all |
@@ -589,7 +590,7 @@ for d in monitor.derived_topo: rings.append_derived(d.eval(ctx))
 alive = {e for e if not exempt(e)}                       # CA-07
 evals = {(rule, e): rule.when.eval(ctx(e)) for ...}      # TriBool
 for (group, e): step_group(...) → effects                # §10.4
-persist: samples for persisted series only (SA-05 promote/top-N/watchlist)
+persist: non-exempt samples selected by SA-05; purge prior state for exemptions
 gone-detection: entities seen before but absent → CA-08 grace timer
 ```
 
@@ -993,13 +994,34 @@ Their semantics remain deliberately separate. `/metrics` selects one persisted `
 
 `GET /api/series?monitor=…&entity=…&metric=…&range=…&statistic=…` returns `{monitor, entity, metric, unit, statistic, resolution, points, lower, upper, incidents, summary, matching_trends}`. Raw metric units come from `SourceDecl`; derived units come from explicit trend-profile use when available, otherwise the neutral label `value`. Server-side Query remains authoritative for tier selection, envelopes, incident filtering, and the 2 000-point cap.
 
-### 15.3 Dashboard health tiles (M7.3, UI-14)
+### 15.3 Dashboard health tiles (M7.3, UI-14/UI-17)
 
-The dashboard composition root builds a `MonitorTile` view model rather than embedding policy in Jinja: `{name, description, state, icon, label, incident_count, max_severity, trend_profiles}`. State precedence is evaluated once in Python as `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`; templates only render it. Centralizing precedence prevents a CSS class or loop ordering change from silently turning a broken monitor green.
+The dashboard composition root builds a `MonitorTile` view model rather than embedding policy in Jinja: `{name, description, state, icon, label, incident_count, max_severity, trend_profiles, glance?}`. State precedence is evaluated once in Python as `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`; templates only render it. Centralizing precedence prevents a CSS class or loop ordering change from silently turning a broken monitor green.
 
 “Live incident” includes both `open` and `acked`: ack suppresses renotification but is not recovery (IN-02). Staleness overrides enabled/incident display because old database state cannot prove current health. A successfully loaded monitor with no committed load/sample evidence is also unknown; `monitor_loads`, series, or an event cursor provides evidence that it has participated in a daemon cycle. Invalid definition files become config-error tiles even though no `MonitorDef` exists.
 
 CSS state classes restore the legacy green/yellow/red scan pattern, but every tile also carries a stable glyph and text label. No state flashes: motion is unnecessary for urgency, hostile to reduced-motion users, and makes a workstation dashboard distracting. Incident links use `/incidents?monitor=…`, the same Query filter as CLI/MCP.
+
+`MonitorDef.glance` is frozen presentation metadata, not executable policy and
+not a reason to collect another metric (MD-12). A focused read-only Query call
+finds each active entity's latest raw sample for the declared metric, rejects
+samples older than twice the monitor interval, evaluates the definition's
+CA-07 exemptions using persisted raw windows, attributes, parameters and
+baselines, then selects `max|min` with newest-timestamp then entity-ID
+tie-breaking. Rollups and entities with
+`gone_ts` are excluded because a retained historical value cannot describe the
+host now. Python resolves the declared threshold parameters and composes the
+optional tile value; Jinja never aggregates, checks freshness or guesses a
+unit. Unknown, disabled, config-error and globally stale tiles omit glance, so
+UI-14 remains the sole health-state contract (UI-17). This adds no database
+migration, daemon write, tick-path computation or incident-state transition.
+
+Reference definitions deliberately choose like-for-like signals: disk maximum
+used percent; load five-minute CPU PSI; hog maximum five-minute CPU; leak
+maximum RSS growth rate; temperature hottest Celsius value; and iowait its
+fifteen-minute average. Threshold labels appear only when their parameter uses
+the same metric and window. Status-only recipes such as `sensors` omit glance
+instead of inventing a numeric interpretation.
 
 #### M7 disk reference profile
 
@@ -1125,6 +1147,7 @@ plugin remains under its own license (EC-01/02/07/09, SE-07).
 | D29 | Tool-neutral canonical skills with vendor installation adapters | one reviewed workflow serves multiple agents without promising universal auto-discovery or maintaining divergent copies |
 | D30 | Shared skills read live repository authority | avoids freezing schema details in prompt assets; SPEC, templates and tests remain the only behavioral contract |
 | D31 | Container monitoring stays behind the external-check boundary in 2.0 | a rootful engine socket is effectively administrative authority and conflicts with SE-01; a recipe can use a pre-existing same-user rootless socket without adding a daemon dependency, while canary evidence must justify any post-2.0 per-container sampler/event design |
+| D32 | Explicit per-monitor glance metadata | multi-entity monitors and arbitrary rules cannot honestly reveal one primary value, unit, aggregate or threshold label by inference |
 
 ---
 
