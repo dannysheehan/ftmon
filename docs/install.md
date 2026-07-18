@@ -257,6 +257,12 @@ platform permits one. A narrowly scoped `sudoers` rule for one root-owned,
 read-only external check is supported as an advanced exception; the exact
 wrapper and validation rules are in [External checks](external-checks.md).
 
+A recipe classified `service-socket` may use a rootless service socket already
+owned by the same account running the per-user FTMON daemon. It does not make a
+rootful container socket acceptable: never add the dedicated `ftmon` account to
+`docker` or another container-engine group, change that socket's mode, or weaken
+the packaged unit to expose it.
+
 #### Credentials with systemd
 
 For a system service, protected files or systemd credentials are preferred to

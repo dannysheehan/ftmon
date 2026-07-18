@@ -14,21 +14,36 @@ from ftmon.definitions.loader import load_file
 ROOT = Path(__file__).parents[2]
 CATALOGUE = ROOT / "extra-monitors"
 RECIPE_KEYS = {
-    "id", "title", "summary", "kind", "platforms", "upstream", "license",
-    "status", "privilege", "network", "last_verified_version",
-    "category", "tags", "min_ftmon_version",
+    "id",
+    "title",
+    "summary",
+    "kind",
+    "platforms",
+    "upstream",
+    "license",
+    "status",
+    "privilege",
+    "network",
+    "last_verified_version",
+    "category",
+    "tags",
+    "min_ftmon_version",
 }
 FIXTURE_KEYS = {"path", "exit_code", "state", "labels"}
 DOC_HEADINGS = {
-    "## Why", "## Install", "## Configure", "## Test",
-    "## Security and permissions", "## Upstream and licence",
+    "## Why",
+    "## Install",
+    "## Configure",
+    "## Test",
+    "## Security and permissions",
+    "## Upstream and licence",
 }
+PRIVILEGE_CLASSES = {"none", "service-socket", "sudo-wrapper"}
 
 
 def recipe_dirs() -> list[Path]:
     return sorted(
-        path for path in CATALOGUE.iterdir()
-        if path.is_dir() and not path.name.startswith("_")
+        path for path in CATALOGUE.iterdir() if path.is_dir() and not path.name.startswith("_")
     )
 
 
@@ -36,7 +51,11 @@ def test_catalogue_template_explains_every_required_artifact():
     """[DO-08] Contributors start from the same documented, testable shape."""
     template = CATALOGUE / "_template"
     assert {
-        "README.md", "recipe.toml", "checks.toml.example", "monitor.toml", "fixtures",
+        "README.md",
+        "recipe.toml",
+        "checks.toml.example",
+        "monitor.toml",
+        "fixtures",
     } <= {item.name for item in template.iterdir()}
     assert DOC_HEADINGS <= set((template / "README.md").read_text().splitlines())
 
@@ -58,14 +77,21 @@ def test_recipe_metadata_and_documentation_contract(recipe):
     assert meta["id"] == path.name
     assert meta["kind"] in {"nagios", "ftmon-json"}
     assert meta["status"] in {"tested", "real-system-verified", "recipe-only"}
-    assert meta["privilege"] in {"none", "sudo-wrapper"}
+    assert meta["privilege"] in PRIVILEGE_CLASSES
     assert meta["platforms"] and set(meta["platforms"]) <= {"linux", "darwin", "windows"}
     assert meta["upstream"].startswith("https://")
     assert meta["license"].strip()
     assert type(meta["network"]) is bool
     assert meta["category"] in {
-        "applications", "database", "hardware", "network", "other", "security",
-        "storage", "system", "web",
+        "applications",
+        "database",
+        "hardware",
+        "network",
+        "other",
+        "security",
+        "storage",
+        "system",
+        "web",
     }
     assert meta["tags"] == sorted(set(meta["tags"]))
     assert all(tag and tag == tag.lower() for tag in meta["tags"])
@@ -91,6 +117,8 @@ def test_recipe_registry_and_monitor_agree_without_granting_authority(recipe):
     assert all(isinstance(argument, str) and argument for argument in entry["argv"])
     if manifest["recipe"]["privilege"] == "sudo-wrapper":
         assert entry["argv"][:2] == ["/usr/bin/sudo", "-n"]
+    else:
+        assert entry["argv"][:2] != ["/usr/bin/sudo", "-n"]
 
     definition_text = (path / "monitor.toml").read_text()
     definition = load_file(path / "monitor.toml")
@@ -113,7 +141,8 @@ def test_recipe_fixtures_match_documented_protocol_and_metrics(recipe):
         output = output_path.read_bytes()
         result = (
             parse_nagios(output, fixture["exit_code"], 0)
-            if kind == "nagios" else parse_json(output, 0)
+            if kind == "nagios"
+            else parse_json(output, 0)
         )
         assert result.state == fixture["state"]
         assert set(result.values) == set(fixture["labels"])
@@ -125,13 +154,17 @@ def test_recipe_contains_no_vendored_plugin_or_obvious_secret(recipe):
     """[XR-04][EC-09] Recipes document dependencies without copying or credentialing them."""
     path, _manifest = recipe
     allowed = {
-        "README.md", "recipe.toml", "checks.toml.example", "monitor.toml", "fixtures",
-        "scripts", "tests",
+        "README.md",
+        "recipe.toml",
+        "checks.toml.example",
+        "monitor.toml",
+        "fixtures",
+        "scripts",
+        "tests",
     }
     assert {item.name for item in path.iterdir()} <= allowed
     combined = "\n".join(
-        file.read_text(errors="replace")
-        for file in path.rglob("*") if file.is_file()
+        file.read_text(errors="replace") for file in path.rglob("*") if file.is_file()
     ).lower()
     assert "password=" not in combined
     assert "token=" not in combined

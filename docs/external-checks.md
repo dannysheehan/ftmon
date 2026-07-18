@@ -179,6 +179,23 @@ directory. Do not depend on ambient environment variables.
 
 ## Checks requiring privilege
 
+### Pre-existing service sockets
+
+Some checks query a local Unix socket. A recipe marks this as
+`privilege = "service-socket"` when the socket exposes more authority or data
+than ordinary user files. That label is disclosure, not a permission recipe:
+FTMON never changes socket ownership, modes or group membership.
+
+The supported container case is a rootless engine socket already owned by the
+same user running the per-user FTMON daemon. A rootful Docker socket or the
+`docker` group is effectively administrative host authority and remains outside
+SE-01. Do not add the dedicated `ftmon` account to a container-engine group,
+make the socket broadly writable, expose an unauthenticated TCP API, or weaken
+the packaged unit. If the service identity cannot already access the named
+socket, the recipe is not compatible with that deployment.
+
+### Elevated hardware and system checks
+
 Keep the FTMON daemon unprivileged. Some read-only hardware checks (SMART,
 RAID controllers, IPMI) genuinely need root — NVMe SMART, for example, is an
 admin ioctl, not a file you can be granted permission to read.

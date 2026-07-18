@@ -22,8 +22,11 @@ manual or opt-in.
 
 ## Security and permissions
 
-Describe network disclosure, credentials and privilege. Prefer `none`; when a
-check genuinely needs root, use a root-owned wrapper and exact `sudoers` rule.
+Describe network disclosure, credentials and privilege. Use `service-socket`
+only for a pre-existing, explicitly named local socket; never tell operators to
+broaden group membership or socket modes. Prefer `none`; the `sudo-wrapper`
+exception requires a custom unit without the shipped `NoNewPrivileges=yes`, a
+root-owned exact wrapper and an argument-free `sudoers` rule.
 
 ## Upstream and licence
 
