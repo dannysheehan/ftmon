@@ -300,7 +300,25 @@ daemon first; for any cleanup or bulk changes, always stop the daemon.
 Notifications are deliberately short; depth lives in `ftmon incident <id>` and
 the web UI. An audit trail of every notification is kept at
 `~/.local/state/ftmon/notifications.jsonl`. Desktop popups are enabled by the
-desktop initialization profile and disabled by the server profile. Remote
+desktop initialization profile and disabled by the server profile.
+
+Desktop popups keep a bounded footprint in the notification tray: renotify and
+recovery popups are transient (they show a banner but never pile up in the
+tray), one incident updates a single tray entry across its whole open →
+escalate → recover lifecycle, and only critical incidents use the
+never-expiring `critical` popup urgency. A pile of stale tray entries is not
+just clutter — a large backlog can crash GNOME Shell's calendar panel
+(Launchpad #2138529), so the monitor refuses to be the thing that builds one.
+On an older `notify-send` without these flags, popups simply behave as plain
+persistent notifications. If popups are still noisier than you want, raise the
+desktop channel's threshold in `config.toml`:
+
+```toml
+[notify.desktop]
+min_severity = "warning"   # e.g. keep info-level recovery popups off entirely
+```
+
+Remote
 ntfy, webhook, and SMTP delivery is configured with protected external secret
 references; see `docs/install.md`. Delivery is independent per channel and
 honestly at-least-once, so the one in-flight channel attempt may be duplicated
