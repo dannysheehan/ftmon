@@ -261,6 +261,32 @@ intentionally one series at a time and never invents rate, confidence, or
 forecast meaning; when a definition declares such meaning, **Open Trend**
 moves to that curated view.
 
+When the selected series has a learned baseline, Metrics also shows its current
+EWMA level and learning coverage. Rules still receive no `baseline(m)` value
+until 240 five-minute updates have accumulated, but the page exposes the level
+while it learns so you can see what “normal” is converging toward. The dashed
+overlay contains only retained five-minute baseline updates: gaps stay gaps,
+raw timestamps are not fabricated, and long ranges do not extend today's level
+back across missing history. If older five-minute evidence has aged out, the
+text summary says the visible baseline history is truncated.
+
+### Baselines index
+
+The read-only **Baselines** page lists every stored learned series with its
+monitor, entity, metric, current level, update-count coverage, readiness, and
+last update. Filters and bounded pagination keep the page useful even when
+short-lived process identities have accumulated. Each row opens the matching
+bookmarkable Metrics view for historical context.
+
+Baseline reset remains an explicit maintenance command:
+
+```sh
+ftmon baseline reset <monitor> [entity]
+```
+
+Resetting discards the learned rows in that scope; rules return unknown while
+the replacement baseline accumulates its first 240 updates.
+
 ## 7. Writing your own monitors
 
 See the definitions reference (`docs/definitions.md`) — the complete TOML

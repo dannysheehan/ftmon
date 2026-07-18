@@ -1,6 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.22** — v0.22 extends MC-06 so `diagnose_monitor` surfaces
+Status: **DRAFT v0.25** — v0.25 adds the read-only Baselines index (issue #18),
+after v0.24 adds the bounded `list_baselines` MCP tool (issue #46) and v0.23
+makes CA-05 learning visible on Metrics at its honest retained five-minute
+resolution (issue #17). Baseline rows persist the immutable effective half-life
+so reverse reconstruction cannot mix EWMA coefficients; a coefficient change
+reseeds that series. v0.22 extends MC-06 so `diagnose_monitor` surfaces
 the last persisted external-check result (`plugin_state`, `plugin_ok`,
 `duration_s`, `plugin_message`, `sample_age_s`) for the configured entity
 (issue #36), closing the agent loop between "loaded" and "producing". v0.21
@@ -604,7 +609,7 @@ Available in all expressions. `w` is a duration string (`"90s"`, `"10m"`, `"3h"`
 
 ### 7.4 Baselines
 
-- **CA-05** `baseline(m)` is an **exponentially weighted mean**, precisely: updated once per 5-minute rollup of `m` as `b ← b + α·(rollup_avg − b)` with `α = 1 − 2^(−Δt/half_life)`, half-life default 3 d (config per monitor). It is stored persistently per (monitor, entity, metric) with its update count. It returns `None` until **coverage** ≥ 240 rollup updates (~24 h of actual data — counted updates, not elapsed time). A new entity_id (process restart) starts a fresh baseline. Data sampled during open incidents is *not* excluded (documented contamination caveat; acceptable for v1). Seasonality: NG-07.
+- **CA-05** `baseline(m)` is an **exponentially weighted mean**, precisely: updated once per 5-minute rollup of `m` as `b ← b + α·(rollup_avg − b)` with `α = 1 − 2^(−Δt/half_life)`, half-life default 3 d (config per monitor). It is stored persistently per (monitor, entity, metric) with its update count and the effective `half_life_s`. That half-life is immutable for one baseline lifetime: changing it reseeds that series from the next rollup (`value = rollup_avg`, `updates = 1`) so one row can never mix EWMA coefficients. It returns `None` until **coverage** ≥ 240 rollup updates (~24 h of actual data — counted updates, not elapsed time), although read-only consumers may show the learning level and `min(updates/240, 1)`. A new entity_id (process restart) starts a fresh baseline. Metrics may reconstruct the current lifetime backwards from the stored value through retained 5-minute rollup averages, using at most `updates − 1` inverse steps and never reversing the seed. Reconstructed points retain native five-minute timestamps; missing or pruned buckets are never interpolated, and truncation is reported relative to the first five-minute bucket in the requested range. Data sampled during open incidents is *not* excluded (documented contamination caveat; acceptable for v1). Seasonality: NG-07.
 - **CA-06** `ftmon baseline reset <monitor> [entity]` clears learned baselines.
 
 ### 7.5 Exemptions
@@ -843,6 +848,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 | `list_monitors` / `get_monitor` | (name) | definitions incl. drafts (marked), validation status, load history (PM-07) |
 | `monitor_paths` | () | resolved filesystem layout an author needs (monitors, drafts, actions, check registry, db) — the JSON form of `ftmon paths` (CL-06) |
 | `diagnose_monitor` | (name) | where the file lives (enabled/draft/missing), validation errors, enabled state, last load hash and age, for external monitors whether the alias is registered and its executable trusted (no argv exposure, SE-07), and `last_result` for the configured `source_options.entity` (`plugin_state`/`plugin_ok`/`duration_s`/`plugin_message`/`sample_age_s`, or null when never sampled / non-external / no DB) |
+| `list_baselines` | (monitor?, entity?, metric?, ready?, limit=100, cursor?) | learned level, update-count coverage/readiness, effective half-life and last update for stored baseline rows; deterministic keyset pagination |
 | `validate_monitor` ✎(no writes) | (toml_text) | full validation, returns errors or normalized form |
 | `define_monitor` ✎ | (toml_text) | validate → write to `drafts/` (PM-06) → return draft path plus structured `next_steps` (CLI approve command and web UI) |
 | `ack_incident` ✎ | (id, note?) | sets acked with `by = "mcp"`, note into history |
@@ -853,6 +859,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 - **MC-04** Error responses are structured (`code`, `message`, `hint`) — a less capable model must be able to self-correct from validation errors (MD-01's quality bar applies).
 - **MC-05** The server exposes one MCP **resource**: the monitor-definition guide (DO-01) — so a model authoring a definition can pull the reference without leaving the session. The full SPEC is not exposed (operational noise).
 - **MC-06** `monitor_paths` and `diagnose_monitor` are strictly read-only diagnostics: they answer "where do files go?" and "why isn't this monitor running?" in one round-trip each. `diagnose_monitor` may surface validation errors verbatim (already exposed by `get_monitor`) but MUST NOT expose registry argv or credentials — trust status is reported as booleans and stable categories only (SE-07). For every found monitor it also returns `last_result`: null when there is no DB, the monitor is non-external, or the **currently configured** `source_options.entity` has never produced a coherent EC-05 sample; otherwise the stored `plugin_state` (0–3), `plugin_ok`, `duration_s`, sanitized `plugin_message`, and `sample_age_s` for that entity at one shared sample timestamp. That block re-exposes already-persisted EC-05 fields under the local single-user trust model (SE-04): no registry argv or credentials; stderr remains excluded. `plugin_message` is control-stripped/truncated plugin stdout — FTMON does not apply secret-pattern redaction (NG-08). Write paths remain exactly drafts (`define_monitor`) and `ack_incident`; approval stays a human action (MD-05).
+- **MC-07** `list_baselines` is read-only, bounded and deterministic. It lists all stored baseline rows (never rows inferred from definitions) in `(monitor, entity, metric)` order, with optional exact filters and readiness filter. `limit` defaults to 100 and MUST be in `1..500`; pagination uses an opaque keyset cursor containing the last key and canonical filters so malformed or filter-mismatched cursors return MC-04 `invalid_params`. Learning rows expose their current level plus `updates`, `required_updates`, capped coverage, `ready`, UTC update bucket and effective half-life; `next_cursor` is null at the end.
 
 ---
 
@@ -861,7 +868,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 A local, single-user, AI-optional interface — the modern successor to legacy's generated HTML, and deliberately much better.
 
 - **UI-01** `ftmon web` serves on 127.0.0.1:8420: no external network assets whatsoever (all JS/CSS/fonts vendored; must work fully offline), no auth (NG-05).
-- **UI-02** v1 pages: **Dashboard** (per-monitor status tiles, open incidents, daemon health/budget strip, sparklines); **Incidents** (filter, detail view = `explain_incident` rendered, ack button); **Metrics explorer** (pick monitor/entity/metric/range → chart; shareable URL state); **Events** (filterable browser); **Monitors** (definitions rendered with docs, enable/disable toggle, drafts with rich validation view and **Approve** button); **Self** (daemon log tail, self-metrics, DB size, config errors).
+- **UI-02** v1 pages: **Dashboard** (per-monitor status tiles, open incidents, daemon health/budget strip, sparklines); **Incidents** (filter, detail view = `explain_incident` rendered, ack button); **Metrics explorer** (pick monitor/entity/metric/range → chart; shareable URL state); **Baselines** (read-only, paginated learned levels and coverage linking into Metrics); **Events** (filterable browser); **Monitors** (definitions rendered with docs, enable/disable toggle, drafts with rich validation view and **Approve** button); **Self** (daemon log tail, self-metrics, DB size, config errors).
 - **UI-03** Write operations are exactly: ack incident, enable/disable monitor, approve/delete draft. Each is a POST hitting the same code paths as the CLI equivalents (incl. PM-06).
 - **UI-04** Data freshness: dashboard and incident views poll every 5 s (no SSE in v1); a stale daemon (last cycle > 3× base interval) shows an unmistakable banner.
 - **UI-05** Charts must remain legible with 400 d hourly data (downsampled server-side to ≤ 2 000 points per series per request).
@@ -875,7 +882,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ---
 
 - **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
-- **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. It additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric.
+- **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. It additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric. When CA-05 has a stored row for the selected series, Metrics also reports the current learning level, update-count coverage/readiness and effective half-life, and overlays only the reconstructable native five-minute baseline points. Consecutive buckets may be joined as dashed segments, but gaps larger than five minutes, raw-sample timestamps and hourly interpolation MUST NOT be invented; ranges without retained baseline history show the current state in text without a historical reference line.
 - **UI-14** Every dashboard monitor tile MUST show one accessible health state derived from current configuration, daemon freshness, and live open/acked incidents. Fixed precedence is `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`. States use color plus icon and visible text: grey `? unknown`/`● disabled`, red `✖ error`, yellow `▲ warning`, green `✓ clear`. Acknowledgment does not reduce severity or turn a tile green. Affected tiles show live incident count and link to incidents filtered by monitor; color never flashes or animates.
 - **UI-15** `ftmon web --demo` is a separate public-demonstration mode. It
   opens only a generated, deterministic synthetic database read-only; registers
@@ -886,7 +893,8 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   The ordinary web mode and its loopback/Host/Origin rules are unchanged.
 - **UI-16** The demo dataset exercises clear/warning/error/disabled states,
   open and recovered incidents, disk and process-growth trends, chart gaps, and
-  stale-daemon presentation. It is regenerated from a versioned seeded scenario
+  stale-daemon presentation, plus one learning and one ready baseline with
+  matching five-minute history. It is regenerated from a versioned seeded scenario
   at deployment/startup, is never mutated by visitors, and may be replaced on a
   schedule without schema migration or preserving visitor state.
 
@@ -988,7 +996,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ---
 
 - **TS-10** Generic trend tests MUST cover profile schema and cross-reference errors, optional-panel `null` semantics, disk compatibility, leak value/rate/confidence history, profile-aware thresholds and incident groups, contextual links, `/disks` redirect preservation, and one real-daemon-to-HTTP leak journey. Tests assert data and accessibility contracts, not chart pixels.
-- **TS-11** Metrics visualization tests MUST cover the `/api/series` contract, catalog selectors, all rollup statistics, aligned min/max envelopes, missing-data gaps, incident filtering, unit discovery/fallback, the 2 000-point cap, hostile labels, accessible summary, matching-Trend links, and absence of invented panels. Browser-library behavior remains tested at the HTTP/data boundary rather than by pixel snapshots.
+- **TS-11** Metrics visualization tests MUST cover the `/api/series` contract, catalog selectors, all rollup statistics, aligned min/max envelopes, missing-data gaps, incident filtering, unit discovery/fallback, the 2 000-point cap, hostile labels, accessible summary, matching-Trend links, absence of invented panels, baseline learning/readiness, exact inverse reconstruction, range-relative truncation, and contiguous native-five-minute rendering without spanning gaps. Browser-library behavior remains tested at the HTTP/data boundary rather than by pixel snapshots.
 - **TS-12** Dashboard tile tests MUST cover clear, warning, error/critical, acknowledged, disabled, stale/no-data, and configuration-error states; precedence conflicts; incident counts and filtered links; escaping; icon+text accessibility; and absence of flashing/animation dependence.
 - **TS-13** Notification tests cover configuration validation, severity fan-out,
   quiet-hours digests, independent channel success/failure, exact retry classes
@@ -1140,6 +1148,7 @@ Implementation lands in stages; each stage is independently usable, ships the §
 | **M7.1** | Generic trend profiles (MD-10, CA-10, UI-12, TS-10) | reusable growth investigation |
 | **M7.2** | Shared Metrics/Trends chart foundation (UI-13, TS-11) | consistent single-series diagnostics |
 | **M7.3** | Accessible legacy-style dashboard health tiles (UI-14, TS-12) | at-a-glance operational status |
+| **M7.4** | Baseline visibility in Metrics, MCP and a read-only index (CA-05, MC-07, UI-02/13, TS-11) | learned normals operators and agents can inspect and trust |
 | **M8** | Server profile, per-channel outbox, ntfy/webhook/SMTP, server service/docs (PM-08/09, DM-18, NO-05..10, SE-05, TS-13, DO-06) | lightweight single-server monitor |
 | **M8.1** | Synthetic read-only public demo mode and deployment (UI-15/16, SE-06, TS-14, DO-06) | safe `demo.ftmon.org` experience |
 | **M9** | Administrator check registry, external subprocess source, FTMON JSON and Nagios adapters, declared perfdata history/Trends (EC-*, MD-11, SE-07, TS-15, DO-07) | bring-your-own checks without a monitoring stack |
@@ -1151,6 +1160,26 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.25 (2026-07-18)** — read-only Baselines index (issue #18). The primary
+navigation now exposes every stored CA-05 row through bounded keyset pagination,
+with exact filters, learning coverage/readiness, last update and links into the
+matching shareable Metrics view. Reset authority remains CLI-only (UI-03).
+
+**v0.24 (2026-07-18)** — MCP baseline visibility (issue #46). MC-07 adds the
+read-only `list_baselines` tool to MC-01's frozen surface. All stored rows are
+available through exact filters and an opaque filter-bound keyset cursor; the
+100-row default and 500-row cap preserve MC-01's bounded-response contract
+under entity churn without hiding learning levels below CA-05's rule gate.
+
+**v0.23 (2026-07-18)** — honest Metrics baseline overlay (issue #17). CA-05
+rows now retain their effective immutable half-life; changing it reseeds the
+series rather than mixing EWMA coefficients. Metrics reconstructs only retained
+native five-minute baseline points by reversing the EWMA from its current row,
+draws contiguous runs without bridging gaps, and reports learning readiness and
+range-relative truncation in its accessible summary. Persisting a duplicate
+baseline-history table was rejected because the five-minute store already sits
+against DM-05's capacity budget.
 
 **v0.22 (2026-07-18)** — `diagnose_monitor` last runtime result (issue #36).
 MC-06 already answered location, validation, load state, and external-alias

@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from ftmon.store.db import connect, migrate
+from ftmon.store.query import Query
 from ftmon.store.retention import (
     BaselineLookup,
     Retention,
@@ -135,6 +136,25 @@ class TestBaseline:
         assert row["value"] == pytest.approx(22.5)
         assert row["updates"] == 3
         assert row["updated_bucket"] == b + 600
+        assert row["half_life_s"] == 300.0
+
+    def test_half_life_change_reseeds_baseline(self, conn):
+        """[CA-05] a new alpha starts a new reversible baseline lifetime."""
+        add_series(conn, 1)
+        b = (T0 // 300) * 300
+        add_samples(conn, 1, [(b, 10.0), (b + 300, 20.0)])
+        Retention(conn, half_life_s=300.0).run(now=b + 700)
+        conn.execute("DELETE FROM meta WHERE key = 'rollup5m_cursor'")
+        conn.execute("DELETE FROM samples")
+        add_samples(conn, 1, [(b + 600, 80.0)])
+
+        Retention(conn, half_life_s=600.0).run(now=b + 1000)
+
+        row = conn.execute("SELECT * FROM baselines").fetchone()
+        assert row["value"] == 80.0
+        assert row["updates"] == 1
+        assert row["updated_bucket"] == b + 600
+        assert row["half_life_s"] == 600.0
 
     def test_rerolled_bucket_does_not_double_count(self, conn):
         """[CA-05] the updated_bucket guard: re-rolling an already-applied
@@ -179,6 +199,85 @@ class TestBaseline:
         assert reset_baselines(conn, "m", "e1") == 1
         assert reset_baselines(conn, "m") == 1  # e2 remains, now cleared
         assert conn.execute("SELECT COUNT(*) FROM baselines").fetchone()[0] == 1  # other
+
+    def test_query_reconstructs_forward_ewma_without_reversing_seed(self, conn):
+        """[CA-05] retained 5m inputs exactly recover each native EWMA state."""
+        add_series(conn, 1, metric="rss_bytes")
+        b = (T0 // 300) * 300
+        add_samples(conn, 1, [(b, 10.0), (b + 300, 20.0), (b + 600, 30.0)])
+        Retention(conn, half_life_s=300.0).run(now=b + 1000)
+
+        history = Query(conn).baseline_history(
+            "m", "e", "rss_bytes", start=b, end=b + 600
+        )
+
+        assert history is not None
+        assert [(point.ts, point.value) for point in history.points] == pytest.approx([
+            (b, 10.0), (b + 300, 15.0), (b + 600, 22.5)
+        ])
+        assert history.history_truncated is False
+        assert history.baseline.half_life_s == 300.0
+
+    def test_query_history_truncation_is_range_relative_and_uses_ceil(self, conn):
+        """[CA-05] missing lifetime inputs matter only before the first bucket in view."""
+        add_series(conn, 1, metric="rss_bytes")
+        b = (T0 // 300) * 300
+        conn.executemany(
+            "INSERT INTO rollup5m(series_id,bucket,avg,min,max,last,cnt) "
+            "VALUES (1,?,?,1,1,1,1)",
+            [(b + 300, 20.0), (b + 600, 30.0)],
+        )
+        conn.execute(
+            "INSERT INTO baselines(series_id,value,updates,updated_bucket,half_life_s) "
+            "VALUES (1,22.5,3,?,300)",
+            (b + 600,),
+        )
+        conn.commit()
+        query = Query(conn)
+
+        short = query.baseline_history(
+            "m", "e", "rss_bytes", start=b + 2, end=b + 600
+        )
+        assert short is not None
+        assert short.history_truncated is False
+        long = query.baseline_history("m", "e", "rss_bytes", start=b, end=b + 600)
+        assert long is not None
+        assert long.history_truncated is True
+
+    def test_query_lists_baselines_with_bound_filter_cursor(self, conn):
+        """[CA-05] baseline discovery is deterministic, bounded, and stateless."""
+        for sid, monitor, entity, metric, updates in (
+            (1, "a", "e1", "cpu", 1),
+            (2, "a", "e2", "rss", 240),
+            (3, "b", "e1", "disk", 300),
+        ):
+            add_series(conn, sid, monitor=monitor, entity=entity, metric=metric)
+            conn.execute(
+                "INSERT INTO baselines(series_id,value,updates,updated_bucket) "
+                "VALUES (?,10,?,300)",
+                (sid, updates),
+            )
+        conn.commit()
+        query = Query(conn)
+
+        first = query.list_baselines(limit=2)
+        assert [(row.monitor, row.entity_id, row.metric) for row in first.baselines] == [
+            ("a", "e1", "cpu"), ("a", "e2", "rss")
+        ]
+        assert first.baselines[0].coverage == pytest.approx(1 / 240)
+        assert first.baselines[1].ready is True
+        assert first.next_cursor is not None
+        second = query.list_baselines(limit=2, cursor=first.next_cursor)
+        assert [(row.monitor, row.entity_id, row.metric) for row in second.baselines] == [
+            ("b", "e1", "disk")
+        ]
+        assert second.next_cursor is None
+        with pytest.raises(ValueError, match="cursor"):
+            query.list_baselines(monitor="a", limit=2, cursor=first.next_cursor)
+        with pytest.raises(ValueError, match="cursor"):
+            query.list_baselines(cursor="not-a-cursor")
+        with pytest.raises(ValueError, match="limit"):
+            query.list_baselines(limit=0)
 
 
 class TestPruneAndDegrade:

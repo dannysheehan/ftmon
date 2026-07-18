@@ -8,6 +8,7 @@ real monitoring database into public demonstration input.
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import sqlite3
@@ -23,6 +24,8 @@ SCENARIO_NAME = "demo-v1"
 POINT_COUNT = 7 * 24 + 1
 POINT_INTERVAL = 3600
 REQUIRED_STATES = frozenset({"clear", "warning", "error", "disabled"})
+_BASELINE_HALF_LIFE_S = 3 * 86400.0
+_BASELINE_READY_UPDATES = 240
 
 
 def _records() -> list[dict]:
@@ -147,6 +150,51 @@ def _populate(conn: sqlite3.Connection, records: list[dict]) -> None:
         raise ValueError("demo scenario lacks growth trends or chart gaps")
 
 
+def _seed_ready_baseline(conn: sqlite3.Connection) -> None:
+    """Make one exact ready example while retaining ordinary learning rows.
+
+    The compact scenario samples hourly, so its naturally learned baselines
+    are all below CA-05's 240-update threshold. Extra native 5-minute rollups
+    are synthetic evidence, not fabricated browser points; recomputing the EWMA
+    over all stored rows keeps reverse reconstruction mathematically honest.
+    """
+    series_id = conn.execute(
+        "SELECT id FROM series WHERE monitor='disk' AND metric='used_pct'"
+    ).fetchone()[0]
+    existing = conn.execute(
+        "SELECT bucket,avg FROM rollup5m WHERE series_id=? ORDER BY bucket",
+        (series_id,),
+    ).fetchall()
+    present = {row["bucket"] for row in existing}
+    latest = existing[-1]
+    candidates = range(latest["bucket"] - 300, existing[0]["bucket"], -300)
+    missing = [bucket for bucket in candidates if bucket not in present]
+    needed = _BASELINE_READY_UPDATES - len(existing)
+    conn.executemany(
+        "INSERT INTO rollup5m(series_id,bucket,avg,min,max,last,cnt) "
+        "VALUES(?,?,?,?,?,?,1)",
+        [
+            (series_id, bucket, latest["avg"], latest["avg"], latest["avg"], latest["avg"])
+            for bucket in missing[:needed]
+        ],
+    )
+    rollups = conn.execute(
+        "SELECT bucket,avg FROM rollup5m WHERE series_id=? ORDER BY bucket",
+        (series_id,),
+    ).fetchall()
+    if len(rollups) != _BASELINE_READY_UPDATES:
+        raise ValueError("demo scenario cannot seed a ready baseline")
+    alpha = 1.0 - math.pow(2.0, -300 / _BASELINE_HALF_LIFE_S)
+    level = rollups[0]["avg"]
+    for row in rollups[1:]:
+        level += alpha * (row["avg"] - level)
+    conn.execute(
+        "UPDATE baselines SET value=?,updates=?,updated_bucket=?,half_life_s=? "
+        "WHERE series_id=?",
+        (level, len(rollups), rollups[-1]["bucket"], _BASELINE_HALF_LIFE_S, series_id),
+    )
+
+
 def build(output: Path) -> Path:
     """Atomically replace *output* with a complete read-only demo DB (UI-16)."""
     output = Path(output)
@@ -171,6 +219,8 @@ def build(output: Path) -> Path:
             Retention(
                 conn, max_bucket_span_s=8 * 86400, delete_batch=100_000
             ).run(demo_now + 60)
+            _seed_ready_baseline(conn)
+            conn.commit()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("VACUUM")

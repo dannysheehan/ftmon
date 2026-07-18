@@ -1,4 +1,4 @@
-"""MCP server (MC-01..05, DESIGN section 13): FTMON for AI assistants.
+"""MCP server (MC-01..07, DESIGN section 13): FTMON for AI assistants.
 
 Two layers on purpose:
 - `McpApi` — every tool as a plain method returning JSON-able dicts. This
@@ -204,6 +204,56 @@ class McpApi:
             series.append(entry)
         resolution = results[0].resolution if results else "raw"
         return {"tz": _tz_name(now), "resolution": resolution, "series": series}
+
+    def list_baselines(
+        self,
+        monitor: str | None = None,
+        entity: str | None = None,
+        metric: str | None = None,
+        ready: bool | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> dict:
+        """MC-07: bounded visibility into every stored learned baseline."""
+        now = self._clock.now()
+        q = self._query()
+        if q is None:
+            return self._no_db()
+        try:
+            page = q.list_baselines(
+                monitor=monitor,
+                entity_id=entity,
+                metric=metric,
+                ready=ready,
+                limit=limit,
+                cursor=cursor,
+            )
+        except ValueError as exc:
+            return _err(
+                "invalid_params",
+                str(exc),
+                "use exact filters, limit 1..500, and a cursor returned "
+                "for the same filters",
+            )
+        return {
+            "tz": _tz_name(now),
+            "baselines": [
+                {
+                    "monitor": row.monitor,
+                    "entity": row.entity_id,
+                    "metric": row.metric,
+                    "level": row.level,
+                    "updates": row.updates,
+                    "required_updates": row.required_updates,
+                    "coverage": row.coverage,
+                    "ready": row.ready,
+                    "updated_at": row.updated_at,
+                    "half_life_s": row.half_life_s,
+                }
+                for row in page.baselines
+            ],
+            "next_cursor": page.next_cursor,
+        }
 
     def _attr_filter(self, q: Query, monitor: str, filter_expr, now: float):
         """Compile filter_expr over entity attrs; returns the passing
@@ -587,7 +637,8 @@ class McpApi:
 
 
 TOOL_NAMES = (  # MC-01: frozen; test_mcp asserts the server exposes exactly these
-    "get_status", "query_metrics", "top_consumers", "get_process_history",
+    "get_status", "query_metrics", "list_baselines", "top_consumers",
+    "get_process_history",
     "list_events", "list_incidents", "explain_incident", "list_monitors",
     "get_monitor", "monitor_paths", "diagnose_monitor",  # MC-06 (SPEC v0.18)
     "validate_monitor", "define_monitor", "ack_incident",
@@ -615,6 +666,10 @@ def build_server(paths: Paths):
     server.tool(name="query_metrics",
                 description="Time-series data; resolution auto-chosen; range "
                 'like "90m" or [iso, iso]')(api.query_metrics)
+    server.tool(name="list_baselines",
+                description="Stored EWMA levels and learning coverage; exact "
+                "filters with bounded keyset pagination (MC-07)")(
+                api.list_baselines)
     server.tool(name="top_consumers",
                 description="Ranked cpu|rss|io consumers over a range")(
                 api.top_consumers)

@@ -53,6 +53,9 @@ def test_builder_marks_and_covers_the_synthetic_dataset_ui_15_ui_16(tmp_path):
         ).fetchone()[0] < POINT_COUNT
         assert conn.execute("SELECT COUNT(*) FROM rollup5m").fetchone()[0] > 0
         assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] > 0
+        updates = [row[0] for row in conn.execute("SELECT updates FROM baselines")]
+        assert any(value < 240 for value in updates)
+        assert any(value >= 240 for value in updates)
     finally:
         conn.close()
     assert output.stat().st_mode & 0o222 == 0

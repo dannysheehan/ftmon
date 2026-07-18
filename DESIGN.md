@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.12**. Companion to `SPEC.md` v0.22 — every design element
+Status: **DRAFT v0.12**. Companion to `SPEC.md` v0.25 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -384,6 +384,9 @@ def step_episode(cfg: EpisodeConfig, st: GroupState, matches: Sequence[EventReco
 # storage facade (all non-daemon processes use only Query + SmallWrites)
 class Query:      # DM-06; shared by CLI/MCP/web
     def series(self, monitor, metric, entity=None, start=..., end=..., max_points=2000) -> SeriesResult
+    def current_baseline(self, monitor, entity, metric) -> BaselineRecord | None
+    def baseline_history(self, monitor, entity, metric, start=..., end=...) -> BaselineHistory | None
+    def list_baselines(self, filters=..., limit=100, cursor=None) -> BaselinePage
     def top(self, resource, start, end, n) -> ...
     def events(self, filters) -> ...
     def incidents(self, filters) -> ...
@@ -512,7 +515,8 @@ CREATE INDEX delivery_due ON notification_deliveries(next_attempt_ts)
   WHERE state = 'pending';
 
 CREATE TABLE baselines( series_id INTEGER PRIMARY KEY, value REAL, updates INT,
-  updated_bucket INT) WITHOUT ROWID;                         -- CA-05
+  updated_bucket INT, half_life_s REAL NOT NULL DEFAULT 259200) WITHOUT ROWID;
+                                                               -- CA-05
 CREATE TABLE cursors(   source TEXT PRIMARY KEY, cursor TEXT, updated_ts INT) WITHOUT ROWID;
 CREATE TABLE monitor_loads(monitor TEXT, loaded_ts INT, hash TEXT, normalized TEXT,
   PRIMARY KEY(monitor, loaded_ts)) WITHOUT ROWID;            -- PM-07 (keep last 20/monitor)
@@ -526,6 +530,13 @@ with the fixed redacted reason `legacy stale delivery`. It then drops the old
 table. Remote deliveries are intentionally not backfilled because DM-18 freezes
 the channel set when the notification is created. The normal VC-01 backup makes
 this destructive table replacement recoverable.
+
+Migration `0004_baseline_half_life.sql` adds
+`half_life_s REAL NOT NULL DEFAULT 259200` to existing baseline rows. Retention
+stores the effective value at the seed and treats it as immutable for that row's
+lifetime: a changed value replaces the row with the new rollup as update one.
+That reset is why a single coefficient can reverse every update represented by
+the current row without a duplicate baseline-history table (CA-05).
 
 Write path: `writer.py` accumulates the tick's samples/events/incident rows and
 commits **one** transaction at step 4 (PM-03). Notifications and their frozen
@@ -845,9 +856,25 @@ adapters in ignored/personal locations, never separately committed skills.
 
 Tier choice: `end > now−48h and span ≤ 12h` → raw; `span ≤ 30d` → 5m; else 1h — then if points > max_points, server-side LTTB downsample to max_points (used by web charts and MCP alike). All timestamps out are UTC ints + one `tz: "<IANA>"` field per response (MC-02).
 
+Baseline reads join `baselines` to `series`. `current_baseline` returns the
+stored level even below the 240-update rule gate together with capped coverage,
+readiness, update bucket and effective half-life. `baseline_history` starts at
+that current row and walks retained `rollup5m.avg` rows newest-first, applying
+`b_previous = (b_current − α·rollup_avg) / (1−α)` at most `updates−1` times.
+The seed is never reversed. Returned points retain their five-minute bucket
+timestamps; the first requested bucket is `ceil(start/300)·300`, and history is
+truncated only when that bucket precedes the earliest reconstructable point and
+the seed was not reached. Missing buckets remain gaps.
+
+`list_baselines` orders all stored rows by `(monitor, entity_id, metric)` and
+uses an opaque keyset cursor containing both the last key and canonical exact
+filters. The default page is 100 rows and the hard maximum is 500; malformed,
+filter-mismatched or out-of-range requests fail rather than clamp. This shared
+page contract serves MCP and the Baselines web index (MC-07/UI-02).
+
 ---
 
-## 13. MCP server (`mcp_server.py`, MC-01..06)
+## 13. MCP server (`mcp_server.py`, MC-01..07)
 
 FastMCP over stdio; every tool = thin wrapper on `Query`/`SmallWrites`/`definitions`. Parameter schemas (FROZEN; `range` = duration string or `[iso, iso]`):
 
@@ -863,6 +890,7 @@ FastMCP over stdio; every tool = thin wrapper on `Query`/`SmallWrites`/`definiti
 | list_monitors / get_monitor | — / **name** | defs + state + validation + load history |
 | monitor_paths | — | {config_dir, monitors_dir, drafts_dir, actions_dir, check_registry, data_dir, db_file, state_dir} — mirrors `ftmon paths --json` (MC-06/CL-06) |
 | diagnose_monitor | **name** | {found(enabled\|disabled\|draft\|missing), path, valid, errors[], last_load{hash, age_s}, check{alias, registered, executable_trusted}, last_result{entity_id, plugin_state, plugin_ok, plugin_message, duration_s, sample_age_s}\|null} — booleans/categories and stored EC-05 fields only, never argv (SE-07); `last_result` null when non-external / no DB / configured entity never sampled |
+| list_baselines | monitor, entity, metric, ready, limit=100, cursor | {tz, baselines[]{monitor,entity,metric,level,updates,required_updates,coverage,ready,updated_at,half_life_s}, next_cursor}; all stored rows, exact filters, opaque filter-bound keyset cursor (MC-07) |
 | validate_monitor | **toml_text** | {ok} \| {errors[]: {path, code, message, hint}} |
 | define_monitor | **toml_text** | {draft_path, approval_hint, next_steps[] {via(cli\|web), action}} \| errors as above |
 | ack_incident | **id**; note | {ok, incident} |
@@ -875,7 +903,21 @@ Errors: `{code, message, hint}` (MC-04) with codes `invalid_params, validation_f
 
 Starlette app; Jinja2 (autoescape); htmx for partial refresh (dashboard/incidents poll `/partials/*` every 5 s, UI-04); uPlot for charts fed by `/api/series` (JSON from `Query`, ≤ 2 000 pts). Middleware enforces UI-08: Host allowlist else 400; POST requires matching Origin; headers `Content-Security-Policy: default-src 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
 
-Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics` explorer (state in query string, UI-02) · `GET /events` · `GET /monitors[/{name}]`, `POST /monitors/{name}/(enable|disable)`, `POST /drafts/{name}/(approve|delete)` · `GET /self` · `GET /partials/(tiles|incidents|health)` · `GET /api/series`. Templates: `base.html` + one per page + partials; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts get a `<figcaption>` text alternative (current value + trend sentence from `slope`). The locally packaged FTMON mark supplies the header image, PNG/ICO favicons, and touch icon without weakening UI-01's offline guarantee. Its header image is decorative beside a real-text wordmark so branding cannot obscure the home link's accessible name or become unreadable when images fail.
+Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics` explorer (state in query string, UI-02) · `GET /baselines` read-only index · `GET /events` · `GET /monitors[/{name}]`, `POST /monitors/{name}/(enable|disable)`, `POST /drafts/{name}/(approve|delete)` · `GET /self` · `GET /partials/(tiles|incidents|health)` · `GET /api/series`. Templates: `base.html` + one per page + partials; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts get a `<figcaption>` text alternative (current value + trend sentence from `slope`). The locally packaged FTMON mark supplies the header image, PNG/ICO favicons, and touch icon without weakening UI-01's offline guarantee. Its header image is decorative beside a real-text wordmark so branding cannot obscure the home link's accessible name or become unreadable when images fail.
+
+Metrics payloads always include `baseline`: null when the selected persisted
+series has no CA-05 row, otherwise the current record plus native five-minute
+`points[[ts,value]]` and range-relative `history_truncated`. Browser rendering
+partitions those points into exact 300-second runs and strokes each run dashed;
+it never step-holds onto raw timestamps, spans a larger gap, interpolates hourly
+history, or draws the current level across an unobserved range. The accessible
+summary carries the level, learning/readiness and truncation state even when no
+historical run falls in range (UI-13/TS-11).
+
+`GET /baselines` applies the same exact filters, 100/500 row bounds, opaque
+filter-bound keyset cursor and ordering as MC-07. Invalid limits and cursors are
+HTTP 400, while each row links to the matching shareable Metrics selection.
+The page has no POST route; CA-06 reset remains CLI-only (UI-02/03).
 
 ### 14.1 Public synthetic demo (UI-15/16, SE-06)
 
@@ -893,7 +935,10 @@ runs retention/rollups, verifies UI-16 coverage, fsyncs, then atomically renames
 the completed file. The demo web process opens it with SQLite URI
 `mode=ro&immutable=1`; it refuses the normal XDG database path, a non-regular
 file, group/world-writable input, or a database missing the `demo_dataset=1`
-meta marker and expected scenario version. No visitor state is stored.
+meta marker and expected scenario version. No visitor state is stored. The seed
+includes one learning and one ready baseline with matching retained five-minute
+rows so Metrics and the Baselines index exercise both visibility states without
+operational data (UI-16).
 
 The CLI is explicit:
 

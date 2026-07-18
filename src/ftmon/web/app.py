@@ -1,4 +1,4 @@
-"""Server-rendered, loopback-only web dashboard (UI-01..09, SE-02)."""
+"""Server-rendered, loopback-only web dashboard (UI-01..09, UI-13, SE-02)."""
 
 from __future__ import annotations
 
@@ -453,6 +453,23 @@ def _series_payload(
                   else "falling" if len(values) >= 2 and values[-1] < values[0]
                   else "steady" if len(values) >= 2 else "unavailable"),
     }
+    baseline_history = q.baseline_history(
+        monitor, entity, metric, start=start, end=end,
+    )
+    baseline = None
+    if baseline_history is not None:
+        current = baseline_history.baseline
+        baseline = {
+            "level": current.level,
+            "updates": current.updates,
+            "required_updates": current.required_updates,
+            "coverage": current.coverage,
+            "ready": current.ready,
+            "updated_at": current.updated_at,
+            "half_life_s": current.half_life_s,
+            "points": [[point.ts, point.value] for point in baseline_history.points],
+            "history_truncated": baseline_history.history_truncated,
+        }
     return {
         "monitor": monitor, "entity": entity, "metric": metric, "unit": unit,
         "statistic": statistic, "resolution": result.resolution,
@@ -468,7 +485,7 @@ def _series_payload(
                 result.upper or [], result.resolution, downsampled=result.downsampled
             ),
         },
-        "incidents": incidents, "summary": summary,
+        "incidents": incidents, "summary": summary, "baseline": baseline,
         "matching_trends": matching,
     }
 
@@ -505,6 +522,77 @@ async def series_api(request: Request):
             statistic, now-seconds, now,
         )
     return JSONResponse(payload)
+
+
+def _baseline_params(request: Request) -> tuple[dict, int, str | None] | Response:
+    """Validate the shared, bounded baseline-list query contract (UI-02)."""
+    p = request.query_params
+    filters = {
+        name: p.get(name) or None for name in ("monitor", "entity", "metric")
+    }
+    ready_text = p.get("ready")
+    if ready_text is None or ready_text == "":
+        filters["ready"] = None
+    elif ready_text in {"true", "false"}:
+        filters["ready"] = ready_text == "true"
+    else:
+        return Response("ready must be true or false", status_code=400)
+    try:
+        limit = int(p.get("limit", "100"))
+    except ValueError:
+        return Response("limit must be an integer from 1 to 500", status_code=400)
+    if not 1 <= limit <= 500:
+        return Response("limit must be an integer from 1 to 500", status_code=400)
+    return filters, limit, p.get("cursor") or None
+
+
+async def baselines(request: Request):
+    """List every stored learned baseline without adding reset authority (UI-02)."""
+    parsed = _baseline_params(request)
+    if isinstance(parsed, Response):
+        return parsed
+    filters, limit, cursor = parsed
+    with _query(request) as q:
+        database_available = q is not None
+        try:
+            page = (
+                None
+                if q is None
+                else q.list_baselines(
+                    monitor=filters["monitor"], entity_id=filters["entity"],
+                    metric=filters["metric"], ready=filters["ready"],
+                    limit=limit, cursor=cursor,
+                )
+            )
+        except ValueError as exc:
+            return Response(str(exc), status_code=400)
+    next_url = None
+    if page is not None and page.next_cursor is not None:
+        params = {
+            key: value for key, value in filters.items() if value is not None
+        }
+        if "ready" in params:
+            params["ready"] = str(params["ready"]).lower()
+        params.update({"limit": limit, "cursor": page.next_cursor})
+        next_url = "/baselines?" + urlencode(params)
+    rows = [] if page is None else [
+        {
+            "monitor": row.monitor, "entity_id": row.entity_id, "metric": row.metric,
+            "level": row.level, "updates": row.updates,
+            "required_updates": row.required_updates, "coverage": row.coverage,
+            "ready": row.ready, "updated_at": row.updated_at,
+            "metrics_url": "/metrics?" + urlencode({
+                "monitor": row.monitor, "entity": row.entity_id, "metric": row.metric,
+            }),
+        }
+        for row in page.baselines
+    ]
+    return _render(
+        "baselines.html", request, title="Baselines",
+        rows=rows,
+        next_url=next_url, selected=filters, limit=limit,
+        database_available=database_available,
+    )
 
 
 def _trend_request(request: Request) -> tuple[str | None, float, float, str] | Response:
@@ -715,7 +803,7 @@ def create_app(paths: Paths | None = None, clock=None, port: int = 8420) -> Star
         Route("/", dashboard), Route("/incidents", incidents),
         Route("/incidents/{id:int}", incident_detail),
         Route("/incidents/{id:int}/ack", ack, methods=["POST"]),
-        Route("/metrics", metrics), Route("/events", events),
+        Route("/metrics", metrics), Route("/baselines", baselines), Route("/events", events),
         Route("/trends", trends), Route("/trends/{monitor:str}/{profile:str}", trends),
         Route("/api/trend", trend_api), Route("/api/series", series_api),
         Route("/disks", disks_redirect), Route("/disks/{entity:path}", disks_redirect),

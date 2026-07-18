@@ -1,4 +1,4 @@
-"""[MC-01][MC-02][MC-03][MC-04][MC-05][PM-06][TS-06] MCP tool surface: McpApi over a
+"""[MC-01][MC-02][MC-03][MC-04][MC-05][MC-07][PM-06][TS-06] MCP tool surface: McpApi over a
 DaemonCore-populated database, plus the draft/approve/enable lifecycle.
 
 McpApi is tested directly (no stdio, TS-03: injected FakeClock shared with the
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -52,6 +53,26 @@ def assert_err(res: dict, code: str) -> dict:
     assert {"code", "message", "hint"} <= set(err)
     assert err["code"] == code
     return err
+
+
+def _seed_baselines(paths, rows: list[tuple[str, str, str, float, int, int, float]]) -> None:
+    """Seed stored CA-05 rows without requiring 240 retention passes."""
+    conn = connect(paths.db_file)
+    migrate(conn)
+    for sid, (monitor, entity, metric, level, updates, updated_at, half_life_s) in enumerate(
+        rows, start=1
+    ):
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) VALUES(?,?,?,?,1)",
+            (sid, monitor, entity, metric),
+        )
+        conn.execute(
+            "INSERT INTO baselines(series_id,value,updates,updated_bucket,half_life_s) "
+            "VALUES(?,?,?,?,?)",
+            (sid, level, updates, updated_at, half_life_s),
+        )
+    conn.commit()
+    conn.close()
 
 
 # --- MC-01/MC-05: frozen surface ------------------------------------------
@@ -220,6 +241,121 @@ class TestQueryMetrics:
                                 filter_expr='matches(name, "^leaky")')
         entities = {e["entity"] for e in res["series"]}
         assert entities == {"leaky:1:100"}
+
+
+# --- list_baselines ---------------------------------------------------------
+
+
+class TestListBaselines:
+    def test_fields_ordering_and_learning_boundary_mc_07(self, core_env):  # noqa: F811
+        """[MC-07] every stored row exposes its level and exact learning state."""
+        _seed_baselines(core_env, [
+            ("zmon", "node2", "rss", 12.5, 240, 1_700_000_300, 86_400.0),
+            ("amon", "node1", "cpu", 2.5, 239, 1_700_000_000, 259_200.0),
+        ])
+        res = McpApi(core_env, clock=FakeClock(wall=WALL0, mono=1.0)).list_baselines()
+        assert "error" not in res
+        assert res["tz"]
+        assert [(r["monitor"], r["entity"], r["metric"]) for r in res["baselines"]] == [
+            ("amon", "node1", "cpu"),
+            ("zmon", "node2", "rss"),
+        ]
+        learning, ready = res["baselines"]
+        assert learning == {
+            "monitor": "amon", "entity": "node1", "metric": "cpu", "level": 2.5,
+            "updates": 239, "required_updates": 240, "coverage": 239 / 240,
+            "ready": False, "updated_at": 1_700_000_000, "half_life_s": 259_200.0,
+        }
+        assert ready["ready"] is True
+        assert ready["coverage"] == 1.0
+        assert ready["updated_at"] == 1_700_000_300
+        assert ready["half_life_s"] == 86_400.0
+        assert res["next_cursor"] is None
+
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            ({"monitor": "m1"}, [("m1", "e1", "cpu"), ("m1", "e2", "rss")]),
+            ({"entity": "e1"}, [("m1", "e1", "cpu")]),
+            ({"metric": "rss"}, [("m1", "e2", "rss"), ("m2", "e3", "rss")]),
+            ({"ready": True}, [("m1", "e2", "rss")]),
+            ({"ready": False}, [("m1", "e1", "cpu"), ("m2", "e3", "rss")]),
+        ],
+    )
+    def test_optional_exact_filters_mc_07(self, core_env, kwargs, expected):  # noqa: F811
+        """[MC-07] monitor/entity/metric/ready filters are exact and composable."""
+        _seed_baselines(core_env, [
+            ("m1", "e1", "cpu", 1.0, 1, 100, 259_200.0),
+            ("m1", "e2", "rss", 2.0, 240, 200, 259_200.0),
+            ("m2", "e3", "rss", 3.0, 100, 300, 259_200.0),
+        ])
+        rows = McpApi(core_env).list_baselines(**kwargs)["baselines"]
+        assert [(r["monitor"], r["entity"], r["metric"]) for r in rows] == expected
+
+    def test_keyset_cursor_and_filter_binding_mc_07(self, core_env):  # noqa: F811
+        """[MC-07][MC-04] cursors continue stable ordering and cannot be
+        replayed with a different filter set."""
+        _seed_baselines(core_env, [
+            ("m", "e1", "cpu", 1.0, 1, 100, 259_200.0),
+            ("m", "e2", "cpu", 2.0, 2, 200, 259_200.0),
+            ("m", "e3", "cpu", 3.0, 3, 300, 259_200.0),
+        ])
+        api = McpApi(core_env)
+        first = api.list_baselines(monitor="m", limit=2)
+        assert [r["entity"] for r in first["baselines"]] == ["e1", "e2"]
+        assert isinstance(first["next_cursor"], str)
+        second = api.list_baselines(monitor="m", limit=2, cursor=first["next_cursor"])
+        assert [r["entity"] for r in second["baselines"]] == ["e3"]
+        assert second["next_cursor"] is None
+        assert_err(
+            api.list_baselines(monitor="other", limit=2, cursor=first["next_cursor"]),
+            "invalid_params",
+        )
+
+    @pytest.mark.parametrize("cursor", ["not-a-cursor", "e30=", "123"])
+    def test_malformed_cursor_is_structured_error_mc_07(
+        self, core_env, cursor  # noqa: F811
+    ):
+        """[MC-07][MC-04] malformed opaque cursors never become protocol errors."""
+        _seed_baselines(core_env, [("m", "e", "cpu", 1.0, 1, 100, 259_200.0)])
+        assert_err(McpApi(core_env).list_baselines(cursor=cursor), "invalid_params")
+
+    @pytest.mark.parametrize("limit", [True, 0, 501, 1.5, "10"])
+    def test_invalid_limit_is_structured_error_mc_07(self, core_env, limit):  # noqa: F811
+        """[MC-07][MC-04] limits must be integers in the frozen 1..500 range."""
+        _seed_baselines(core_env, [("m", "e", "cpu", 1.0, 1, 100, 259_200.0)])
+        assert_err(McpApi(core_env).list_baselines(limit=limit), "invalid_params")
+
+    def test_invalid_ready_is_structured_error_mc_07(self, core_env):  # noqa: F811
+        """[MC-07][MC-04] ready is an optional boolean, not a truthy string."""
+        _seed_baselines(core_env, [("m", "e", "cpu", 1.0, 1, 100, 259_200.0)])
+        assert_err(McpApi(core_env).list_baselines(ready="false"), "invalid_params")
+
+    def test_absent_limit_defaults_to_100_mc_07(self, core_env):  # noqa: F811
+        """[MC-07] an omitted limit is bounded at 100 and returns continuation."""
+        _seed_baselines(core_env, [
+            ("m", f"e{i:03}", "cpu", float(i), 1, i, 259_200.0)
+            for i in range(101)
+        ])
+        res = McpApi(core_env).list_baselines()
+        assert len(res["baselines"]) == 100
+        assert res["next_cursor"] is not None
+
+    def test_no_database_is_structured_not_found_mc_07(self, core_env):  # noqa: F811
+        """[MC-07][MC-04] listing before the daemon creates a DB is actionable."""
+        assert_err(McpApi(core_env).list_baselines(), "not_found")
+
+    def test_max_page_stays_within_two_second_contract_mc_07(self, core_env):  # noqa: F811
+        """[MC-01][MC-07] the maximum page remains within the latency budget."""
+        _seed_baselines(core_env, [
+            ("m", f"e{i:03}", "cpu", float(i), i, i, 259_200.0)
+            for i in range(501)
+        ])
+        started = time.perf_counter()
+        res = McpApi(core_env).list_baselines(limit=500)
+        assert time.perf_counter() - started < 2.0
+        assert len(res["baselines"]) == 500
+        assert res["next_cursor"] is not None
 
 
 # --- top_consumers -------------------------------------------------------------

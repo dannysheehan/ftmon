@@ -28,9 +28,9 @@ def test_migrate_idempotent_and_pragmas(tmp_path):
     v1 = db.migrate(conn)
     v2 = db.migrate(conn)
 
-    assert v1 == 3
-    assert v2 == 3
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert v1 == 4
+    assert v2 == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     # 2 == incremental (0 == none, 1 == full, 2 == incremental)
     assert conn.execute("PRAGMA auto_vacuum").fetchone()[0] == 2
@@ -61,6 +61,38 @@ def test_migrate_table_shape(tmp_path):
         "action_runs",
     }
     assert expected <= tables
+    baseline_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(baselines)")
+    }
+    assert baseline_columns == {
+        "series_id", "value", "updates", "updated_bucket", "half_life_s"
+    }
+
+
+def test_migrate_v3_baselines_gain_default_half_life(tmp_path):
+    """[CA-05] v3 baselines retain their learned state and gain the historic default."""
+    conn = db.connect(tmp_path / "ftmon.db")
+    migrations = Path(db.__file__).parent / "migrations"
+    for number in range(1, 4):
+        path = next(migrations.glob(f"{number:04d}_*.sql"))
+        conn.executescript(path.read_text())
+    conn.execute("PRAGMA user_version = 3")
+    conn.execute(
+        "INSERT INTO series(id, monitor, entity_id, metric, durable) "
+        "VALUES (1, 'leak', 'pid:1', 'rss_bytes', 0)"
+    )
+    conn.execute(
+        "INSERT INTO baselines(series_id, value, updates, updated_bucket) "
+        "VALUES (1, 42.5, 17, 1200)"
+    )
+    conn.commit()
+
+    assert db.migrate(conn) == 4
+    row = conn.execute("SELECT * FROM baselines").fetchone()
+    assert (row["value"], row["updates"], row["updated_bucket"]) == (42.5, 17, 1200)
+    assert row["half_life_s"] == 259200
+    assert db.migrate(conn) == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_migrate_v2_outbox_preserves_legacy_delivery_state(tmp_path):
@@ -90,7 +122,7 @@ def test_migrate_v2_outbox_preserves_legacy_delivery_state(tmp_path):
     )
     conn.commit()
 
-    assert db.migrate(conn) == 3
+    assert db.migrate(conn) == 4
     assert conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='outbox'"
     ).fetchone() is None
