@@ -1,6 +1,10 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.20** — v0.20 bounds the desktop notifier's tray footprint
+Status: **DRAFT v0.21** — v0.21 resolves OPEN-8: FTMON 2.0 container
+monitoring ships as an external-check recipe, not a core source. Rootful
+container-socket or container-engine-group authority is outside SE-01; the
+supported recipe precondition is a rootless socket already owned by the same
+user that runs FTMON. v0.20 bounds the desktop notifier's tray footprint
 (issue #40): NO-02 sends renotify/recover transient, reuses one replaceable
 notification slot per incident, and reserves `critical` urgency for severity 4,
 degrading per-flag on older `notify-send`. v0.19 hardens leak-detection
@@ -15,10 +19,10 @@ request instead of the fatal default disposition (PM-11). v0.16 requires the
 daemon to survive a tick write lock timeout instead of exiting (PM-10). v0.15
 made document-version
 coherence a tested invariant (TS-19) and opened OPEN-8 (container monitoring:
-core source vs recipe, to be resolved during the TS-17 soak window). The v0.12
+core source vs recipe), now resolved by v0.21. The v0.12
 release-readiness gates (TS-17 soak, TS-18 zero-pending traceability, DO-09
 drift audit; milestone M10) remain in force with the pending list burned down
-to empty. §19 open questions: OPEN-8 is the single open item.
+to empty. §19 has no open items.
 Audience: implementers (including LLM-based implementers) and the reviewer (project owner).
 Every requirement has a stable ID (`XX-nn`). Tests MUST reference requirement IDs. Renumbering is not allowed after v1.0 of this document; retired requirements are marked `[RETIRED]`, new ones appended.
 
@@ -1114,7 +1118,7 @@ occur. These gates convert the resource-budget and durability *claims*
 | OPEN-5 | Web freshness + chart lib | **RESOLVED v0.2**: 5 s polling (UI-04); smallest vendorable chart lib chosen in design doc (UI-06) |
 | OPEN-6 | Daemon/web coupling | **RESOLVED v0.2**: fully separate services (§3, UI-07) |
 | OPEN-7 | License | **RESOLVED v0.8**: this repository is MIT; the separate original SourceForge project remains GPLv2 (§3) |
-| OPEN-8 | Container monitoring (Docker/Podman): a v1.1 core source behind the PL-01 sampler seam, or an extra-monitor recipe? Core would give per-container entities, restart/OOM tracking and state-change events — the largest capability gap versus Glances/Netdata for the server audience — but adds a socket-permission surface and a new dependency to the frozen daemon. A recipe ships today with no spec change but cannot observe state transitions between check runs. | **OPEN** — owner decision during the TS-17 soak window, before 2.0.0b1, so it cannot become silent scope creep; the deciding factor is whether daemon access to the container socket (group membership or rootless socket) is acceptable within SE-01 |
+| OPEN-8 | Container monitoring (Docker/Podman): a v1.1 core source behind the PL-01 sampler seam, or an extra-monitor recipe? Core would give per-container entities, restart/OOM tracking and state-change events — the largest capability gap versus Glances/Netdata for the server audience — but adds a socket-permission surface and a new dependency to the frozen daemon. A recipe ships today with no core change but cannot observe state transitions between check runs. | **RESOLVED v0.21**: FTMON 2.0 uses an external `check_docker` recipe and adds no core container source. Access to a rootful container socket, directly or through container-engine group membership, is outside the shipped SE-01 posture. The acceptable recipe path is a rootless socket already owned by the same user running FTMON; the recipe never grants socket access or weakens the service unit. Evidence from the unfrozen workstation canary during the TS-17 calendar window may justify a separately specified post-2.0 source, but does not reopen this decision automatically. Podman compatibility requires its own evidence. |
 
 ---
 
@@ -1145,6 +1149,16 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.21 (2026-07-18)** — resolves OPEN-8 without expanding the frozen daemon.
+The deciding security fact is now explicit: rootful Docker socket access and
+container-engine group membership confer authority that the shipped SE-01
+posture intentionally withholds. FTMON 2.0 therefore uses a separately
+installed `check_docker` extra-monitor recipe, supported only when the same
+unprivileged user already owns a rootless socket. The recipe cannot capture
+between-poll transitions, so the unfrozen workstation canary records whether
+that limitation creates a justified post-2.0 proposal; the two TS-17 evidence
+hosts remain unchanged.
 
 **v0.20 (2026-07-18)** — desktop notifier tray hygiene (issue #40). A live
 desktop lost its session to gnome-shell's notification/calendar SIGABRT

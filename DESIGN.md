@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.10**. Companion to `SPEC.md` v0.20 — every design element
+Status: **DRAFT v0.11**. Companion to `SPEC.md` v0.21 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -1079,6 +1079,7 @@ plugin remains under its own license (EC-01/02/07/09, SE-07).
 | D28 | Safe subset renderer with deterministic output | contributor prose cannot inject active content and byte-identical artifacts make review, caching and rollback auditable |
 | D29 | Tool-neutral canonical skills with vendor installation adapters | one reviewed workflow serves multiple agents without promising universal auto-discovery or maintaining divergent copies |
 | D30 | Shared skills read live repository authority | avoids freezing schema details in prompt assets; SPEC, templates and tests remain the only behavioral contract |
+| D31 | Container monitoring stays behind the external-check boundary in 2.0 | a rootful engine socket is effectively administrative authority and conflicts with SE-01; a recipe can use a pre-existing same-user rootless socket without adding a daemon dependency, while canary evidence must justify any post-2.0 per-container sampler/event design |
 
 ---
 
