@@ -1,6 +1,10 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.19** — v0.19 hardens leak-detection evidence (issue #20):
+Status: **DRAFT v0.20** — v0.20 bounds the desktop notifier's tray footprint
+(issue #40): NO-02 sends renotify/recover transient, reuses one replaceable
+notification slot per incident, and reserves `critical` urgency for severity 4,
+degrading per-flag on older `notify-send`. v0.19 hardens leak-detection
+evidence (issue #20):
 `coverage()` joins the CA-01 function table, §7.7.1 leak rules must require
 window coverage and recent net growth alongside slope, SA-09 separates process
 display identity from stable identity, and IN-09 makes entity-gone clearing
@@ -760,7 +764,14 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 - **NO-02** The notifier is an adapter interface (PL-01). Its foundational
   implementations are `desktop` (`notify-send`) and mandatory `file` (append
   JSON-lines at `~/.local/state/ftmon/notifications.jsonl`, also used by tests);
-  the bounded remote implementations are specified by NO-05.
+  the bounded remote implementations are specified by NO-05. The desktop
+  adapter bounds its tray footprint: `renotify` and `recover` deliveries are
+  transient (banner only), each incident's lifecycle reuses one replaceable
+  notification slot, and only severity 4 maps to `critical` urgency — a
+  monitor's tray pile-up is what arms gnome-shell's notification/calendar
+  SIGABRT (LP #2138529, issue #40). Capabilities are probed from the installed
+  `notify-send`; a missing flag degrades that behavior to plain persistent
+  delivery, never to a delivery failure.
 - **NO-03** Global quiet hours (`config.toml`, default off): during quiet hours, `warning`-and-below notifications are held and delivered as one digest at quiet-hours end; `error`+ always notify. Incidents open/clear regardless — quiet hours affect delivery only. Global-only in v1 (per-monitor overrides deferred).
 - **NO-04** **Delivery guarantee — at-least-once, honestly.** The notification
   and its DM-18 channel deliveries are committed with the incident transition;
@@ -1134,6 +1145,18 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.20 (2026-07-18)** — desktop notifier tray hygiene (issue #40). A live
+desktop lost its session to gnome-shell's notification/calendar SIGABRT
+(LP #2138529), a race armed by tray backlog — and ftmon itself had contributed
+159 persistent entries over the four-day session because every delivery was a
+permanent tray item and severity ≥ 3 mapped to non-expiring `critical`
+urgency. NO-02 now requires the desktop adapter to send `renotify`/`recover`
+transient, to reuse one replaceable notification slot per incident lifecycle
+(`--print-id`/`--replace-id`, in-memory only — daemon-session IDs must not be
+persisted), and to reserve `critical` for severity 4. Each behavior is gated
+on probing the installed `notify-send`; missing flags degrade to the previous
+persistent delivery rather than failing (NO-04 semantics are unchanged).
 
 **v0.19 (2026-07-17)** — leak evidence quality and generic-process identity
 (issue #20). A desktop leak warning identified Cursor's background agent only
