@@ -18,6 +18,20 @@ def setup_env(tmp_path, monkeypatch):
     monkeypatch.setenv("FTMON_RUNTIME_DIR", str(tmp_path / "run"))
 
 
+def _seed_db(tmp_path, monkeypatch, setup_fn):
+    setup_env(tmp_path, monkeypatch)
+    from ftmon.paths import get_paths
+    from ftmon.store.db import connect, migrate
+
+    paths = get_paths()
+    paths.ensure()
+    conn = connect(paths.db_file)
+    migrate(conn)
+    setup_fn(conn)
+    conn.commit()
+    conn.close()
+
+
 class TestVersion:
     """[CL-01] ftmon version subcommand."""
 
@@ -363,6 +377,125 @@ class TestMonitors:
                    for row in payload["monitors"])
 
 
+class TestIncident:
+    """[CL-01][CL-03][PM-01][DM-11][DM-12] ftmon incident subcommand."""
+
+    def test_incident_shows_lifecycle_and_history(self, tmp_path, monkeypatch, capsys):
+        """[CL-01][PM-01][DM-11][DM-12] incident prints identity, lifecycle, and history."""
+        def setup(conn):
+            conn.execute(
+                "INSERT INTO incidents(id, monitor, grp, entity_id, state, severity, "
+                "owning_rule, opened_ts, last_change_ts, notify_count, occurrences, flapping) "
+                "VALUES (42, 'leak', 'rss', 'firefox:7:1', 'open', 2, 'rss-growth', "
+                "1_700_000_000, 1_700_000_100, 2, 1, 1)"
+            )
+            conn.executemany(
+                "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (42, 1, 1_700_000_000, "opened", '{"severity":2}'),
+                    (42, 2, 1_700_000_050, "renotify", '{"severity":2}'),
+                ],
+            )
+
+        _seed_db(tmp_path, monkeypatch, setup)
+        assert main(["incident", "42"]) == 0
+        out = capsys.readouterr().out
+        assert "Incident #42" in out
+        assert "State:         open (flapping)" in out
+        assert "Severity:      warning" in out
+        assert "Monitor:       leak/rss" in out
+        assert "Entity:        firefox:7:1" in out
+        assert "Rule:          rss-growth" in out
+        assert "Notifications: 2" in out
+        assert "Occurrences:   1" in out
+        assert "opened" in out
+        assert "renotify" in out
+        assert '{"severity": 2}' in out
+
+    def test_incident_shows_cleared_and_ack_fields(self, tmp_path, monkeypatch, capsys):
+        """[CL-01][DM-11][DM-12] cleared and ack metadata appear when present."""
+        def setup(conn):
+            conn.execute(
+                "INSERT INTO incidents(id, monitor, grp, entity_id, state, severity, "
+                "owning_rule, opened_ts, last_change_ts, cleared_ts, clear_reason, ack_by, "
+                "ack_ts, notify_count, occurrences, flapping) "
+                "VALUES (5, 'disk', 'space', '/', 'cleared', 3, 'space-error', "
+                "100, 500, 600, 'recovered', 'cli', 450, 3, 2, 0)"
+            )
+
+        _seed_db(tmp_path, monkeypatch, setup)
+        assert main(["incident", "5"]) == 0
+        out = capsys.readouterr().out
+        assert "State:         cleared" in out
+        assert "Clear reason:  recovered" in out
+        assert "Acknowledged:" in out
+        assert "by cli" in out
+
+    def test_incident_no_db(self, tmp_path, monkeypatch, capsys):
+        """[PM-01] missing database reports no data and exits 1."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["incident", "1"]) == 1
+        assert "no data" in capsys.readouterr().err
+
+    def test_incident_unknown_id(self, tmp_path, monkeypatch, capsys):
+        """[CL-01][DM-11] unknown incident id exits 1."""
+        _seed_db(tmp_path, monkeypatch, lambda conn: None)
+        assert main(["incident", "99"]) == 1
+        assert "incident #99 not found" in capsys.readouterr().err
+
+    def test_incident_invalid_id_is_usage_error(self, capsys):
+        """[CL-01] non-integer id is an argparse usage error (exit 2), matching ack."""
+        with pytest.raises(SystemExit) as exc:
+            main(["incident", "abc"])
+        assert exc.value.code == 2
+
+    def test_incident_json_output(self, tmp_path, monkeypatch, capsys):
+        """[CL-03] --json emits the incident row plus ordered history."""
+        def setup(conn):
+            conn.execute(
+                "INSERT INTO incidents(id, monitor, grp, entity_id, state, severity, "
+                "owning_rule, opened_ts, last_change_ts, notify_count, occurrences, flapping) "
+                "VALUES (8, 'leak', 'rss', 'firefox:7:1', 'open', 2, 'rss-growth', "
+                "1_700_000_000, 1_700_000_100, 1, 1, 0)"
+            )
+            conn.execute(
+                "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
+                "VALUES (8, 1, 1_700_000_000, 'opened', '{\"severity\":2}')"
+            )
+
+        _seed_db(tmp_path, monkeypatch, setup)
+        assert main(["incident", "8", "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["incident"]["id"] == 8
+        assert payload["history"] == [
+            {"seq": 1, "ts": 1_700_000_000, "kind": "opened", "detail": {"severity": 2}}
+        ]
+
+    def test_incident_survives_malformed_history_detail(self, tmp_path, monkeypatch, capsys):
+        """[CL-01][DM-12] a hand-mangled detail blob degrades to data, not a traceback."""
+        def setup(conn):
+            conn.execute(
+                "INSERT INTO incidents(id, monitor, grp, entity_id, state, severity, "
+                "owning_rule, opened_ts, last_change_ts, notify_count, occurrences, flapping) "
+                "VALUES (9, 'leak', 'rss', 'firefox:7:1', 'open', 2, 'rss-growth', "
+                "1_700_000_000, 1_700_000_100, 1, 1, 0)"
+            )
+            conn.execute(
+                "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
+                "VALUES (9, 1, 1_700_000_000, 'opened', 'not-json{')"
+            )
+
+        _seed_db(tmp_path, monkeypatch, setup)
+        assert main(["incident", "9"]) == 0
+        assert "malformed" in capsys.readouterr().out
+
+    def test_incident_help(self):
+        """[CL-01] incident subcommand exists in help."""
+        with pytest.raises(SystemExit):
+            main(["incident", "--help"])
+
+
 class TestNotImplemented:
     """[CL-01] Stub subcommands return 2."""
 
@@ -395,22 +528,10 @@ class TestNotImplemented:
         assert rc == 1
         assert "no data" in capsys.readouterr().err
 
-    def test_incident_stub_requires_id(self, capsys):
-        """[CL-01] incident subcommand exists in help."""
-        # This is a bit tricky; incident requires an ID.
-        # Test that --help works
-        try:
-            main(["incident", "--help"])
-        except SystemExit:
-            # argparse --help exits, which is expected
-            pass
-
-    def test_ack_stub_requires_id(self, capsys):
+    def test_ack_help(self):
         """[CL-01] ack subcommand exists in help."""
-        try:
+        with pytest.raises(SystemExit):
             main(["ack", "--help"])
-        except SystemExit:
-            pass
 
     def test_monitor_stub_requires_action_and_name(self, capsys):
         """[CL-01] monitor subcommand has approve/enable/disable."""

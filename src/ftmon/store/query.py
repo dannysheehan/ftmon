@@ -12,7 +12,8 @@ import sqlite3
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-__all__ = ["SeriesPoint", "SeriesResult", "Query", "lttb"]
+__all__ = ["SeriesPoint", "SeriesResult", "IncidentDetail", "IncidentHistoryEntry",
+           "Query", "lttb"]
 
 _RAW_RECENT_S = 48 * 3600
 _RAW_MAX_SPAN_S = 12 * 3600
@@ -36,6 +37,20 @@ class SeriesResult:
     lower: list[SeriesPoint] | None = None
     upper: list[SeriesPoint] | None = None
     downsampled: bool = False
+
+
+@dataclass(frozen=True)
+class IncidentHistoryEntry:
+    seq: int
+    ts: int
+    kind: str
+    detail: dict
+
+
+@dataclass(frozen=True)
+class IncidentDetail:
+    incident: dict
+    history: tuple[IncidentHistoryEntry, ...]
 
 
 def lttb(points: list[SeriesPoint], n: int) -> list[SeriesPoint]:
@@ -439,6 +454,42 @@ class Query:
             params.append(round(since))
         sql += " ORDER BY last_change_ts DESC"
         return self._conn.execute(sql, params).fetchall()
+
+    @staticmethod
+    def _parse_detail(raw: str | None) -> dict:
+        """Operators do open sqlite3 on this DB (CLAUDE.md documents it), so a
+        hand-mangled detail blob must degrade to data, never crash a read
+        surface."""
+        try:
+            parsed = json.loads(raw or "{}")
+        except ValueError:
+            return {"malformed": (raw or "")[:200]}
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+    def incident_detail(self, incident_id: int) -> IncidentDetail | None:
+        """DM-11/DM-12: one incident row plus ordered history (explain substrate)."""
+        row = self._conn.execute(
+            "SELECT * FROM incidents WHERE id = ?", (incident_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        history = self._conn.execute(
+            "SELECT seq, ts, kind, detail FROM incident_history "
+            "WHERE incident_id = ? ORDER BY seq",
+            (incident_id,),
+        ).fetchall()
+        return IncidentDetail(
+            incident=dict(row),
+            history=tuple(
+                IncidentHistoryEntry(
+                    seq=entry["seq"],
+                    ts=entry["ts"],
+                    kind=entry["kind"],
+                    detail=self._parse_detail(entry["detail"]),
+                )
+                for entry in history
+            ),
+        )
 
     def cursor(self, source: str) -> str | None:
         """DM-15: read back a source's persisted cursor (companion to

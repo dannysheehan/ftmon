@@ -3,8 +3,8 @@
 Entry point: main(argv). Implements version/init/check/status plus list
 commands (incidents/events/monitors), monitor management (monitor),
 maintenance (doctor/baseline/demo), and authoring discoverability
-(paths, monitor rescan, check trust — CL-06..08); top/query/incident remain
-stubs. All read paths work with daemon down (PM-01). Every list subcommand
+(paths, monitor rescan, check trust — CL-06..08); top/query remain stubs.
+All read paths work with daemon down (PM-01). Every list subcommand
 supports --json (CL-03). Status exit codes: 0 all-clear, 1 warnings,
 2 errors+ (CL-04).
 """
@@ -403,6 +403,70 @@ def cmd_incidents(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _fmt_ts(ts: int | None) -> str:
+    if ts is None:
+        return "-"
+    from datetime import datetime
+
+    return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S")
+
+
+def cmd_incident(args: argparse.Namespace) -> int:
+    """Show one incident's identity and lifecycle (CL-01, CL-03, DM-11/12, PM-01)."""
+    incident_id = args.id
+    paths = get_paths()
+    if not paths.db_file.exists():
+        print("no data - is the daemon running? (ftmon daemon)", file=sys.stderr)
+        return 1
+    from ftmon.model import severity_name
+    from ftmon.store.db import connect
+    from ftmon.store.query import Query
+
+    conn = connect(paths.db_file, readonly=True)
+    try:
+        detail = Query(conn).incident_detail(incident_id)
+    finally:
+        conn.close()
+    if detail is None:
+        print(f"incident #{incident_id} not found", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({
+            "incident": detail.incident,
+            "history": [
+                {"seq": e.seq, "ts": e.ts, "kind": e.kind, "detail": e.detail}
+                for e in detail.history
+            ],
+        }))
+        return 0
+    row = detail.incident
+    flap = " (flapping)" if row["flapping"] else ""
+    print(f"Incident #{row['id']}")
+    print(f"  State:         {row['state']}{flap}")
+    print(f"  Severity:      {severity_name(row['severity'])}")
+    print(f"  Monitor:       {row['monitor']}/{row['grp']}")
+    print(f"  Entity:        {row['entity_id']}")
+    print(f"  Rule:          {row['owning_rule']}")
+    print(f"  Opened:        {_fmt_ts(row['opened_ts'])}")
+    print(f"  Last change:   {_fmt_ts(row['last_change_ts'])}")
+    if row["cleared_ts"] is not None:
+        print(f"  Cleared:       {_fmt_ts(row['cleared_ts'])}")
+    if row["clear_reason"]:
+        print(f"  Clear reason:  {row['clear_reason']}")
+    if row["ack_by"]:
+        print(f"  Acknowledged:  {_fmt_ts(row['ack_ts'])} by {row['ack_by']}")
+    print(f"  Notifications: {row['notify_count']}")
+    print(f"  Occurrences:   {row['occurrences']}")
+    print("History:")
+    if not detail.history:
+        print("  (none)")
+    else:
+        for entry in detail.history:
+            payload = json.dumps(entry.detail, ensure_ascii=True, sort_keys=True)
+            print(f"  {_fmt_ts(entry.ts)}  {entry.kind}  {payload}")
+    return 0
+
+
 def cmd_ack(args: argparse.Namespace) -> int:
     """Acknowledge an incident: stop renotifying, keep watching (IN-02)."""
     paths = get_paths()
@@ -765,7 +829,7 @@ def main(argv: list[str] | None = None) -> int:
     - check [file]: validate definitions
     - status: daemon status (exit code 0/1/2 per CL-04)
     - demo build: atomically create deterministic synthetic demonstration data
-    - daemon, mcp, web: run services; top, query, incident: stubs (return 2)
+    - daemon, mcp, web: run services; top, query: stubs (return 2)
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     install_rc = _dispatch_check_install(argv)
@@ -895,7 +959,8 @@ def main(argv: list[str] | None = None) -> int:
         "incident",
         help="Show details of one incident"
     )
-    incident_parser.add_argument("id", help="Incident ID")
+    incident_parser.add_argument("id", type=int, help="Incident ID")
+    incident_parser.add_argument("--json", action="store_true", help="Output JSON")
 
     # ack
     ack_parser = subparsers.add_parser(
@@ -1031,9 +1096,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "incidents":
         return cmd_incidents(args)
     elif args.command == "incident":
-        print("incident: not implemented yet (arrives in a later milestone)",
-              file=sys.stderr)
-        return 2
+        return cmd_incident(args)
     elif args.command == "ack":
         return cmd_ack(args)
     elif args.command == "events":
