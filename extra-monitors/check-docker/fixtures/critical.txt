@@ -1,0 +1,2 @@
+CRITICAL: example-app state is not running
+CRITICAL: example-app is not "running", cannot check restarts"

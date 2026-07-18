@@ -1,0 +1,1 @@
+ WARNING - database ftmon_health (0.003464 sec.)|time=0.003464s;;3.000000;0.000000

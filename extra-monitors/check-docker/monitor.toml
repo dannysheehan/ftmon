@@ -1,0 +1,38 @@
+schema = 1
+
+[monitor]
+name = "example_app_container"
+description = "Docker running state and restart count for example-app"
+version = 1
+enabled = false
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "example_app_container"
+entity = "container:example-app"
+
+[[rule]]
+id = "plugin-warning"
+group = "container-state"
+when = "plugin_state == 1"
+severity = "warning"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-critical"
+group = "container-state"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-unknown"
+group = "check-health"
+when = "plugin_state == 3"
+severity = "warning"
+confirm_cycles = 2
+message = "Docker check is unknown: {plugin_message}"

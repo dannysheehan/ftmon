@@ -1,0 +1,17 @@
+[check.postgres_ready]
+# Peer authentication keeps passwords out of argv: the database login must
+# match the OS identity running FTMON. Replace the role/database when needed.
+argv = [
+  "/usr/lib/nagios/plugins/check_pgsql",
+  "-H", "/var/run/postgresql",
+  "-P", "5432",
+  "-d", "ftmon_health",
+  "-l", "ftmon",
+  "-w", "1",
+  "-c", "3",
+  "-t", "5",
+]
+protocol = "nagios"
+# The runner gets two seconds beyond the plugin timeout so check_pgsql can
+# return its diagnostic before FTMON kills the process group.
+timeout = "7s"

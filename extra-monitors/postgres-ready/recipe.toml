@@ -1,0 +1,41 @@
+schema = 1
+
+[recipe]
+id = "postgres-ready"
+title = "PostgreSQL local readiness"
+summary = "Check a local PostgreSQL Unix socket and retain connection latency."
+kind = "nagios"
+platforms = ["linux"]
+upstream = "https://www.monitoring-plugins.org/doc/man/check_pgsql.html"
+license = "GPL-3.0-or-later"
+status = "tested"
+privilege = "service-socket"
+network = false
+last_verified_version = "check_pgsql 2.3.5 with PostgreSQL 16.14 on Ubuntu 24.04; example role/database require substitution; 2026-07-18"
+category = "database"
+tags = ["database", "postgresql", "readiness", "socket"]
+min_ftmon_version = "2.0.0a7"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = ["time"]
+
+[[fixtures]]
+path = "fixtures/warning.txt"
+exit_code = 1
+state = 1
+labels = ["time"]
+
+[[fixtures]]
+path = "fixtures/critical.txt"
+exit_code = 2
+state = 2
+labels = []
+
+[[fixtures]]
+path = "fixtures/unknown.txt"
+exit_code = 3
+state = 3
+labels = []

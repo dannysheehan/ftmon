@@ -1,0 +1,1 @@
+UNKNOWN: Cannot access docker socket file. User ID=1000, socket file=/run/user/1000/docker.sock

@@ -40,6 +40,7 @@ CATEGORIES = {
     "system",
     "web",
 }
+PRIVILEGE_CLASSES = {"none", "service-socket", "sudo-wrapper"}
 META_KEYS = {
     "id",
     "title",
@@ -105,7 +106,7 @@ def _validate_meta(meta: dict, directory: Path) -> dict:
         raise BuildError(f"{rid}: invalid protocol")
     if meta["status"] not in {"tested", "real-system-verified", "recipe-only"}:
         raise BuildError(f"{rid}: invalid confidence status")
-    if meta["privilege"] not in {"none", "sudo-wrapper"}:
+    if meta["privilege"] not in PRIVILEGE_CLASSES:
         raise BuildError(f"{rid}: invalid privilege")
     if type(meta["network"]) is not bool:
         raise BuildError(f"{rid}: invalid network flag")

@@ -19,6 +19,12 @@ Publication metadata has three additional responsibilities:
 - `tags` is a sorted, unique list of lowercase discovery terms; and
 - `min_ftmon_version` is the first FTMON version that understands the recipe.
 
+The bounded `privilege` value is `none`, `service-socket`, or `sudo-wrapper`.
+`service-socket` identifies a local socket the daemon identity can already
+access; it never authorizes changing groups or socket modes. `sudo-wrapper` is
+the advanced exception documented for custom units without the shipped
+`NoNewPrivileges=yes` hardening.
+
 Commands belong only in `checks.toml.example`. The publisher displays them as
 escaped text and never runs them. It also refuses recipe symlinks, unsafe URL
 schemes and unbounded or malformed metadata because a documentation build must

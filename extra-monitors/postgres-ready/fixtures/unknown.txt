@@ -1,0 +1,5 @@
+check_pgsql: Invalid hostname/address - relative/path
+Usage:
+check_pgsql [-H <host>] [-P <port>] [-c <critical time>] [-w <warning time>]
+ [-t <timeout>] [-d <database>] [-l <logname>] [-p <password>]
+[-q <query>] [-C <critical query range>] [-W <warning query range>]

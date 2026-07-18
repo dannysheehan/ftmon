@@ -34,8 +34,12 @@ root.
   version;
 - **recipe-only** documents an integration that still needs real-system
   verification;
-- **privileged** means the operator must review an explicit, constrained
-  permission boundary; and
+- **none** means the check needs no authority beyond ordinary user access;
+- **service-socket** means the check uses an explicitly named local service
+  socket that the daemon user can already access; it never instructs the
+  operator to broaden group membership or socket permissions;
+- **sudo-wrapper** means an advanced custom deployment uses the documented
+  exact-wrapper exception outside the shipped hardened units; and
 - **networked** means the check contacts a service and may disclose its target.
 
 These labels describe recipe evidence, not an endorsement or warranty for the
