@@ -1,0 +1,1 @@
+ OK - database ftmon_health (0.005394 sec.)|time=0.005394s;1.000000;3.000000;0.000000

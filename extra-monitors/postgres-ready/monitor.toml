@@ -1,0 +1,45 @@
+schema = 1
+
+[monitor]
+name = "postgres_ready"
+description = "PostgreSQL local socket readiness and connection latency"
+version = 1
+enabled = false
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "postgres_ready"
+entity = "postgresql:local:5432/ftmon_health"
+
+[[source_options.perfdata]]
+label = "time"
+metric = "connection_time_s"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+
+[[rule]]
+id = "plugin-warning"
+group = "postgres-readiness"
+when = "plugin_state == 1"
+severity = "warning"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-critical"
+group = "postgres-readiness"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-unknown"
+group = "check-health"
+when = "plugin_state == 3"
+severity = "warning"
+confirm_cycles = 2
+message = "PostgreSQL readiness check is unknown: {plugin_message}"
