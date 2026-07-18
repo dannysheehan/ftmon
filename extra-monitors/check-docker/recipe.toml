@@ -1,0 +1,41 @@
+schema = 1
+
+[recipe]
+id = "check-docker"
+title = "Docker container state and restarts"
+summary = "Confirm one named container stays running and expose restart churn."
+kind = "nagios"
+platforms = ["linux"]
+upstream = "https://github.com/timdaman/check_docker"
+license = "GPL-3.0"
+status = "tested"
+privilege = "service-socket"
+network = false
+last_verified_version = "check_docker 2.3.0 protocol POC on Docker 29.1.3; rootless deployment unverified; 2026-07-18"
+category = "applications"
+tags = ["container", "docker", "restart", "state"]
+min_ftmon_version = "2.0.0a7"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = []
+
+[[fixtures]]
+path = "fixtures/warning.txt"
+exit_code = 1
+state = 1
+labels = []
+
+[[fixtures]]
+path = "fixtures/critical.txt"
+exit_code = 2
+state = 2
+labels = []
+
+[[fixtures]]
+path = "fixtures/unknown.txt"
+exit_code = 3
+state = 3
+labels = []

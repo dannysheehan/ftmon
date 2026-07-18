@@ -1,0 +1,19 @@
+[check.example_app_container]
+# This is a rootless socket already owned by the FTMON user. Replace UID 1000
+# and example-app for the target host; never grant access to /var/run/docker.sock.
+# Terse state-only output avoids unbounded container-derived perfdata labels.
+argv = [
+  "/usr/local/lib/ftmon/checks/check_docker",
+  "--connection", "/run/user/1000/docker.sock",
+  "--timeout", "5",
+  "--containers", "^example-app$",
+  "--present",
+  "--status", "running",
+  "--restarts", "1:3",
+  "--no-ok",
+  "--no-performance",
+]
+protocol = "nagios"
+# The runner gets two seconds beyond the plugin's socket deadline so the plugin
+# can return its own diagnostic before FTMON kills the process group.
+timeout = "7s"
