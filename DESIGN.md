@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.11**. Companion to `SPEC.md` v0.21 — every design element
+Status: **DRAFT v0.12**. Companion to `SPEC.md` v0.22 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -862,7 +862,7 @@ FastMCP over stdio; every tool = thin wrapper on `Query`/`SmallWrites`/`definiti
 | explain_incident | **id** | rule text+params, series ±window, events ±10 m, history[] |
 | list_monitors / get_monitor | — / **name** | defs + state + validation + load history |
 | monitor_paths | — | {config_dir, monitors_dir, drafts_dir, actions_dir, check_registry, data_dir, db_file, state_dir} — mirrors `ftmon paths --json` (MC-06/CL-06) |
-| diagnose_monitor | **name** | {found(enabled\|disabled\|draft\|missing), path, valid, errors[], last_load{hash, age_s}, check{alias, registered, executable_trusted}} — booleans/categories only, never argv (SE-07) |
+| diagnose_monitor | **name** | {found(enabled\|disabled\|draft\|missing), path, valid, errors[], last_load{hash, age_s}, check{alias, registered, executable_trusted}, last_result{entity_id, plugin_state, plugin_ok, plugin_message, duration_s, sample_age_s}\|null} — booleans/categories and stored EC-05 fields only, never argv (SE-07); `last_result` null when non-external / no DB / configured entity never sampled |
 | validate_monitor | **toml_text** | {ok} \| {errors[]: {path, code, message, hint}} |
 | define_monitor | **toml_text** | {draft_path, approval_hint, next_steps[] {via(cli\|web), action}} \| errors as above |
 | ack_incident | **id**; note | {ok, incident} |

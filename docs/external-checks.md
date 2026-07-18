@@ -356,3 +356,7 @@ it.
 FTMON intentionally does not persist plugin stderr. Diagnose a new integration
 manually as the service user before enabling its monitor, then rely on
 `plugin_state`, self metrics, incidents and `doctor` for ongoing operation.
+When a monitor loads and is trusted but still fails every tick, ask MCP
+`diagnose_monitor` for `last_result` — it returns the stored `plugin_state`,
+sanitized `plugin_message`, and sample age for the configured entity without
+opening the live database with raw SQL.

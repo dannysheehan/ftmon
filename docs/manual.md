@@ -222,7 +222,10 @@ Proposals land in `drafts/` and do nothing until you approve them with
 `ftmon monitor approve <name>` (or the web UI). The AI can never install
 actions, run commands, or enable monitors by itself. It also gets the
 monitor-definition reference as a resource, so "write me a monitor that
-alerts when my VPN drops" works without pasting docs.
+alerts when my VPN drops" works without pasting docs. For external checks,
+`diagnose_monitor` reports not only load and trust but the last stored
+runtime result (`plugin_state`, message, sample age) so an assistant can
+tell whether a loaded monitor is actually producing.
 
 `ftmon monitor enable <name>` / `disable <name>` flip a monitor's
 `enabled` line in place — comments and formatting in your file survive.
