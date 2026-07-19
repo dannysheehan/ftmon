@@ -30,4 +30,17 @@ jobs:
       - run: uv run ruff check src tests tools
       - run: uv run python tools/gen_reqindex.py --check
       - run: uv run pytest -q
-      - run: uv build
+      - run: uv build --clear
+      - name: Verify packaged authoring guides
+        run: |
+          uv run --isolated --no-project --with ./dist/ftmon-*.whl python - <<'PY'
+          from ftmon.mcp_server import _guide_text
+
+          expected = {
+              "definitions": "complete reference",
+              "check-authoring": "Writing an external check",
+              "external-checks": "privileged exporter pattern",
+          }
+          for name, marker in expected.items():
+              assert marker in _guide_text(name)
+          PY

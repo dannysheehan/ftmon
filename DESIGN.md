@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.13**. Companion to `SPEC.md` v0.26 — every design element
+Status: **DRAFT v0.14**. Companion to `SPEC.md` v0.27 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -896,7 +896,7 @@ FastMCP over stdio; every tool = thin wrapper on `Query`/`SmallWrites`/`definiti
 | define_monitor | **toml_text** | {draft_path, approval_hint, next_steps[] {via(cli\|web), action}} \| errors as above |
 | ack_incident | **id**; note | {ok, incident} |
 
-Errors: `{code, message, hint}` (MC-04) with codes `invalid_params, validation_failed, not_found, name_exists, daemon_stale`. Resource (MC-05): `ftmon://docs/definitions` → `docs/definitions.md`.
+Errors: `{code, message, hint}` (MC-04) with codes `invalid_params, validation_failed, not_found, name_exists, daemon_stale`. Resources (MC-05), force-included from their canonical sources into `ftmon/docs/` in the wheel and loaded with `importlib.resources`: `ftmon://docs/definitions` → `docs/definitions.md`; `ftmon://docs/check-authoring` → `docs/check-authoring.md`; `ftmon://docs/external-checks` → `docs/external-checks.md`. A checkout-relative read is only the editable-development fallback.
 
 ---
 

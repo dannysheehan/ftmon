@@ -273,10 +273,10 @@ doubt, leave `scale` out and name the metric after the plugin's native unit
 
 The definition cannot contain argv or executable paths. Register the alias in
 the separate `checks.toml` authority described by
-[External checks](external-checks.md); to write a new check executable, see
-[Writing an external check](check-authoring.md). Drafts may reference a
-future alias, but approval and active validation fail until an administrator
-creates it.
+[External checks](external-checks.md) (`ftmon://docs/external-checks`); to write
+a new check executable, see [Writing an external check](check-authoring.md)
+(`ftmon://docs/check-authoring`). Drafts may reference a future alias, but
+approval and active validation fail until an administrator creates it.
 
 ## 4. Cookbook
 

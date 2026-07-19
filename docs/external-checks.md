@@ -5,6 +5,9 @@ Nagios-compatible plugin. The check answers what is happening now; FTMON adds
 bounded history, confirmation, incidents, notifications, derived metrics and
 declared Trends.
 
+This guide is also served on installed hosts as the MCP resource
+`ftmon://docs/external-checks`.
+
 The executable registry is deliberately separate from monitor definitions.
 An administrator grants one exact command an alias in `checks.toml`; TOML
 definitions, drafts, MCP and the web interface may only reference that alias.
@@ -14,7 +17,8 @@ itself command-execution authority (EC-01, SE-07).
 This page covers granting an existing executable authority to run. For
 writing the executable itself — where it should live, the trust contract,
 and the two output protocols — see
-[Writing an external check](check-authoring.md).
+[Writing an external check](check-authoring.md), also served as
+`ftmon://docs/check-authoring`.
 
 ## Register a check
 

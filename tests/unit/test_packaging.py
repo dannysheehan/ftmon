@@ -1,5 +1,6 @@
 """Release asset contracts for M6 packaging (DO-02, TS-08)."""
 
+import tomllib
 from importlib.resources import files
 from pathlib import Path
 
@@ -78,6 +79,22 @@ def test_versioned_demo_scenario_is_packaged_ui_16():
     """[UI-16] Deployment builds never depend on a source checkout fixture."""
     scenario = files("ftmon.scenarios").joinpath("demo-v1.jsonl").read_text()
     assert '"scenario":"demo-v1"' in scenario.splitlines()[0]
+
+
+def test_canonical_authoring_guides_are_force_included_in_wheel_mc_05():
+    """[MC-05] Wheel data comes from canonical docs, not maintained copies."""
+    root = Path(__file__).parents[2]
+    project = tomllib.loads((root / "pyproject.toml").read_text())
+    force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    expected = {
+        "docs/definitions.md": "ftmon/docs/definitions.md",
+        "docs/check-authoring.md": "ftmon/docs/check-authoring.md",
+        "docs/external-checks.md": "ftmon/docs/external-checks.md",
+    }
+
+    assert force_include == expected
+    assert all((root / source).is_file() for source in expected)
+    assert not (root / "src/ftmon/docs").exists()
 
 
 def test_external_plugins_remain_separately_installed_and_licensed_ec_09():
