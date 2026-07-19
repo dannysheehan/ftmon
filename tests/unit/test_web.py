@@ -32,7 +32,7 @@ def _client(tmp_path: Path):
 
 
 def test_ui_pages_security_and_escaping_ts_07_ui_02_ui_08_se_02(tmp_path):
-    """[TS-07][UI-08][SE-02] Pages escape untrusted strings and set CSP headers."""
+    """[TS-07][UI-08][SE-02] Pages escape strings and reject framing/form retargeting."""
     client, _paths = _client(tmp_path)
     headers = {"host": "localhost:8420"}
     for url in ("/", "/incidents", "/incidents/1", "/metrics", "/baselines", "/events",
@@ -40,13 +40,25 @@ def test_ui_pages_security_and_escaping_ts_07_ui_02_ui_08_se_02(tmp_path):
         response = client.get(url, headers=headers)
         assert response.status_code == 200
         assert response.headers["x-content-type-options"] == "nosniff"
-        assert response.headers["content-security-policy"].startswith("default-src 'self'")
+        csp = response.headers["content-security-policy"]
+        assert "default-src 'self'" in csp
+        assert "frame-ancestors 'none'" in csp
+        assert "form-action 'self'" in csp
+        assert "base-uri 'none'" in csp
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["cross-origin-resource-policy"] == "same-origin"
+        assert response.headers["cross-origin-opener-policy"] == "same-origin"
         assert "access-control-allow-origin" not in response.headers
     page = client.get("/incidents", headers=headers).text
     assert "evil&lt;script&gt;" in page
     assert "▲ error" in page
     assert 'data-refresh-ms="5000"' in page
-    assert client.get("/", headers={"host": "attacker.example"}).status_code == 400
+    assert 'data-refresh-ms="5000"' in client.get("/events", headers=headers).text
+    assert 'data-refresh-ms="15000"' in client.get("/monitors", headers=headers).text
+    assert 'data-refresh-ms="15000"' in client.get("/self", headers=headers).text
+    rejected = client.get("/", headers={"host": "attacker.example"})
+    assert rejected.status_code == 400
+    assert rejected.headers["x-frame-options"] == "DENY"
 
 
 def test_offline_branding_has_accessible_wordmark_and_packaged_icons_ui_01_ui_09(
@@ -314,6 +326,7 @@ def test_series_api_uplot_contract_envelope_gaps_incidents_and_trend_ts_11(tmp_p
         45, 50, 60, 65
     ]
     assert any(point[1] is None for point in data["panel"]["points"])
+    assert data["panel"]["y_domain"] == [0.0, 100.0]
     assert data["incidents"][0]["id"] == 3
     assert data["matching_trends"][0]["id"] == "space-growth"
     assert data["baseline"] is None
@@ -333,12 +346,12 @@ def test_metrics_baseline_overlay_uses_native_points_and_accessible_summary_ui_1
     conn.executemany(
         "INSERT INTO rollup5m(series_id,bucket,avg,min,max,last,cnt) "
         "VALUES(1,?,?,?,?,?,1)",
-        [(300, 1.0, 1.0, 1.0, 1.0), (600, 2.0, 2.0, 2.0, 2.0),
+        [(0, 1.0, 1.0, 1.0, 1.0), (300, 2.0, 2.0, 2.0, 2.0),
          (900, 3.0, 3.0, 3.0, 3.0)],
     )
     conn.execute(
         "INSERT INTO baselines(series_id,value,updates,updated_bucket,half_life_s) "
-        "VALUES(1,2.5,3,900,259200)"
+        "VALUES(1,20,3,900,259200)"
     )
     conn.commit()
     conn.close()
@@ -349,24 +362,74 @@ def test_metrics_baseline_overlay_uses_native_points_and_accessible_summary_ui_1
     )
     assert api.status_code == 200
     baseline = api.json()["baseline"]
-    assert baseline["level"] == 2.5
+    assert baseline["level"] == 20
     assert baseline["updates"] == 3
     assert baseline["required_updates"] == 240
     assert baseline["coverage"] == 3 / 240
     assert baseline["ready"] is False
     assert baseline["updated_at"] == 900
     assert baseline["half_life_s"] == 259200
-    assert [point[0] for point in baseline["points"]] == [300, 600, 900]
+    assert [point[0] for point in baseline["points"]] == [0, 300, 900]
+    assert [[point[0] for point in run] for run in baseline["runs"]] == [[0, 300], [900]]
+    visible_values = [
+        point[1]
+        for key in ("points", "lower", "upper")
+        for point in api.json()["panel"][key]
+        if point[1] is not None
+    ] + [point[1] for point in baseline["points"]]
+    assert api.json()["panel"]["y_domain"][0] < min(visible_values)
+    assert api.json()["panel"]["y_domain"][1] > max(visible_values)
     page = client.get(
         "/metrics?monitor=load&entity=host&metric=load1&range=7d",
         headers=headers,
     )
-    assert "Baseline level 2.5" in page.text
+    assert "Baseline level 20" in page.text
     assert "1% learned (3 of 240 updates), still learning" in page.text
     assert "gaps are not connected" in page.text
+    assert 'data-baseline-state="learning"' in page.text
+    assert "<strong>Baseline</strong> — learning" in page.text
     script = client.get("/static/ftmon.js", headers=headers).text
-    assert "point[0]-points[index-1][0]===300" in script
+    assert "baselinePlugin(metric.baseline.runs)" in script
     assert "spanGaps" not in script
+
+    conn = connect(paths.db_file)
+    conn.execute("UPDATE baselines SET updates=240 WHERE series_id=1")
+    conn.commit()
+    conn.close()
+    ready_page = client.get(
+        "/metrics?monitor=load&entity=host&metric=load1&range=7d",
+        headers=headers,
+    )
+    assert 'data-baseline-state="ready"' in ready_page.text
+    assert "<strong>Baseline</strong> — ready" in ready_page.text
+
+
+def test_metrics_labels_baseline_without_retained_history_ui_13_ts_11(tmp_path):
+    """[UI-13][TS-11] A stored baseline stays distinguishable from no baseline."""
+    client, paths = _client(tmp_path)
+    conn = connect(paths.db_file)
+    conn.execute(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(1,'load','host','load1',1)"
+    )
+    conn.execute("INSERT INTO samples(series_id,ts,value) VALUES(1,1000,3)")
+    conn.execute(
+        "INSERT INTO baselines(series_id,value,updates,updated_bucket,half_life_s) "
+        "VALUES(1,2.5,10,0,259200)"
+    )
+    conn.commit()
+    conn.close()
+
+    page = client.get(
+        "/metrics?monitor=load&entity=host&metric=load1&range=15m",
+        headers={"host": "localhost:8420"},
+    )
+    assert "No retained baseline history falls in this selected range" in page.text
+    assert 'data-baseline-state="learning"' in page.text
+    payload = json.loads(page.text.split('id="metric-data">', 1)[1].split("</script>", 1)[0])
+    assert payload["baseline"]["points"] == []
+    assert payload["baseline"]["runs"] == []
+    assert payload["panel"]["y_domain"] == [2.0, 4.0]
 
 
 def test_baselines_index_filters_paginates_links_and_rejects_bad_state_ui_02(tmp_path):

@@ -164,7 +164,12 @@ def test_demo_exact_host_headers_forwarding_and_target_cap_se_06(tmp_path):
         assert response.status_code == 200
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["referrer-policy"] == "no-referrer"
-        assert response.headers["content-security-policy"].startswith("default-src 'self'")
+        assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+        assert "form-action 'self'" in response.headers["content-security-policy"]
+        assert "base-uri 'none'" in response.headers["content-security-policy"]
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["cross-origin-resource-policy"] == "same-origin"
+        assert response.headers["cross-origin-opener-policy"] == "same-origin"
         assert "access-control-allow-origin" not in response.headers
     assert client.get("/", headers={"host": "attacker.example"}).status_code == 400
     assert client.get(

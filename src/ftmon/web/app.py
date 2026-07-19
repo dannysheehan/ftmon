@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import tomllib
 from contextlib import contextmanager
@@ -29,7 +30,10 @@ from ftmon.sources.base import SOURCE_DECLS
 from ftmon.store.db import connect
 from ftmon.store.query import Query
 
-_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
+_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "frame-ancestors 'none'; form-action 'self'; base-uri 'none'"
+)
 _jinja = Environment(loader=PackageLoader("ftmon.web", "templates"),
                      autoescape=select_autoescape(("html", "xml")))
 
@@ -116,10 +120,18 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             response = Response("Bad Origin", status_code=403)
         else:
             response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Content-Security-Policy"] = _CSP
-        response.headers["Referrer-Policy"] = "no-referrer"
-        return response
+        return _apply_security_headers(response)
+
+
+def _apply_security_headers(response: Response) -> Response:
+    """Keep operational and synthetic middleware hardening identical (UI-08)."""
+    response.headers["Content-Security-Policy"] = _CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    return response
 
 
 def _render(name: str, request: Request, **context) -> HTMLResponse:
@@ -539,6 +551,38 @@ def _metric_metadata(paths: Paths, monitor: str, metric: str) -> tuple[str, list
     return unit, matching
 
 
+def _baseline_runs(points) -> list[list[list[float]]]:
+    """Partition native five-minute evidence so the renderer cannot bridge gaps."""
+    runs: list[list[list[float]]] = []
+    for point in points:
+        pair = [point.ts, point.value]
+        if not runs or point.ts - runs[-1][-1][0] != 300:
+            runs.append([pair])
+        else:
+            runs[-1].append(pair)
+    return runs
+
+
+def _chart_y_domain(unit: str, *point_sets) -> list[float] | None:
+    """Return deterministic visible bounds including plugin-painted values (UI-13)."""
+    values = [
+        float(point[1])
+        for points in point_sets
+        for point in points
+        if point[1] is not None and math.isfinite(point[1])
+    ]
+    if not values:
+        return None
+    lower, upper = min(values), max(values)
+    if unit == "percent":
+        return [min(0.0, lower), max(100.0, upper)]
+    if lower == upper:
+        padding = max(abs(lower) * 0.05, 1.0)
+    else:
+        padding = (upper - lower) * 0.05
+    return [lower - padding, upper + padding]
+
+
 def _series_payload(
     paths: Paths, q: Query, result, monitor: str, entity: str, metric: str,
     statistic: str, start: float, end: float,
@@ -561,12 +605,25 @@ def _series_payload(
                   else "falling" if len(values) >= 2 and values[-1] < values[0]
                   else "steady" if len(values) >= 2 else "unavailable"),
     }
+    panel_points = _points_with_gaps(
+        result.points, result.resolution, downsampled=result.downsampled
+    )
+    panel_lower = _points_with_gaps(
+        result.lower or [], result.resolution, downsampled=result.downsampled
+    )
+    panel_upper = _points_with_gaps(
+        result.upper or [], result.resolution, downsampled=result.downsampled
+    )
     baseline_history = q.baseline_history(
         monitor, entity, metric, start=start, end=end,
     )
     baseline = None
+    baseline_points = []
     if baseline_history is not None:
         current = baseline_history.baseline
+        baseline_points = [
+            [point.ts, point.value] for point in baseline_history.points
+        ]
         baseline = {
             "level": current.level,
             "updates": current.updates,
@@ -575,7 +632,8 @@ def _series_payload(
             "ready": current.ready,
             "updated_at": current.updated_at,
             "half_life_s": current.half_life_s,
-            "points": [[point.ts, point.value] for point in baseline_history.points],
+            "points": baseline_points,
+            "runs": _baseline_runs(baseline_history.points),
             "history_truncated": baseline_history.history_truncated,
         }
     return {
@@ -583,14 +641,11 @@ def _series_payload(
         "statistic": statistic, "resolution": result.resolution,
         "range": {"start": start, "end": end},
         "panel": {
-            "points": _points_with_gaps(
-                result.points, result.resolution, downsampled=result.downsampled
-            ),
-            "lower": _points_with_gaps(
-                result.lower or [], result.resolution, downsampled=result.downsampled
-            ),
-            "upper": _points_with_gaps(
-                result.upper or [], result.resolution, downsampled=result.downsampled
+            "points": panel_points,
+            "lower": panel_lower,
+            "upper": panel_upper,
+            "y_domain": _chart_y_domain(
+                unit, panel_points, panel_lower, panel_upper, baseline_points
             ),
         },
         "incidents": incidents, "summary": summary, "baseline": baseline,
@@ -841,7 +896,10 @@ async def events(request: Request):
     with _query(request) as q:
         rows = [] if q is None else q.events(start=now-86400, end=now,
             min_severity=severity, provider=p.get("provider"), limit=200)
-    return _render("events.html", request, title="Events", rows=rows, severity=severity)
+    return _render(
+        "events.html", request, title="Events", rows=rows, severity=severity,
+        refresh_ms=5000,
+    )
 
 
 async def monitors(request: Request):
@@ -857,8 +915,10 @@ async def monitors(request: Request):
             drafts.append((path.stem, path.read_text(), loader.load_file(path), None))
         except Exception as exc:
             drafts.append((path.stem, path.read_text(), None, exc))
-    return _render("monitors.html", request, title="Monitors", monitors=defs,
-                   errors=errors, drafts=drafts)
+    return _render(
+        "monitors.html", request, title="Monitors", monitors=defs,
+        errors=errors, drafts=drafts, refresh_ms=15000,
+    )
 
 
 async def monitor_action(request: Request):
@@ -901,8 +961,11 @@ async def self_page(request: Request):
     _defs, errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
     )
-    return _render("self.html", request, title="Self", status=status,
-                   metrics=metrics_rows, config_errors=errors, log_tail=log_tail)
+    return _render(
+        "self.html", request, title="Self", status=status,
+        metrics=metrics_rows, config_errors=errors, log_tail=log_tail,
+        refresh_ms=15000,
+    )
 
 
 def create_app(paths: Paths | None = None, clock=None, port: int = 8420) -> Starlette:
