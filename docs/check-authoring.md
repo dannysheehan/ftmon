@@ -2,9 +2,10 @@
 
 This is the authoring guide: how to write the executable itself. For how an
 administrator grants that executable authority to run, see
-[External checks](external-checks.md). For how a monitor definition maps a
-check's output onto stored metrics, see the "External checks" section of
-[Definitions](definitions.md).
+[External checks](external-checks.md), also served as
+`ftmon://docs/external-checks`. For how a monitor definition maps a check's
+output onto stored metrics, see the "External checks" section of
+[Definitions](definitions.md), served as `ftmon://docs/definitions`.
 
 ## What a check is, and the boundary around it
 

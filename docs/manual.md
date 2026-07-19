@@ -224,18 +224,23 @@ Register `ftmon mcp` with your AI client. For Claude Code:
 claude mcp add ftmon -- ftmon mcp        # or: uv run ftmon mcp (from source)
 ```
 
-The assistant gets twelve tools: status, metric queries with automatic
+The assistant gets tools for status, metric queries with automatic
 resolution, top consumers, per-process history, events, incidents with a
 full `explain_incident` story, monitor listing/validation — and exactly
 two writes: acknowledging an incident, and *proposing* a monitor.
 Proposals land in `drafts/` and do nothing until you approve them with
 `ftmon monitor approve <name>` (or the web UI). The AI can never install
-actions, run commands, or enable monitors by itself. It also gets the
-monitor-definition reference as a resource, so "write me a monitor that
-alerts when my VPN drops" works without pasting docs. For external checks,
-`diagnose_monitor` reports not only load and trust but the last stored
-runtime result (`plugin_state`, message, sample age) so an assistant can
-tell whether a loaded monitor is actually producing.
+actions, run commands, or enable monitors by itself. It also gets packaged
+resources for the monitor-definition reference, writing an external-check
+executable, and registering that check safely, so authoring works on an
+installed host without a repository checkout: `ftmon://docs/definitions`,
+`ftmon://docs/check-authoring`, and `ftmon://docs/external-checks`. For external
+checks,
+`diagnose_monitor` reports not only load and trust but the last stored runtime
+result (`plugin_state`, message, sample age) so an assistant can tell whether a
+loaded monitor is actually producing. Checks cannot invoke `sudo` under the
+shipped systemd hardening; the `ftmon://docs/external-checks` resource explains
+the privileged exporter pattern for checks that genuinely need elevated reads.
 
 `ftmon monitor enable <name>` / `disable <name>` flip a monitor's
 `enabled` line in place — comments and formatting in your file survive.

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from importlib.resources import files
 from pathlib import Path
 
 from ftmon.clock import SystemClock
@@ -645,13 +646,29 @@ TOOL_NAMES = (  # MC-01: frozen; test_mcp asserts the server exposes exactly the
 )
 
 
-def _guide_text() -> str:
-    guide = Path(__file__).resolve().parents[2] / "docs" / "definitions.md"
+_AUTHORING_GUIDES = {
+    "definitions": "definitions.md",
+    "check-authoring": "check-authoring.md",
+    "external-checks": "external-checks.md",
+}
+
+
+def _guide_text(name: str) -> str:
+    filename = _AUTHORING_GUIDES[name]
     try:
-        return guide.read_text()
+        return files("ftmon").joinpath("docs", filename).read_text(encoding="utf-8")
     except OSError:
-        return ("definitions guide not found at " + str(guide) +
-                " — see the ftmon repository's docs/definitions.md")
+        # Editable/source-tree runs do not materialize Hatch's wheel-only
+        # force-includes, so retain one development fallback to the canonical
+        # document rather than maintaining a second copy under src/.
+        guide = Path(__file__).resolve().parents[2] / "docs" / filename
+        try:
+            return guide.read_text(encoding="utf-8")
+        except OSError:
+            return (
+                f"{name} guide not found in the installed package or at {guide}"
+                f" — see the ftmon repository's docs/{filename}"
+            )
 
 
 def build_server(paths: Paths):
@@ -696,7 +713,9 @@ def build_server(paths: Paths):
     server.tool(name="diagnose_monitor",
                 description="Why isn't this monitor running? Location, "
                 "validation, load state, external-alias trust, and last "
-                "plugin result (state/message/sample age) in one call")(
+                "plugin result (state/message/sample age) in one call. "
+                "Shipped units cannot run sudo from checks; see "
+                "ftmon://docs/external-checks")(
                 api.diagnose_monitor)
     server.tool(name="validate_monitor",
                 description="Validate a monitor TOML without writing "
@@ -714,7 +733,17 @@ def build_server(paths: Paths):
     @server.resource("ftmon://docs/definitions",
                      description="The monitor-definition reference (DO-01)")
     def definitions_guide() -> str:
-        return _guide_text()
+        return _guide_text("definitions")
+
+    @server.resource("ftmon://docs/check-authoring",
+                     description="How to write a bounded external-check executable (DO-07)")
+    def check_authoring_guide() -> str:
+        return _guide_text("check-authoring")
+
+    @server.resource("ftmon://docs/external-checks",
+                     description="External-check registry, trust, and privilege guide (DO-07)")
+    def external_checks_guide() -> str:
+        return _guide_text("external-checks")
 
     return server
 

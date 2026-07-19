@@ -57,6 +57,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ftmon"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"docs/definitions.md" = "ftmon/docs/definitions.md"
+"docs/check-authoring.md" = "ftmon/docs/check-authoring.md"
+"docs/external-checks.md" = "ftmon/docs/external-checks.md"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 120

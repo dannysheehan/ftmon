@@ -85,15 +85,29 @@ class TestSurface:
         tools = asyncio.run(server.list_tools())
         assert {t.name for t in tools} == set(TOOL_NAMES)
 
-    def test_single_definitions_resource(self, core_env):  # noqa: F811
-        """[MC-05] one resource: the definitions guide, readable as text."""
+    @pytest.mark.parametrize(
+        ("uri", "expected"),
+        (
+            ("ftmon://docs/definitions", "complete reference"),
+            ("ftmon://docs/check-authoring", "Writing an external check"),
+            ("ftmon://docs/external-checks", "privileged exporter pattern"),
+        ),
+    )
+    def test_packaged_authoring_resources_are_readable(
+        self, core_env, uri, expected  # noqa: F811
+    ):
+        """[MC-05] each authoring guide is exposed as a readable text resource."""
         server = build_server(core_env)
         resources = asyncio.run(server.list_resources())
-        assert [str(r.uri) for r in resources] == ["ftmon://docs/definitions"]
-        contents = asyncio.run(server.read_resource("ftmon://docs/definitions"))
+        assert [str(r.uri) for r in resources] == [
+            "ftmon://docs/definitions",
+            "ftmon://docs/check-authoring",
+            "ftmon://docs/external-checks",
+        ]
+        contents = asyncio.run(server.read_resource(uri))
         text = (contents if isinstance(contents, str)
                 else "".join(str(c.content) for c in contents))
-        assert "monitor" in text
+        assert expected in text
 
 
 # --- MC-02: tz + range grammar ---------------------------------------------

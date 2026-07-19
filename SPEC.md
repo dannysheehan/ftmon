@@ -1,7 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.26** — v0.26 adds explicit current-value glance metadata
-and dashboard readouts (issue #16), after v0.25 adds the read-only Baselines
+Status: **DRAFT v0.27** — v0.27 packages the three MCP authoring guides so
+installed hosts can serve definitions and external-check guidance (issue #37).
+v0.26 adds explicit current-value glance metadata and dashboard readouts
+(issue #16), after v0.25 adds the read-only Baselines
 index (issue #18), v0.24 adds the bounded `list_baselines` MCP tool (issue #46), and v0.23
 makes CA-05 learning visible on Metrics at its honest retained five-minute
 resolution (issue #17). Baseline rows persist the immutable effective half-life
@@ -865,7 +867,11 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 - **MC-02** Range parameters accept `"90m"`-style durations or ISO-8601 pairs; all responses carry UTC timestamps plus the host's IANA timezone name once per response for the model to localize.
 - **MC-03** `define_monitor` MUST refuse (not silently overwrite) a name that already exists as enabled/disabled; drafts may be overwritten (iterating on a draft is the normal flow).
 - **MC-04** Error responses are structured (`code`, `message`, `hint`) — a less capable model must be able to self-correct from validation errors (MD-01's quality bar applies).
-- **MC-05** The server exposes one MCP **resource**: the monitor-definition guide (DO-01) — so a model authoring a definition can pull the reference without leaving the session. The full SPEC is not exposed (operational noise).
+- **MC-05** The server exposes exactly three packaged MCP **resources**:
+  `ftmon://docs/definitions` (DO-01), `ftmon://docs/check-authoring` and
+  `ftmon://docs/external-checks` (DO-07). A model authoring a definition or
+  external check on an installed host can pull the canonical guides without a
+  repository checkout. The full SPEC is not exposed (operational noise).
 - **MC-06** `monitor_paths` and `diagnose_monitor` are strictly read-only diagnostics: they answer "where do files go?" and "why isn't this monitor running?" in one round-trip each. `diagnose_monitor` may surface validation errors verbatim (already exposed by `get_monitor`) but MUST NOT expose registry argv or credentials — trust status is reported as booleans and stable categories only (SE-07). For every found monitor it also returns `last_result`: null when there is no DB, the monitor is non-external, or the **currently configured** `source_options.entity` has never produced a coherent EC-05 sample; otherwise the stored `plugin_state` (0–3), `plugin_ok`, `duration_s`, sanitized `plugin_message`, and `sample_age_s` for that entity at one shared sample timestamp. That block re-exposes already-persisted EC-05 fields under the local single-user trust model (SE-04): no registry argv or credentials; stderr remains excluded. `plugin_message` is control-stripped/truncated plugin stdout — FTMON does not apply secret-pattern redaction (NG-08). Write paths remain exactly drafts (`define_monitor`) and `ack_incident`; approval stays a human action (MD-05).
 - **MC-07** `list_baselines` is read-only, bounded and deterministic. It lists all stored baseline rows (never rows inferred from definitions) in `(monitor, entity, metric)` order, with optional exact filters and readiness filter. `limit` defaults to 100 and MUST be in `1..500`; pagination uses an opaque keyset cursor containing the last key and canonical filters so malformed or filter-mismatched cursors return MC-04 `invalid_params`. Learning rows expose their current level plus `updates`, `required_updates`, capped coverage, `ready`, UTC update bucket and effective half-life; `next_cursor` is null at the end.
 
@@ -1002,7 +1008,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ### 16.4 Tier-1 e2e (CI, deterministic)
 
 - **TS-05** Harness: launch the real `ftmon daemon` binary with `--clock=controlled` (FakeClock stepped over a control socket/file), `--fixtures <scenario>`, temp XDG dirs, `file` notifier. Assertions run against the DB, `notifications.jsonl`, and CLI/MCP/web responses. Scenario cases: each built-in monitor's happy-path fire-and-clear; ladder escalate → downgrade → clear; episode lifecycle; backoff timing; ack; quiet hours digest; config hot-reload incl. invalid file (PM-04); draft → approve flow incl. approval race (PM-06); budget invariants under `proc-churn-300` (RB-03); suspend/resume gap (SA-07); daemon kill -9 mid-delivery → restart → **at most one duplicate per in-flight channel delivery** (NO-04), no lost committed notifications, cursor-correct event resume (DM-15), no DB corruption (WAL).
-- **TS-06** MCP is tested end-to-end by driving `ftmon mcp` over stdio with recorded tool-call sequences (including a scripted "AI authors a monitor with two validation errors then a correct one" flow exercising MC-03/MC-04, and a resource fetch per MC-05).
+- **TS-06** MCP is tested end-to-end by driving `ftmon mcp` over stdio with recorded tool-call sequences (including a scripted "AI authors a monitor with two validation errors then a correct one" flow exercising MC-03/MC-04, and fetches of every packaged resource per MC-05).
 - **TS-07** Web UI: HTTP-level tests for every page and POST (UI-03) against a fixture-populated DB; HTML assertions on data presence and escaping (SE-02); UI-08 hardening tests (bad Host → 400, missing/foreign Origin on POST → rejected); UI-09 checks that severity markup carries text labels.
 
 ### 16.5 Tier-2 (opt-in, real system)
@@ -1177,6 +1183,14 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.27 (2026-07-19)** — installed-host MCP authoring guides (issue #37).
+MC-05 now exposes the canonical definition, check-authoring and external-check
+guides as three wheel-packaged resources. Package data is sourced directly from
+`docs/` so MCP delivery cannot drift into a second maintained copy; source-tree
+runs retain a development fallback. The external-check diagnostic description
+also surfaces the shipped `NoNewPrivileges`/`sudo` sharp edge before an agent
+designs an unusable privileged check.
 
 **v0.26 (2026-07-18)** — explicit dashboard glance values (issue #16).
 Sampler definitions can declare one primary persisted metric, display unit,
