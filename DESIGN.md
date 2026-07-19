@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.14**. Companion to `SPEC.md` v0.27 — every design element
+Status: **DRAFT v0.14**. Companion to `SPEC.md` v0.28 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -902,18 +902,31 @@ Errors: `{code, message, hint}` (MC-04) with codes `invalid_params, validation_f
 
 ## 14. Web UI (`web/`, UI-01..09)
 
-Starlette app; Jinja2 (autoescape); htmx for partial refresh (dashboard/incidents poll `/partials/*` every 5 s, UI-04); uPlot for charts fed by `/api/series` (JSON from `Query`, ≤ 2 000 pts). Middleware enforces UI-08: Host allowlist else 400; POST requires matching Origin; headers `Content-Security-Policy: default-src 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+Starlette app; Jinja2 (autoescape); a body `data-refresh-ms` contract plus the
+small vendored script performs full-page polling: dashboard, incident and
+Events views every 5 s, Monitors and Self every 15 s (UI-04). Metrics, Trends
+and Baselines do not auto-refresh so chart state and long-form inspection stay
+stable. uPlot charts are fed by `/api/series` (JSON from `Query`, ≤ 2 000 pts).
+Both web middlewares call one response-header helper. Operational middleware
+also enforces the exact Host allowlist and matching POST Origin. The shared
+headers are the SE-02 CSP (`default-src 'self'`, `frame-ancestors 'none'`,
+`form-action 'self'`, `base-uri 'none'`), `nosniff`, `DENY` framing, no-referrer,
+CORP same-origin and COOP same-origin; neither middleware emits CORS (UI-08).
 
-Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics` explorer (state in query string, UI-02) · `GET /baselines` read-only index · `GET /events` · `GET /monitors[/{name}]`, `POST /monitors/{name}/(enable|disable)`, `POST /drafts/{name}/(approve|delete)` · `GET /self` · `GET /partials/(tiles|incidents|health)` · `GET /api/series`. Templates: `base.html` + one per page + partials; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts get a `<figcaption>` text alternative (current value + trend sentence from `slope`). The locally packaged FTMON mark supplies the header image, PNG/ICO favicons, and touch icon without weakening UI-01's offline guarantee. Its header image is decorative beside a real-text wordmark so branding cannot obscure the home link's accessible name or become unreadable when images fail.
+Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics` explorer (state in query string, UI-02) · `GET /baselines` read-only index · `GET /events` · `GET /monitors`, `POST /monitors/{name}/(enable|disable|approve|delete-draft)` · `GET /self` · `GET /api/series`. Templates: `base.html` + one per page; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts carry a server-rendered text alternative. The locally packaged FTMON mark supplies the header image, PNG/ICO favicons, and touch icon without weakening UI-01's offline guarantee. Its header image is decorative beside a real-text wordmark so branding cannot obscure the home link's accessible name or become unreadable when images fail.
 
 Metrics payloads always include `baseline`: null when the selected persisted
 series has no CA-05 row, otherwise the current record plus native five-minute
-`points[[ts,value]]` and range-relative `history_truncated`. Browser rendering
-partitions those points into exact 300-second runs and strokes each run dashed;
-it never step-holds onto raw timestamps, spans a larger gap, interpolates hourly
-history, or draws the current level across an unobserved range. The accessible
-summary carries the level, learning/readiness and truncation state even when no
-historical run falls in range (UI-13/TS-11).
+`points[[ts,value]]`, explicit exact-300-second `runs`, and range-relative
+`history_truncated`. The panel's `y_domain` is calculated from all finite
+metric, envelope and baseline values, with 0..100 retained as the minimum
+percent domain and deterministic padding for other/constant ranges. Browser
+rendering strokes each supplied run dashed and paints its native points; it
+never step-holds onto raw timestamps, spans a larger gap, interpolates hourly
+history, or draws the current level across an unobserved range. A visible
+Baseline key and the accessible summary carry learning/readiness, level,
+coverage and truncation even when no historical run falls in range
+(UI-13/TS-11).
 
 `GET /baselines` applies the same exact filters, 100/500 row bounds, opaque
 filter-bound keyset cursor and ordering as MC-07. Invalid limits and cursors are
@@ -950,8 +963,8 @@ ftmon web --demo --demo-db /var/lib/ftmon-demo/demo.db \
 
 It still binds `127.0.0.1`. Demo middleware accepts exactly
 `Host: demo.ftmon.org` (optional `:443` after normalization), ignores forwarded
-Host/Origin authority, caps request targets at 4 KiB, and emits the normal CSP,
-nosniff, and referrer headers. Startup fails if `--demo-host` is absent, is an
+Host/Origin authority, caps request targets at 4 KiB, and emits the same shared
+security headers as the operational app. Startup fails if `--demo-host` is absent, is an
 IP/localhost name, or contains a wildcard.
 
 The reference deployment uses a dedicated `ftmon-demo` account, a systemd

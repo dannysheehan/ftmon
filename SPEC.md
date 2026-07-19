@@ -1,8 +1,10 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.27** — v0.27 packages the three MCP authoring guides so
-installed hosts can serve definitions and external-check guidance (issue #37).
-v0.26 adds explicit current-value glance metadata and dashboard readouts
+Status: **DRAFT v0.28** — v0.28 hardens the web response boundary, refreshes
+the remaining operational pages, and makes Metrics baselines unmistakably
+visible (issues #21, #22, #48). v0.27 packages the three MCP authoring guides
+so installed hosts can serve definitions and external-check guidance (issue
+#37). v0.26 adds explicit current-value glance metadata and dashboard readouts
 (issue #16), after v0.25 adds the read-only Baselines
 index (issue #18), v0.24 adds the bounded `list_baselines` MCP tool (issue #46), and v0.23
 makes CA-05 learning visible on Metrics at its honest retained five-minute
@@ -884,11 +886,11 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **UI-01** `ftmon web` serves on 127.0.0.1:8420: no external network assets whatsoever (all JS/CSS/fonts vendored; must work fully offline), no auth (NG-05).
 - **UI-02** v1 pages: **Dashboard** (per-monitor status tiles, open incidents, daemon health/budget strip, sparklines); **Incidents** (filter, detail view = `explain_incident` rendered, ack button); **Metrics explorer** (pick monitor/entity/metric/range → chart; shareable URL state); **Baselines** (read-only, paginated learned levels and coverage linking into Metrics); **Events** (filterable browser); **Monitors** (definitions rendered with docs, enable/disable toggle, drafts with rich validation view and **Approve** button); **Self** (daemon log tail, self-metrics, DB size, config errors).
 - **UI-03** Write operations are exactly: ack incident, enable/disable monitor, approve/delete draft. Each is a POST hitting the same code paths as the CLI equivalents (incl. PM-06).
-- **UI-04** Data freshness: dashboard and incident views poll every 5 s (no SSE in v1); a stale daemon (last cycle > 3× base interval) shows an unmistakable banner.
+- **UI-04** Data freshness uses full-page polling without SSE: dashboard, incident and Events views reload every 5 s; Monitors and Self reload every 15 s. Metrics, Trends and Baselines do not auto-refresh in v1. A stale daemon (last cycle > 3× base interval) shows an unmistakable banner.
 - **UI-05** Charts must remain legible with 400 d hourly data (downsampled server-side to ≤ 2 000 points per series per request).
 - **UI-06** Server-side rendering with minimal vendored JS (htmx-style partials + one small chart library — chosen in the design doc for size, accessibility, and long-range rendering) is the required *style*: no SPA framework, no frontend build step beyond file copying.
 - **UI-07** The web server process is optional at runtime: nothing else may depend on it.
-- **UI-08** Request hardening despite loopback: exact `Host` header allowlist (`127.0.0.1:<port>`, `localhost:<port>`) — anything else is 400 (defeats DNS rebinding); POSTs require a matching `Origin`; no CORS headers are ever emitted; responses set `X-Content-Type-Options: nosniff` and the SE-02 CSP.
+- **UI-08** Request hardening despite loopback: exact `Host` header allowlist (`127.0.0.1:<port>`, `localhost:<port>`) — anything else is 400 (defeats DNS rebinding); POSTs require a matching `Origin`; no CORS headers are ever emitted. Every response, including rejected requests and synthetic-demo responses, sets the SE-02 CSP, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin`, and `Cross-Origin-Opener-Policy: same-origin`.
 - **UI-09** Accessibility: severity is never conveyed by color alone (icon + text label); all interactive elements keyboard-operable; `prefers-reduced-motion` respected; every chart has a text alternative (current value + trend sentence).
 - **UI-10** Historical disk trends MUST show synchronized capacity, signed fill-rate/confidence, and projection views for one mount and a shareable range. Capacity includes configured threshold lines and stored min/max rollup envelopes; incident transitions are overlaid. The response and page state identify units, resolution, coverage, and UTC timestamps.
 - **UI-11** Forecast presentation MUST be honest: unstable/unqualified projections are rendered as a gap and explanatory text, never as a huge sentinel value. Every disk-trend chart has a textual summary containing current use, change over the selected range, signed rate when qualified, filling confidence, and either a projected-full date or the reason it is unavailable.
@@ -896,7 +898,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ---
 
 - **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
-- **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. It additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric. When CA-05 has a stored row for the selected series, Metrics also reports the current learning level, update-count coverage/readiness and effective half-life, and overlays only the reconstructable native five-minute baseline points. Consecutive buckets may be joined as dashed segments, but gaps larger than five minutes, raw-sample timestamps and hourly interpolation MUST NOT be invented; ranges without retained baseline history show the current state in text without a historical reference line.
+- **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. It additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric. When CA-05 has a stored row for the selected series, Metrics also reports the current learning level, update-count coverage/readiness and effective half-life, visibly labels the Baseline as `learning` or `ready`, includes every retained baseline value in the chart Y-domain, and overlays only the reconstructable native five-minute baseline points. Consecutive buckets may be joined as clearly distinguishable dashed segments, but gaps larger than five minutes, raw-sample timestamps and hourly interpolation MUST NOT be invented; ranges without retained baseline history show the labelled current state in text without a historical reference line.
 - **UI-14** Every dashboard monitor tile MUST show one accessible health state derived from current configuration, daemon freshness, and live open/acked incidents. Fixed precedence is `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`. States use color plus icon and visible text: grey `? unknown`/`● disabled`, red `✖ error`, yellow `▲ warning`, green `✓ clear`. Acknowledgment does not reduce severity or turn a tile green. Affected tiles show live incident count and link to incidents filtered by monitor; color never flashes or animates.
 - **UI-15** `ftmon web --demo` is a separate public-demonstration mode. It
   opens only a generated, deterministic synthetic database read-only; registers
@@ -932,7 +934,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ## 14. Security & privacy
 
 - **SE-01** Attack surface by construction: no listening sockets except web UI on loopback (hardened per UI-08); MCP on stdio; definitions are data validated against MD-01; expressions cannot reach the interpreter (EX-01..07); actions are pre-existing user-created executables only (AC-03); the daemon runs as the user, never root; anything needing elevation is skipped per PL-03.
-- **SE-02** Event messages and process cmdlines are untrusted strings: every sink (web UI templates, notifications, CLI, MCP JSON) escapes appropriately; the web UI sets a restrictive CSP (`default-src 'self'`).
+- **SE-02** Event messages and process cmdlines are untrusted strings: every sink (web UI templates, notifications, CLI, MCP JSON) escapes appropriately; the web UI sets a restrictive CSP with `default-src 'self'`, `frame-ancestors 'none'`, `form-action 'self'`, and `base-uri 'none'`.
 - **SE-03** The legacy CipherSaber password feature is **not** carried forward.
   FTMON's configuration and database store no secret values; remote-channel
   credentials remain external references under SE-05. SNMP/remote checks, if
@@ -1009,7 +1011,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 - **TS-05** Harness: launch the real `ftmon daemon` binary with `--clock=controlled` (FakeClock stepped over a control socket/file), `--fixtures <scenario>`, temp XDG dirs, `file` notifier. Assertions run against the DB, `notifications.jsonl`, and CLI/MCP/web responses. Scenario cases: each built-in monitor's happy-path fire-and-clear; ladder escalate → downgrade → clear; episode lifecycle; backoff timing; ack; quiet hours digest; config hot-reload incl. invalid file (PM-04); draft → approve flow incl. approval race (PM-06); budget invariants under `proc-churn-300` (RB-03); suspend/resume gap (SA-07); daemon kill -9 mid-delivery → restart → **at most one duplicate per in-flight channel delivery** (NO-04), no lost committed notifications, cursor-correct event resume (DM-15), no DB corruption (WAL).
 - **TS-06** MCP is tested end-to-end by driving `ftmon mcp` over stdio with recorded tool-call sequences (including a scripted "AI authors a monitor with two validation errors then a correct one" flow exercising MC-03/MC-04, and fetches of every packaged resource per MC-05).
-- **TS-07** Web UI: HTTP-level tests for every page and POST (UI-03) against a fixture-populated DB; HTML assertions on data presence and escaping (SE-02); UI-08 hardening tests (bad Host → 400, missing/foreign Origin on POST → rejected); UI-09 checks that severity markup carries text labels.
+- **TS-07** Web UI: HTTP-level tests for every page and POST (UI-03) against a fixture-populated DB; HTML assertions on data presence and escaping (SE-02); exact UI-04 refresh cadences; UI-08 hardening tests (bad Host → 400, missing/foreign Origin on POST → rejected, exact operational/demo response headers, no CORS); UI-09 checks that severity markup carries text labels.
 
 ### 16.5 Tier-2 (opt-in, real system)
 
@@ -1019,7 +1021,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ---
 
 - **TS-10** Generic trend tests MUST cover profile schema and cross-reference errors, optional-panel `null` semantics, disk compatibility, leak value/rate/confidence history, profile-aware thresholds and incident groups, contextual links, `/disks` redirect preservation, and one real-daemon-to-HTTP leak journey. Tests assert data and accessibility contracts, not chart pixels.
-- **TS-11** Metrics visualization tests MUST cover the `/api/series` contract, catalog selectors, all rollup statistics, aligned min/max envelopes, missing-data gaps, incident filtering, unit discovery/fallback, the 2 000-point cap, hostile labels, accessible summary, matching-Trend links, absence of invented panels, baseline learning/readiness, exact inverse reconstruction, range-relative truncation, and contiguous native-five-minute rendering without spanning gaps. Browser-library behavior remains tested at the HTTP/data boundary rather than by pixel snapshots.
+- **TS-11** Metrics visualization tests MUST cover the `/api/series` contract, catalog selectors, all rollup statistics, aligned min/max envelopes, missing-data gaps, incident filtering, unit discovery/fallback, the 2 000-point cap, hostile labels, accessible summary, matching-Trend links, absence of invented panels, baseline learning/readiness labels, baseline-inclusive Y-domain inputs, exact inverse reconstruction, range-relative truncation, and explicit contiguous native-five-minute run segmentation without spanning gaps. Browser-library behavior remains tested at the HTTP/data boundary rather than by pixel snapshots.
 - **TS-12** Dashboard tile tests MUST cover clear, warning, error/critical, acknowledged, disabled, stale/no-data, and configuration-error states; precedence conflicts; incident counts and filtered links; escaping; icon+text accessibility; absence of flashing/animation dependence; and declared glance aggregation, active/fresh sample filtering, threshold rendering, omission and state independence.
 - **TS-13** Notification tests cover configuration validation, severity fan-out,
   quiet-hours digests, independent channel success/failure, exact retry classes
@@ -1183,6 +1185,16 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.28 (2026-07-19)** — web clarity and response hardening (issues #21, #22,
+#48). The operational and synthetic-demo middleware now share one exact header
+contract that forbids framing, form retargeting and base-URL injection, with
+same-origin isolation headers as defense in depth. Events refresh every five
+seconds and the lower-churn Monitors and Self pages every fifteen seconds using
+the existing full-page polling mechanism; chart explorers remain stable. The
+Metrics baseline overlay now has a visible learning/ready key, contributes its
+retained values to the Y-domain, and consumes explicit native-five-minute runs
+so a drawing plugin cannot bridge pruned evidence.
 
 **v0.27 (2026-07-19)** — installed-host MCP authoring guides (issue #37).
 MC-05 now exposes the canonical definition, check-authoring and external-check

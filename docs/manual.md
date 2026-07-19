@@ -216,6 +216,14 @@ dashboard, incident browser with full explanations, metric charts, event
 search, and monitor management (including approving AI drafts). Localhost
 only, no external resources, works offline.
 
+Dashboard, incident, and Events pages reload every five seconds. Monitors and
+Self reload every fifteen seconds; Metrics, Trends, and Baselines stay fixed
+while you inspect them. Refreshing preserves the current URL and its filters.
+The server rejects unexpected Host and POST Origin values, cannot be embedded
+in another page, restricts forms and resources to itself, and emits no CORS
+permission. These defenses still matter on loopback because a hostile website
+open in the same browser must not be able to frame or retarget FTMON controls.
+
 ## 6. AI integration (MCP)
 
 Register `ftmon mcp` with your AI client. For Claude Code:
@@ -277,13 +285,16 @@ forecast meaning; when a definition declares such meaning, **Open Trend**
 moves to that curated view.
 
 When the selected series has a learned baseline, Metrics also shows its current
-EWMA level and learning coverage. Rules still receive no `baseline(m)` value
-until 240 five-minute updates have accumulated, but the page exposes the level
-while it learns so you can see what “normal” is converging toward. The dashed
-overlay contains only retained five-minute baseline updates: gaps stay gaps,
-raw timestamps are not fabricated, and long ranges do not extend today's level
-back across missing history. If older five-minute evidence has aged out, the
-text summary says the visible baseline history is truncated.
+EWMA level and learning coverage. A visible **Baseline — learning** or
+**Baseline — ready** key distinguishes it from an absent overlay. Rules still
+receive no `baseline(m)` value until 240 five-minute updates have accumulated,
+but the page exposes the level while it learns so you can see what “normal” is
+converging toward. Retained baseline values participate in the chart scale, so
+they cannot be clipped outside a range derived only from raw measurements. The
+dashed overlay contains only retained five-minute baseline updates: gaps stay
+gaps, raw timestamps are not fabricated, and long ranges do not extend today's
+level back across missing history. If older five-minute evidence has aged out,
+the text summary says the visible baseline history is truncated.
 
 ### Baselines index
 

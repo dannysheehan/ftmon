@@ -20,7 +20,7 @@ from starlette.staticfiles import StaticFiles
 from ftmon.paths import get_paths
 from ftmon.store.query import Query
 from ftmon.web.app import (
-    _CSP,
+    _apply_security_headers,
     _demo_definitions,
     baselines,
     dashboard,
@@ -57,10 +57,7 @@ class DemoSecurityMiddleware(BaseHTTPMiddleware):
             response = Response("Bad Host", status_code=400)
         else:
             response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Content-Security-Policy"] = _CSP
-        response.headers["Referrer-Policy"] = "no-referrer"
-        return response
+        return _apply_security_headers(response)
 
 
 @dataclass(frozen=True)
