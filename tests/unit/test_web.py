@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
+from ftmon import __version__
 from ftmon.clock import FakeClock
 from ftmon.paths import get_paths
 from ftmon.store.db import connect, migrate
@@ -81,6 +82,13 @@ def test_offline_branding_has_accessible_wordmark_and_packaged_icons_ui_01_ui_09
         response = client.get(path, headers=headers)
         assert response.status_code == 200
         assert response.headers["content-type"].startswith(content_type)
+
+
+def test_self_identifies_running_web_package_ui_02(tmp_path):
+    """[UI-02] Self reports the package version loaded by the web process."""
+    client, _paths = _client(tmp_path)
+    page = client.get("/self", headers={"host": "localhost:8420"})
+    assert f"<strong>Web process version</strong> {__version__}." in page.text
 
 
 def test_dark_mode_uses_legible_semantic_card_palette_ui_09(tmp_path):

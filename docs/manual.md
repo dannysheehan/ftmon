@@ -222,6 +222,12 @@ dashboard, incident browser with full explanations, metric charts, event
 search, and monitor management (including approving AI drafts). Localhost
 only, no external resources, works offline.
 
+The **Self** page reports the exact package version loaded by the web process,
+which confirms whether the web service restarted onto an upgrade. The daemon
+may still be running an older package until its own service is restarted, so
+the label deliberately says **Web process version** rather than implying both
+processes are identical.
+
 Dashboard, incident, and Events pages reload every five seconds. Monitors and
 Self reload every fifteen seconds; Metrics, Trends, and Baselines stay fixed
 while you inspect them. Refreshing preserves the current URL and its filters.

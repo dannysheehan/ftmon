@@ -933,6 +933,11 @@ filter-bound keyset cursor and ordering as MC-07. Invalid limits and cursors are
 HTTP 400, while each row links to the matching shareable Metrics selection.
 The page has no POST route; CA-06 reset remains CLI-only (UI-02/03).
 
+Self renders `ftmon.__version__` as the explicitly labelled web-process version.
+It does not infer a daemon version from the shared database, so an upgrade that
+has not restarted both services cannot present false process-version equality
+(UI-02).
+
 ### 14.1 Public synthetic demo (UI-15/16, SE-06)
 
 Demo mode is a separate application factory, `create_demo_app`, rather than a

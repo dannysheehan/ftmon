@@ -21,6 +21,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
+from ftmon import __version__
 from ftmon.clock import SystemClock
 from ftmon.definitions import loader
 from ftmon.expr import ExprError, parse_duration
@@ -1015,7 +1016,7 @@ async def self_page(request: Request):
     return _render(
         "self.html", request, title="Self", status=status,
         metrics=metrics_rows, config_errors=errors, log_tail=log_tail,
-        refresh_ms=15000,
+        web_version=__version__, refresh_ms=15000,
     )
 
 
