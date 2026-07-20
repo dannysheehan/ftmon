@@ -67,6 +67,36 @@ class TileGlance:
     thresholds: tuple[TileGlanceThreshold, ...]
 
 
+# Attention-first scan order; UI-14 state itself stays computed above (DESIGN §15.3).
+_TILE_STATE_ORDER = {
+    "config-error": 0,
+    "error": 1,
+    "warning": 2,
+    "unknown": 3,
+    "disabled": 4,
+    "clear": 5,
+}
+
+
+def _sort_tiles(tiles: list[MonitorTile]) -> list[MonitorTile]:
+    return sorted(
+        tiles, key=lambda tile: (_TILE_STATE_ORDER.get(tile.state, 9), tile.name)
+    )
+
+
+def _tile_summary(tiles: list[MonitorTile]) -> dict:
+    """Dashboard strip aggregates derived from composed tiles, not a second policy."""
+    worst = None
+    for tile in tiles:
+        if tile.max_severity is not None:
+            worst = tile.max_severity if worst is None else max(worst, tile.max_severity)
+    return {
+        "attention_count": sum(1 for tile in tiles if tile.state != "clear"),
+        "clear_count": sum(1 for tile in tiles if tile.state == "clear"),
+        "worst_severity": worst,
+    }
+
+
 @dataclass(frozen=True)
 class _StoredEntityCtx:
     """Persisted expression context used only to honor CA-07 in glance."""
@@ -207,9 +237,15 @@ async def dashboard(request: Request):
             if getattr(request.app.state, "demo", False)
             else _monitor_tiles(defs, errors, q, status, request.app.state.clock.now())
         )
-    return _render("dashboard.html", request, title="Dashboard", status=status,
-                   tiles=tiles, config_errors=errors, incidents=incidents,
-                   refresh_ms=5000)
+        summary = _tile_summary(tiles)
+        attention = [tile for tile in tiles if tile.state != "clear"]
+        clear = [tile for tile in tiles if tile.state == "clear"]
+    return _render(
+        "dashboard.html", request, title="Dashboard", status=status,
+        tiles=tiles, attention_tiles=attention, clear_tiles=clear,
+        summary=summary, config_errors=errors, incidents=incidents,
+        refresh_ms=5000,
+    )
 
 
 def _demo_definitions(q: Query | None):
@@ -270,7 +306,7 @@ def _demo_monitor_tiles(definitions, q: Query | None, now: float) -> list[Monito
             mdef.name, mdef.description, mdef.enabled,
             state, icon, label, live.get(mdef.name, 0), None, mdef.trends, glance,
         ))
-    return sorted(tiles, key=lambda tile: tile.name)
+    return _sort_tiles(tiles)
 
 
 def _monitor_tiles(
@@ -322,7 +358,7 @@ def _monitor_tiles(
             path.stem, str(error)[:200], False, "config-error", "?",
             "config error", 0, None, (), None,
         ))
-    return sorted(tiles, key=lambda tile: tile.name)
+    return _sort_tiles(tiles)
 
 
 def _format_glance_value(value: float, unit: str) -> str:

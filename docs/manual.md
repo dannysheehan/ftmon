@@ -127,19 +127,22 @@ Every listing command takes `--json` for scripting.
 
 ### Reading the web dashboard
 
-Dashboard monitor tiles restore the original FTMON at-a-glance states while
-adding an icon and text so color is never the only signal:
+The dashboard opens with a status strip (open incidents, worst severity, counts,
+last tick age, database size), then monitor tiles ordered attention-first so
+problems surface above the quiet “all clear” group. Tiles keep the original
+FTMON at-a-glance states with icon and text so color is never the only signal:
 
-- `✓ clear` on green: no live incident;
-- `▲ warning` on yellow: notice or warning is open or acknowledged;
-- `✖ error` on red: error or critical is open or acknowledged;
-- `● disabled` on grey: definition intentionally disabled;
-- `? unknown` on grey: stale daemon, no committed data yet, or configuration error.
+- `✓ clear` with a green edge: no live incident;
+- `▲ warning` with an amber edge: notice or warning is open or acknowledged;
+- `✖ error` with a red edge: error or critical is open or acknowledged;
+- `● disabled` with a grey edge: definition intentionally disabled;
+- `? unknown` with a grey edge: stale daemon, no committed data yet, or
+  configuration error.
 
 Acknowledging an incident stops repeat notifications but does not make its tile
-green; only recovery clears the condition. A stale dashboard also never claims
-green because old data cannot prove present health. Click a yellow/red tile to
-open incidents already filtered to that monitor.
+clear; only recovery clears the condition. A stale dashboard also never claims
+clear because old data cannot prove present health. Click a warning/error tile
+to open incidents already filtered to that monitor.
 
 Some monitor definitions declare a primary glance readout below the state,
 such as `/home 94% · warn 92% · error 97%`. The definition explicitly chooses

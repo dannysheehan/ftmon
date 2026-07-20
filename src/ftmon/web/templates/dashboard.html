@@ -1,5 +1,48 @@
-{% extends "base.html" %}{% block content %}<h1>Dashboard</h1>
-<section class="health" aria-label="Daemon health"><strong>Database</strong> {{ '%.1f'|format(status.db_bytes / 1048576) }} MB · <strong>Open incidents</strong> {{ status.open_incidents }}</section>
-<h2>Monitors</h2><div class="tiles">{% for tile in tiles %}<article class="monitor-tile tile-{{ tile.state }}" data-monitor="{{ tile.name }}" data-state="{{ tile.state }}"><h3>{{ tile.name }}</h3><p class="tile-status"><span aria-hidden="true">{{ tile.icon }}</span> <strong>{{ tile.label }}</strong></p>{% if tile.glance %}<p class="tile-glance"><strong>{{ tile.glance.entity_id }}</strong> {{ tile.glance.value }}{% for threshold in tile.glance.thresholds %} · {{ threshold.label }} {{ threshold.value }}{% endfor %}</p>{% endif %}<p>{{ tile.description }}</p>{% if tile.incident_count %}<p><a href="/incidents?monitor={{ tile.name|urlencode }}">{{ tile.incident_count }} live incident{{ '' if tile.incident_count == 1 else 's' }}</a>{% if tile.max_severity is not none %}; highest {{ severity_name(tile.max_severity) }}{% endif %}</p>{% endif %}{% for profile in tile.trends %}<a href="/trends/{{ tile.name }}/{{ profile.id }}">View {{ profile.title }}</a>{% endfor %}</article>{% else %}<p>No monitors configured.</p>{% endfor %}</div>
+{% extends "base.html" %}{% block content %}
+<section class="dash-hero" aria-labelledby="dash-title">
+  <div class="dash-hero-copy">
+    <p class="eyebrow">Local host</p>
+    <h1 id="dash-title">Dashboard</h1>
+    <p class="lede">{% if status.open_incidents %}{{ status.open_incidents }} live incident{{ '' if status.open_incidents == 1 else 's' }} need a look.{% elif summary.attention_count %}{{ summary.attention_count }} monitor{{ '' if summary.attention_count == 1 else 's' }} need attention; everything else is clear.{% else %}All monitors clear. Last tick {% if status.last_tick_age_s is none %}unknown{% else %}{{ '%.0f'|format(status.last_tick_age_s) }}s ago{% endif %}.{% endif %}</p>
+  </div>
+  <section class="health status-strip" aria-label="Daemon health">
+    <div class="stat {% if status.open_incidents %}stat-alert{% else %}stat-ok{% endif %}">
+      <span class="stat-value">{{ status.open_incidents }}</span>
+      <span class="stat-label">Open incidents</span>
+    </div>
+    <div class="stat {% if summary.worst_severity is not none and summary.worst_severity >= 3 %}stat-alert{% elif summary.worst_severity is not none %}stat-warn{% else %}stat-ok{% endif %}">
+      <span class="stat-value">{% if summary.worst_severity is not none %}{{ severity_name(summary.worst_severity) }}{% else %}clear{% endif %}</span>
+      <span class="stat-label">Worst severity</span>
+    </div>
+    <div class="stat {% if summary.attention_count %}stat-warn{% else %}stat-ok{% endif %}">
+      <span class="stat-value">{{ summary.attention_count }}</span>
+      <span class="stat-label">Need attention</span>
+    </div>
+    <div class="stat stat-ok">
+      <span class="stat-value">{{ summary.clear_count }}</span>
+      <span class="stat-label">Clear</span>
+    </div>
+    <div class="stat {% if status.daemon_stale %}stat-alert{% else %}stat-muted{% endif %}">
+      <span class="stat-value">{% if status.last_tick_age_s is none %}—{% else %}{{ '%.0f'|format(status.last_tick_age_s) }}s{% endif %}</span>
+      <span class="stat-label">Last tick</span>
+    </div>
+    <div class="stat stat-muted">
+      <span class="stat-value">{{ '%.1f'|format(status.db_bytes / 1048576) }}</span>
+      <span class="stat-label">Database MB</span>
+    </div>
+  </section>
+</section>
+{% macro render_tile(tile, mode) -%}
+<article class="monitor-tile tile-{{ tile.state }} tile-{{ mode }}" data-monitor="{{ tile.name }}" data-state="{{ tile.state }}">
+  <p class="tile-status"><span aria-hidden="true">{{ tile.icon }}</span> <strong>{{ tile.label }}</strong></p>
+  <div class="tile-head"><h3>{{ tile.name }}</h3></div>
+  {% if tile.glance %}<p class="tile-glance"><strong>{{ tile.glance.entity_id }}</strong> {{ tile.glance.value }}{% for threshold in tile.glance.thresholds %} · {{ threshold.label }} {{ threshold.value }}{% endfor %}</p>{% endif %}
+  <p class="tile-desc">{{ tile.description }}</p>
+  {% if tile.incident_count %}<p class="tile-meta"><a href="/incidents?monitor={{ tile.name|urlencode }}">{{ tile.incident_count }} live incident{{ '' if tile.incident_count == 1 else 's' }}</a>{% if tile.max_severity is not none %}; highest {{ severity_name(tile.max_severity) }}{% endif %}</p>{% endif %}
+  {% if tile.trends %}<p class="tile-trends">{% for profile in tile.trends %}<a href="/trends/{{ tile.name }}/{{ profile.id }}">View {{ profile.title }}</a>{% endfor %}</p>{% endif %}
+</article>
+{%- endmacro %}
+{% if attention_tiles %}<h2>Needs attention</h2><div class="tiles tiles-attention">{% for tile in attention_tiles %}{{ render_tile(tile, 'focus') }}{% endfor %}</div>{% endif %}
+{% if clear_tiles %}<section class="section-quiet"><h2>{% if attention_tiles %}All clear{% else %}Monitors{% endif %}</h2><div class="monitor-list" role="list">{% for tile in clear_tiles %}<div role="listitem">{{ render_tile(tile, 'row') }}</div>{% endfor %}</div></section>{% elif not attention_tiles %}<h2>Monitors</h2><p>No monitors configured.</p>{% endif %}
 {% if config_errors %}<h2>Configuration errors</h2><ul>{% for path,error in config_errors %}<li>{{ path.name }}: {{ error }}</li>{% endfor %}</ul>{% endif %}
 <h2>Open incidents</h2>{% include "incident_rows.html" %}{% endblock %}
