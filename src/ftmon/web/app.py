@@ -21,6 +21,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
+from ftmon import __version__
 from ftmon.clock import SystemClock
 from ftmon.definitions import loader
 from ftmon.expr import ExprError, parse_duration
@@ -65,6 +66,44 @@ class TileGlance:
     entity_id: str
     value: str
     thresholds: tuple[TileGlanceThreshold, ...]
+
+
+# Attention-first scan order; UI-14 state itself stays computed above (DESIGN §15.3).
+_TILE_STATE_ORDER = {
+    "config-error": 0,
+    "error": 1,
+    "warning": 2,
+    "unknown": 3,
+    "disabled": 4,
+    "clear": 5,
+}
+
+
+def _sort_tiles(tiles: list[MonitorTile]) -> list[MonitorTile]:
+    return sorted(
+        tiles, key=lambda tile: (_TILE_STATE_ORDER.get(tile.state, 9), tile.name)
+    )
+
+
+def _needs_attention(tile: MonitorTile) -> bool:
+    """Keep intentionally inactive monitors quiet unless they retain an incident."""
+    return tile.state not in {"clear", "disabled"} or tile.incident_count > 0
+
+
+def _tile_summary(tiles: list[MonitorTile]) -> dict:
+    """Dashboard strip aggregates derived from composed tiles, not a second policy."""
+    worst = None
+    for tile in tiles:
+        if tile.max_severity is not None:
+            worst = tile.max_severity if worst is None else max(worst, tile.max_severity)
+    return {
+        "attention_count": sum(1 for tile in tiles if _needs_attention(tile)),
+        "clear_count": sum(1 for tile in tiles if tile.state == "clear"),
+        "disabled_count": sum(
+            1 for tile in tiles if tile.state == "disabled" and not tile.incident_count
+        ),
+        "worst_severity": worst,
+    }
 
 
 @dataclass(frozen=True)
@@ -207,9 +246,20 @@ async def dashboard(request: Request):
             if getattr(request.app.state, "demo", False)
             else _monitor_tiles(defs, errors, q, status, request.app.state.clock.now())
         )
-    return _render("dashboard.html", request, title="Dashboard", status=status,
-                   tiles=tiles, config_errors=errors, incidents=incidents,
-                   refresh_ms=5000)
+        summary = _tile_summary(tiles)
+        attention = [tile for tile in tiles if _needs_attention(tile)]
+        clear = [tile for tile in tiles if tile.state == "clear"]
+        disabled = [
+            tile for tile in tiles
+            if tile.state == "disabled" and not tile.incident_count
+        ]
+    return _render(
+        "dashboard.html", request, title="Dashboard", status=status,
+        tiles=tiles, attention_tiles=attention, clear_tiles=clear,
+        disabled_tiles=disabled,
+        summary=summary, config_errors=errors, incidents=incidents,
+        refresh_ms=5000,
+    )
 
 
 def _demo_definitions(q: Query | None):
@@ -252,9 +302,10 @@ def _demo_monitor_tiles(definitions, q: Query | None, now: float) -> list[Monito
     ).fetchone()
     summaries = json.loads(row["value"]) if row else {}
     live = {
-        row["monitor"]: row["count"]
+        row["monitor"]: (row["count"], row["max_severity"])
         for row in q._conn.execute(
-            "SELECT monitor,COUNT(*) count FROM incidents WHERE state!='cleared' GROUP BY monitor"
+            "SELECT monitor,COUNT(*) count,MAX(severity) max_severity "
+            "FROM incidents WHERE state!='cleared' GROUP BY monitor"
         )
     }
     presentation = {
@@ -266,11 +317,12 @@ def _demo_monitor_tiles(definitions, q: Query | None, now: float) -> list[Monito
         state = summaries.get(mdef.name, "unknown")
         icon, label = presentation.get(state, ("?", "unknown"))
         glance = _compose_glance(mdef, q, state, now)
+        incident_count, maximum = live.get(mdef.name, (0, None))
         tiles.append(MonitorTile(
             mdef.name, mdef.description, mdef.enabled,
-            state, icon, label, live.get(mdef.name, 0), None, mdef.trends, glance,
+            state, icon, label, incident_count, maximum, mdef.trends, glance,
         ))
-    return sorted(tiles, key=lambda tile: tile.name)
+    return _sort_tiles(tiles)
 
 
 def _monitor_tiles(
@@ -322,7 +374,7 @@ def _monitor_tiles(
             path.stem, str(error)[:200], False, "config-error", "?",
             "config error", 0, None, (), None,
         ))
-    return sorted(tiles, key=lambda tile: tile.name)
+    return _sort_tiles(tiles)
 
 
 def _format_glance_value(value: float, unit: str) -> str:
@@ -964,7 +1016,7 @@ async def self_page(request: Request):
     return _render(
         "self.html", request, title="Self", status=status,
         metrics=metrics_rows, config_errors=errors, log_tail=log_tail,
-        refresh_ms=15000,
+        web_version=__version__, refresh_ms=15000,
     )
 
 

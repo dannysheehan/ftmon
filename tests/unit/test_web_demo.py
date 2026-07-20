@@ -92,6 +92,8 @@ def test_demo_factory_accepts_the_real_seeded_builder_contract_ui_15_ui_16_ui_17
         ("leak", "error"), ("service", "disabled"),
     ):
         assert f'data-monitor="{monitor}" data-state="{state}"' in response.text
+    assert '<span class="stat-value">error</span>' in response.text
+    assert '<span class="stat-label">Worst severity</span>' in response.text
     assert "Daemon data is stale" in response.text
     assert "3600 seconds old" not in response.text
     assert '<p class="tile-glance"><strong>mount:/srv/demo</strong>' in response.text

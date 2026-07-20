@@ -933,6 +933,11 @@ filter-bound keyset cursor and ordering as MC-07. Invalid limits and cursors are
 HTTP 400, while each row links to the matching shareable Metrics selection.
 The page has no POST route; CA-06 reset remains CLI-only (UI-02/03).
 
+Self renders `ftmon.__version__` as the explicitly labelled web-process version.
+It does not infer a daemon version from the shared database, so an upgrade that
+has not restarted both services cannot present false process-version equality
+(UI-02).
+
 ### 14.1 Public synthetic demo (UI-15/16, SE-06)
 
 Demo mode is a separate application factory, `create_demo_app`, rather than a
@@ -1013,7 +1018,18 @@ The dashboard composition root builds a `MonitorTile` view model rather than emb
 
 “Live incident” includes both `open` and `acked`: ack suppresses renotification but is not recovery (IN-02). Staleness overrides enabled/incident display because old database state cannot prove current health. A successfully loaded monitor with no committed load/sample evidence is also unknown; `monitor_loads`, series, or an event cursor provides evidence that it has participated in a daemon cycle. Invalid definition files become config-error tiles even though no `MonitorDef` exists.
 
-CSS state classes restore the legacy green/yellow/red scan pattern, but every tile also carries a stable glyph and text label. No state flashes: motion is unnecessary for urgency, hostile to reduced-motion users, and makes a workstation dashboard distracting. Incident links use `/incidents?monitor=…`, the same Query filter as CLI/MCP.
+CSS state classes restore the legacy green/yellow/red scan pattern via left-edge
+accents and soft washes (healthy tiles stay quiet so problems read first), and
+every tile also carries a stable glyph and text label. The dashboard sorts tiles
+attention-first, splits clear monitors into a quieter section, and keeps an
+intentionally disabled monitor without a retained incident in a separate
+inactive section. A disabled monitor with a live incident remains prominent.
+That ordering is presentation only and never recomputes UI-14 state. Summary
+severity comes from the same live incidents as the tiles, including synthetic
+demo incidents. No state flashes: motion
+is unnecessary for urgency, hostile to reduced-motion users, and makes a
+workstation dashboard distracting. Incident links use `/incidents?monitor=…`,
+the same Query filter as CLI/MCP.
 
 `MonitorDef.glance` is frozen presentation metadata, not executable policy and
 not a reason to collect another metric (MD-12). A focused read-only Query call
