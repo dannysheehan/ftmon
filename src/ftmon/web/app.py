@@ -84,6 +84,11 @@ def _sort_tiles(tiles: list[MonitorTile]) -> list[MonitorTile]:
     )
 
 
+def _needs_attention(tile: MonitorTile) -> bool:
+    """Keep intentionally inactive monitors quiet unless they retain an incident."""
+    return tile.state not in {"clear", "disabled"} or tile.incident_count > 0
+
+
 def _tile_summary(tiles: list[MonitorTile]) -> dict:
     """Dashboard strip aggregates derived from composed tiles, not a second policy."""
     worst = None
@@ -91,8 +96,11 @@ def _tile_summary(tiles: list[MonitorTile]) -> dict:
         if tile.max_severity is not None:
             worst = tile.max_severity if worst is None else max(worst, tile.max_severity)
     return {
-        "attention_count": sum(1 for tile in tiles if tile.state != "clear"),
+        "attention_count": sum(1 for tile in tiles if _needs_attention(tile)),
         "clear_count": sum(1 for tile in tiles if tile.state == "clear"),
+        "disabled_count": sum(
+            1 for tile in tiles if tile.state == "disabled" and not tile.incident_count
+        ),
         "worst_severity": worst,
     }
 
@@ -238,11 +246,16 @@ async def dashboard(request: Request):
             else _monitor_tiles(defs, errors, q, status, request.app.state.clock.now())
         )
         summary = _tile_summary(tiles)
-        attention = [tile for tile in tiles if tile.state != "clear"]
+        attention = [tile for tile in tiles if _needs_attention(tile)]
         clear = [tile for tile in tiles if tile.state == "clear"]
+        disabled = [
+            tile for tile in tiles
+            if tile.state == "disabled" and not tile.incident_count
+        ]
     return _render(
         "dashboard.html", request, title="Dashboard", status=status,
         tiles=tiles, attention_tiles=attention, clear_tiles=clear,
+        disabled_tiles=disabled,
         summary=summary, config_errors=errors, incidents=incidents,
         refresh_ms=5000,
     )
@@ -288,9 +301,10 @@ def _demo_monitor_tiles(definitions, q: Query | None, now: float) -> list[Monito
     ).fetchone()
     summaries = json.loads(row["value"]) if row else {}
     live = {
-        row["monitor"]: row["count"]
+        row["monitor"]: (row["count"], row["max_severity"])
         for row in q._conn.execute(
-            "SELECT monitor,COUNT(*) count FROM incidents WHERE state!='cleared' GROUP BY monitor"
+            "SELECT monitor,COUNT(*) count,MAX(severity) max_severity "
+            "FROM incidents WHERE state!='cleared' GROUP BY monitor"
         )
     }
     presentation = {
@@ -302,9 +316,10 @@ def _demo_monitor_tiles(definitions, q: Query | None, now: float) -> list[Monito
         state = summaries.get(mdef.name, "unknown")
         icon, label = presentation.get(state, ("?", "unknown"))
         glance = _compose_glance(mdef, q, state, now)
+        incident_count, maximum = live.get(mdef.name, (0, None))
         tiles.append(MonitorTile(
             mdef.name, mdef.description, mdef.enabled,
-            state, icon, label, live.get(mdef.name, 0), None, mdef.trends, glance,
+            state, icon, label, incident_count, maximum, mdef.trends, glance,
         ))
     return _sort_tiles(tiles)
 

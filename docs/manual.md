@@ -129,8 +129,11 @@ Every listing command takes `--json` for scripting.
 
 The dashboard opens with a status strip (open incidents, worst severity, counts,
 last tick age, database size), then monitor tiles ordered attention-first so
-problems surface above the quiet “all clear” group. Tiles keep the original
-FTMON at-a-glance states with icon and text so color is never the only signal:
+problems surface above the quiet “all clear” group. Intentionally disabled
+monitors without live incidents have their own inactive group rather than
+inflating the attention count; a disabled monitor retaining a live incident
+stays prominent. Tiles keep the original FTMON at-a-glance states with icon and
+text so color is never the only signal:
 
 - `✓ clear` with a green edge: no live incident;
 - `▲ warning` with an amber edge: notice or warning is open or acknowledged;

@@ -1016,8 +1016,12 @@ The dashboard composition root builds a `MonitorTile` view model rather than emb
 CSS state classes restore the legacy green/yellow/red scan pattern via left-edge
 accents and soft washes (healthy tiles stay quiet so problems read first), and
 every tile also carries a stable glyph and text label. The dashboard sorts tiles
-attention-first and splits clear monitors into a quieter section; that ordering
-is presentation only and never recomputes UI-14 state. No state flashes: motion
+attention-first, splits clear monitors into a quieter section, and keeps an
+intentionally disabled monitor without a retained incident in a separate
+inactive section. A disabled monitor with a live incident remains prominent.
+That ordering is presentation only and never recomputes UI-14 state. Summary
+severity comes from the same live incidents as the tiles, including synthetic
+demo incidents. No state flashes: motion
 is unnecessary for urgency, hostile to reduced-motion users, and makes a
 workstation dashboard distracting. Incident links use `/incidents?monitor=…`,
 the same Query filter as CLI/MCP.

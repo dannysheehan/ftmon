@@ -83,6 +83,21 @@ def test_offline_branding_has_accessible_wordmark_and_packaged_icons_ui_01_ui_09
         assert response.headers["content-type"].startswith(content_type)
 
 
+def test_dark_mode_uses_legible_semantic_card_palette_ui_09(tmp_path):
+    """[UI-09] Dark cards replace both light gradients and semantic foregrounds."""
+    client, _paths = _client(tmp_path)
+    css = client.get(
+        "/static/ftmon.css", headers={"host": "localhost:8420"}
+    ).text
+    dark = css.split("@media (prefers-color-scheme: dark)", 1)[1]
+    for declaration in (
+        "--clear: #7ee2a4", "--warn: #ffd066", "--error: #ff8b96",
+        "--neutral: #c4cfdb", "#211a0b", "#241015", "#151d27",
+    ):
+        assert declaration in dark
+    assert ".monitor-list .monitor-tile:nth-child(odd)" not in css
+
+
 def test_dashboard_tiles_restore_accessible_legacy_health_states_ui_14_ts_12(tmp_path):
     """[UI-14][TS-12] Clear/warn/error/disabled/config states include icon+text."""
     client, paths = _client(tmp_path)
@@ -119,6 +134,8 @@ def test_dashboard_tiles_restore_accessible_legacy_health_states_ui_14_ts_12(tmp
     assert 'data-monitor="service" data-state="unknown"' in page
     assert 'data-monitor="broken" data-state="config-error"' in page
     assert "/incidents?monitor=leak" in page and "1 live incident" in page
+    assert page.index('<h2>Needs attention</h2>') < page.index('data-monitor="hog"')
+    assert page.index('data-monitor="hog"') < page.index('<h2>All clear</h2>')
     assert "flash" not in page.lower()
 
     filtered = client.get(
@@ -200,6 +217,7 @@ def test_dashboard_glance_is_omitted_for_disabled_tile_ui_17_ts_12(tmp_path):
     text = builtin.read_text().replace("enabled = true", "enabled = false", 1)
     (paths.monitors_dir / "disk.toml").write_text(text)
     conn = connect(paths.db_file)
+    conn.execute("DELETE FROM incidents")
     conn.execute(
         "INSERT INTO monitor_loads(monitor,loaded_ts,hash,normalized) "
         "VALUES('disk',990,'disk','disk')"
@@ -219,6 +237,9 @@ def test_dashboard_glance_is_omitted_for_disabled_tile_ui_17_ts_12(tmp_path):
     page = client.get("/", headers={"host": "localhost:8420"}).text
     assert 'data-monitor="disk" data-state="disabled"' in page
     assert "tile-glance" not in page
+    assert "<h2>Needs attention</h2>" not in page
+    assert "No monitors need attention. 0 clear; 1 intentionally disabled." in page
+    assert page.index("<h2>Disabled</h2>") < page.index('data-monitor="disk"')
 
 
 def test_ui_ack_requires_origin_and_reuses_small_writes_ui_03_ui_08(tmp_path):

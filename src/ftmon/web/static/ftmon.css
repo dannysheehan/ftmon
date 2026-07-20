@@ -520,7 +520,6 @@ article,
   min-height: 0;
 }
 
-.monitor-list .monitor-tile:nth-child(odd),
 .monitor-list [role="listitem"]:nth-child(odd) .monitor-tile {
   background: #f7fbfd;
 }
@@ -534,6 +533,11 @@ article,
   border-radius: 999px;
   background: #d8f3e3;
   font-size: .82rem;
+}
+.monitor-list-disabled .monitor-tile { border-left-color: var(--neutral-edge) }
+.monitor-list-disabled .tile-status {
+  background: var(--neutral-soft);
+  color: var(--neutral);
 }
 .monitor-list .tile-glance {
   grid-area: glance;
@@ -727,6 +731,11 @@ pre {
     --surface: #121a24;
     --surface-2: #182230;
     --line: #2a384a;
+    --teal-deep: #6fd0de;
+    --clear: #7ee2a4;
+    --warn: #ffd066;
+    --error: #ff8b96;
+    --neutral: #c4cfdb;
     --clear-soft: #10261a;
     --warn-soft: #2b210c;
     --error-soft: #2c1216;
@@ -740,16 +749,36 @@ pre {
   }
   a { color: #6fd0de }
   a:hover { color: #9be3ed }
+  button { background: #0a5c68; border-color: #0a5c68; color: white }
+  button:hover { background: #084851 }
   th { background: #182230 }
   th, td { border-bottom-color: #2a384a }
   .monitor-list { background: #101821 }
   .monitor-list .monitor-tile { border-bottom-color: #243142 }
   .monitor-list [role="listitem"]:nth-child(odd) .monitor-tile { background: #141d28 }
-  .monitor-list .tile-status { background: #1a3a28; color: #7ee2a4 }
+  .monitor-list .tile-status { background: #1a3a28; color: var(--clear) }
+  .monitor-list-disabled .tile-status {
+    background: #2a3340;
+    color: var(--neutral);
+  }
   .def-list { background: #101821 }
   .def-row { border-bottom-color: #243142 }
   .def-list > .def-row:nth-child(odd) { background: #141d28 }
   .def-main h2 { color: var(--ink) }
+  .tile-warning {
+    background: linear-gradient(90deg, var(--warn-soft), #211a0b);
+    border-color: #6f561b;
+  }
+  .tile-error {
+    background: linear-gradient(90deg, var(--error-soft), #241015);
+    border-color: #71313a;
+  }
+  .tile-disabled,
+  .tile-unknown,
+  .tile-config-error {
+    background: linear-gradient(90deg, var(--neutral-soft), #151d27);
+    border-color: #445267;
+  }
   .tile-warning .tile-status { background: #4a3810 }
   .tile-error .tile-status { background: #4a1d24 }
   .tile-disabled .tile-status,

@@ -3,7 +3,7 @@
   <div class="dash-hero-copy">
     <p class="eyebrow">Local host</p>
     <h1 id="dash-title">Dashboard</h1>
-    <p class="lede">{% if status.open_incidents %}{{ status.open_incidents }} live incident{{ '' if status.open_incidents == 1 else 's' }} need a look.{% elif summary.attention_count %}{{ summary.attention_count }} monitor{{ '' if summary.attention_count == 1 else 's' }} need attention; everything else is clear.{% else %}All monitors clear. Last tick {% if status.last_tick_age_s is none %}unknown{% else %}{{ '%.0f'|format(status.last_tick_age_s) }}s ago{% endif %}.{% endif %}</p>
+    <p class="lede">{% if status.open_incidents %}{{ status.open_incidents }} live incident{{ '' if status.open_incidents == 1 else 's' }} need a look.{% elif summary.attention_count %}{{ summary.attention_count }} monitor{{ '' if summary.attention_count == 1 else 's' }} need attention; everything else is clear or intentionally disabled.{% elif summary.disabled_count %}No monitors need attention. {{ summary.clear_count }} clear; {{ summary.disabled_count }} intentionally disabled.{% else %}All monitors clear. Last tick {% if status.last_tick_age_s is none %}unknown{% else %}{{ '%.0f'|format(status.last_tick_age_s) }}s ago{% endif %}.{% endif %}</p>
   </div>
   <section class="health status-strip" aria-label="Daemon health">
     <div class="stat {% if status.open_incidents %}stat-alert{% else %}stat-ok{% endif %}">
@@ -43,6 +43,8 @@
 </article>
 {%- endmacro %}
 {% if attention_tiles %}<h2>Needs attention</h2><div class="tiles tiles-attention">{% for tile in attention_tiles %}{{ render_tile(tile, 'focus') }}{% endfor %}</div>{% endif %}
-{% if clear_tiles %}<section class="section-quiet"><h2>{% if attention_tiles %}All clear{% else %}Monitors{% endif %}</h2><div class="monitor-list" role="list">{% for tile in clear_tiles %}<div role="listitem">{{ render_tile(tile, 'row') }}</div>{% endfor %}</div></section>{% elif not attention_tiles %}<h2>Monitors</h2><p>No monitors configured.</p>{% endif %}
+{% if clear_tiles %}<section class="section-quiet"><h2>{% if attention_tiles %}All clear{% else %}Monitors{% endif %}</h2><div class="monitor-list" role="list">{% for tile in clear_tiles %}<div role="listitem">{{ render_tile(tile, 'row') }}</div>{% endfor %}</div></section>{% endif %}
+{% if disabled_tiles %}<section class="section-quiet"><h2>Disabled</h2><div class="monitor-list monitor-list-disabled" role="list">{% for tile in disabled_tiles %}<div role="listitem">{{ render_tile(tile, 'row') }}</div>{% endfor %}</div></section>{% endif %}
+{% if not attention_tiles and not clear_tiles and not disabled_tiles %}<h2>Monitors</h2><p>No monitors configured.</p>{% endif %}
 {% if config_errors %}<h2>Configuration errors</h2><ul>{% for path,error in config_errors %}<li>{{ path.name }}: {{ error }}</li>{% endfor %}</ul>{% endif %}
 <h2>Open incidents</h2>{% include "incident_rows.html" %}{% endblock %}
