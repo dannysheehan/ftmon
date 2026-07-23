@@ -1,6 +1,8 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.28** — v0.28 hardens the web response boundary, refreshes
+Status: **DRAFT v0.29** — v0.29 keeps churny historical process identities out
+of the Trends entity selector while preserving direct incident and bookmark
+access to their retained history. v0.28 hardens the web response boundary, refreshes
 the remaining operational pages, and makes Metrics baselines unmistakably
 visible (issues #21, #22, #48). v0.27 packages the three MCP authoring guides
 so installed hosts can serve definitions and external-check guidance (issue
@@ -897,8 +899,8 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 ---
 
-- **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
-- **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. It additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric. When CA-05 has a stored row for the selected series, Metrics also reports the current learning level, update-count coverage/readiness and effective half-life, visibly labels the Baseline as `learning` or `ready`, includes every retained baseline value in the chart Y-domain, and overlays only the reconstructable native five-minute baseline points. Consecutive buckets may be joined as clearly distinguishable dashed segments, but gaps larger than five minutes, raw-sample timestamps and hourly interpolation MUST NOT be invented; ranges without retained baseline history show the labelled current state in text without a historical reference line.
+- **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Its entity selector MUST list recently seen active entities rather than every retained historical identity; an explicitly requested historical entity MUST remain selectable so incident links and bookmarks keep working. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
+- **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. Its cascading selectors MUST include only series with observations in the selected range and resolution tier; an explicitly requested persisted series remains selected after its observations expire and renders a textual no-observations state rather than an empty graph or silent fallback. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. It additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric. When CA-05 has a stored row for the selected series, Metrics also reports the current learning level, update-count coverage/readiness and effective half-life, visibly labels the Baseline as `learning` or `ready`, includes every retained baseline value in the chart Y-domain, and overlays only the reconstructable native five-minute baseline points. Consecutive buckets may be joined as clearly distinguishable dashed segments, but gaps larger than five minutes, raw-sample timestamps and hourly interpolation MUST NOT be invented; ranges without retained baseline history show the labelled current state in text without a historical reference line.
 - **UI-14** Every dashboard monitor tile MUST show one accessible health state derived from current configuration, daemon freshness, and live open/acked incidents. Fixed precedence is `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`. States use color plus icon and visible text: grey `? unknown`/`● disabled`, red `✖ error`, yellow `▲ warning`, green `✓ clear`. Acknowledgment does not reduce severity or turn a tile green. Affected tiles show live incident count and link to incidents filtered by monitor; color never flashes or animates.
 - **UI-15** `ftmon web --demo` is a separate public-demonstration mode. It
   opens only a generated, deterministic synthetic database read-only; registers
@@ -1185,6 +1187,16 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.29 (2026-07-23)** — bounds the Trends entity selector under process churn.
+Exited process history remains retained under DM-04 and available through
+incident links, bookmarks, APIs and Metrics, but only recently seen active
+entities plus the explicitly requested historical entity appear in the Trends selector. CA-08
+continues to mark vanished processes gone and clear their live incidents after
+the five-minute grace period; this change fixes discovery rather than deleting
+forensic history or weakening incident retention. Metrics selectors likewise
+show only series with observations in their selected retention tier, replacing
+expired-series empty graphs with an explicit no-observations bookmark state.
 
 **v0.28 (2026-07-19)** — web clarity and response hardening (issues #21, #22,
 #48). The operational and synthetic-demo middleware now share one exact header

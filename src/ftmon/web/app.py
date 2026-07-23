@@ -484,8 +484,9 @@ async def ack(request: Request):
 async def metrics(request: Request):
     """Explore any persisted series with cascading, URL-backed choices (UI-02).
 
-    The database is the catalog: definitions can change while history remains,
-    so selectors must describe queryable series rather than only current TOML.
+    The database is the catalog: definitions can change while history remains.
+    Selectors describe series with observations in this range so stale metadata
+    cannot lead the default path to an empty graph.
     """
     p = request.query_params
     monitor, entity, metric = p.get("monitor"), p.get("entity"), p.get("metric")
@@ -505,10 +506,23 @@ async def metrics(request: Request):
         return Response("Range must be between 15m and 400d", status_code=400)
     now = request.app.state.clock.now()
     with _query(request) as q:
-        choices = [] if q is None else q._conn.execute(
-            "SELECT DISTINCT monitor, entity_id, metric FROM series "
-            "ORDER BY monitor, entity_id, metric"
-        ).fetchall()
+        choices = [] if q is None else list(
+            q.series_catalog(now=now, start=now-seconds, end=now)
+        )
+        # Preserve an exact bookmark after its observations expire; it gets an
+        # honest empty state rather than silently changing the selected series.
+        requested = (monitor, entity, metric)
+        if q is not None and all(requested) and not any(
+            (row["monitor"], row["entity_id"], row["metric"]) == requested
+            for row in choices
+        ):
+            exact = q._conn.execute(
+                "SELECT monitor, entity_id, metric FROM series "
+                "WHERE monitor=? AND entity_id=? AND metric=?",
+                requested,
+            ).fetchone()
+            if exact is not None:
+                choices.append(exact)
         monitors = sorted({row["monitor"] for row in choices})
         monitor = monitor if monitor in monitors else (monitors[0] if monitors else None)
         entities = sorted({row["entity_id"] for row in choices if row["monitor"] == monitor})
@@ -910,9 +924,22 @@ async def trends(request: Request):
     selected = _selected_profile(request, monitor, profile_id)
     mdef, profile = selected if selected else (None, None)
     with _query(request) as q:
+        # `gone_ts` is the lifecycle authority, while recent last_seen also
+        # protects discovery from legacy/null rows left by an earlier daemon
+        # lifetime. Two intervals handles normal scheduling jitter; five
+        # minutes matches CA-08's default disappearance grace.
+        seen_since = end - max(300.0, 2 * mdef.interval_s) if mdef else None
         entities = [] if q is None or mdef is None else [
-            row["entity_id"] for row in q.entities(mdef.name)
+            row["entity_id"]
+            for row in q.entities(mdef.name, alive_only=True, seen_since=seen_since)
         ]
+        # Process history intentionally outlives the process, but putting every
+        # exited identity in the primary selector makes a busy host unusable.
+        # Preserve an explicit incident/bookmark target without advertising the
+        # rest of the historical catalogue; Metrics remains the full-history
+        # diagnostic surface (UI-12/UI-13).
+        if entity and entity not in entities:
+            entities.append(entity)
         entity = entity or (entities[0] if entities else None)
         trend = None if q is None or entity is None or profile is None else q.trend(
             mdef.name, entity, profile, now=end, start=start, end=end,
