@@ -239,6 +239,37 @@ def test_platform_conditionals_only_behind_four_seams_pl_01():
     assert offenders == []
 
 
+def test_daemon_skips_monitor_not_declared_for_running_platform_pl_01(tmp_path):
+    """[PL-01][PL-02] monitor.platforms gates loading, not just its shape."""
+    from ftmon.clock import FakeClock
+    from ftmon.daemon import DaemonCore
+
+    paths = get_paths({
+        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+        "FTMON_DATA_DIR": str(tmp_path / "data"),
+        "FTMON_STATE_DIR": str(tmp_path / "state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
+    })
+    paths.ensure()
+    (paths.monitors_dir / "winonly.toml").write_text("""
+schema = 1
+[monitor]
+name = "winonly"
+description = "windows-only probe"
+version = 1
+platforms = ["windows"]
+interval = "60s"
+source = "system"
+[[rule]]
+id = "r1"
+when = "load1 > 1"
+severity = "warning"
+message = "busy"
+""")
+    core = DaemonCore(paths=paths, clock=FakeClock(wall=1_700_000_000.0, mono=1000.0))
+    assert "winonly" not in core.monitors
+
+
 def test_event_id_is_optional_string_pl_02():
     """[PL-02] Canonical events accept absent identifiers."""
     ev = EventRecord(
