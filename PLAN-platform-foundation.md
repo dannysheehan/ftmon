@@ -42,15 +42,36 @@ there is no spec invention needed for this branch:
 
 ## Foundation branch deliverables (small, mechanical, no new product behavior)
 
-- [ ] Platform-filter at load time: unsupported-platform monitors are
+- [x] Platform-filter at load time: unsupported-platform monitors are
       skipped with a clear reason (mirrors existing `config_error`
       reporting path), covered by a traceability test citing PL-01/PL-02.
-- [ ] One dispatch point (factory function) for `EventSource` and the
+      Landed: `daemon.py::_load_definitions` now checks `mdef.platforms`
+      against `paths.current_platform()` before loading either a sampler or
+      event monitor; test `test_daemon_skips_monitor_not_declared_for_
+      running_platform_pl_01` in `tests/unit/test_m10_release.py`.
+- [x] One dispatch point (factory function) for `EventSource` and the
       notification adapter, keyed off `platform.system()`, with the current
       Linux implementations as the only registered case — this is the seam
       the two platform branches plug into, not a redesign.
-      `notify/desktop.py` should be audited here too (currently assumes
-      `notify-send`/D-Bus per §4.1's Linux row).
+      Landed: `ftmon.sources.event_source_for_platform()` and
+      `ftmon.notify.desktop_notifier_for_platform()`, both returning `None`
+      on unregistered platforms (already-handled code path on both call
+      sites, not new fallback logic). `daemon.py` no longer imports
+      `JournaldEventSource`/`DesktopNotifier` directly.
+- [x] The three confirmed Windows-spike blockers, fixed at the seam:
+      `paths.py::atomic_write`'s `os.fchmod` is now `hasattr`-guarded
+      (POSIX-only call); `daemon.py`'s module-level `import fcntl` is gone,
+      replaced by `paths.try_lock_exclusive()` (POSIX `fcntl.flock` /
+      Windows `msvcrt.locking`, both raising/returning the same
+      True/False contract so the call site stays platform-agnostic); and
+      `daemon.py::run()`'s `signal.SIGHUP` registration (no Windows
+      equivalent) is now `hasattr`-guarded — found while fixing the fcntl
+      crash, not in the original spike notes, since the daemon never got
+      far enough to hit it there. The real Windows reload primitive (named
+      Win32 Event, spiked and confirmed on `feature/windows-support`) still
+      needs to be wired up on that branch; this just stops the crash.
+      All still gated behind `test_platform_conditionals_only_behind_four_
+      seams_pl_01`'s source-tree scan (`paths.py` is an allowed file).
 - [ ] CI: add `windows-latest`/`macos-latest` jobs that at minimum run
       `uv sync` + import smoke (`paths.py`, `platformdirs` resolution) —
       expected to fail loudly on anything Linux-specific we missed above.

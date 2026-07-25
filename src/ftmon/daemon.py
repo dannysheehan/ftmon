@@ -13,7 +13,6 @@ milestone plan, not oversight.
 
 from __future__ import annotations
 
-import fcntl
 import sqlite3
 import sys
 from dataclasses import dataclass, field
@@ -37,7 +36,7 @@ from ftmon.engine.scheduler import DueTable, Scheduler
 from ftmon.model import EventRecord, GroupState, IncidentCore, RungState
 from ftmon.notify import FileNotifier, NtfyNotifier, SmtpNotifier, WebhookNotifier
 from ftmon.notify.base import DeliveryError, Notifier
-from ftmon.paths import Paths, get_paths
+from ftmon.paths import Paths, current_platform, get_paths
 from ftmon.selfmon import SelfSampler, SelfStats
 from ftmon.sources.base import EventSource
 from ftmon.sources.disk import DiskSampler
@@ -169,10 +168,10 @@ class DaemonCore:
         notifiers: list[Notifier] = [FileNotifier(self.paths.notifications_file)]
         desktop = config.channel("desktop")
         if desktop is not None and desktop.enabled:
-            from ftmon.notify import DesktopNotifier
+            from ftmon.notify import desktop_notifier_for_platform
 
-            desktop_notifier = DesktopNotifier()
-            if desktop_notifier.available:
+            desktop_notifier = desktop_notifier_for_platform()
+            if desktop_notifier is not None and desktop_notifier.available:
                 notifiers.append(desktop_notifier)
             else:
                 print("config warning: [notify.desktop] desktop_unavailable; "
@@ -311,9 +310,21 @@ class DaemonCore:
             # daemon itself must keep running (PM-04).
             print(f"config_error: {path}: {err}", file=sys.stderr)
             self.stats.count("config_errors")
+        running_platform = current_platform()
         seen = set()
         for mdef in defs:
             seen.add(mdef.name)
+            if running_platform not in mdef.platforms:
+                # PL-01/PL-02: declared but unenforced was the actual gap —
+                # a monitor's platforms list must gate loading, not just
+                # validate as a well-formed subset of schema.PLATFORMS.
+                if initial:
+                    print(
+                        f"monitor {mdef.name}: not applicable on platform "
+                        f"{running_platform!r} (declares {sorted(mdef.platforms)}); skipped",
+                        file=sys.stderr,
+                    )
+                continue
             if mdef.source == "events":
                 # Event monitors have no sampler/rings/schedule: the event
                 # engine consumes them every tick against the live stream.
@@ -640,10 +651,10 @@ def run(args) -> int:
     paths = get_paths()
     paths.ensure()
 
+    from ftmon.paths import try_lock_exclusive
+
     lock_file = open(paths.lock_file, "w")  # noqa: SIM115 - held for process lifetime
-    try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    if not try_lock_exclusive(lock_file):
         print("ftmon daemon already running (lock held); exiting", file=sys.stderr)
         return 1
     # CL-07: `ftmon monitor rescan` signals this pid. The flock, not the pid
@@ -669,9 +680,9 @@ def run(args) -> int:
         event_source: EventSource | None = (
             fixtures.FixtureEventSource(scn) if scn.events else None)
     else:
-        from ftmon.sources.journald import JournaldEventSource
+        from ftmon.sources import event_source_for_platform
 
-        event_source = JournaldEventSource()
+        event_source = event_source_for_platform()
 
     core = DaemonCore(
         paths=paths,
@@ -699,7 +710,8 @@ def run(args) -> int:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    signal.signal(signal.SIGHUP, _reload)
+    if hasattr(signal, "SIGHUP"):  # POSIX only; no reload signal on Windows
+        signal.signal(signal.SIGHUP, _reload)
 
     tick_s = core.config.tick_seconds if core.config else 5.0
     total = len(core.monitors) + len(core.event_monitors)

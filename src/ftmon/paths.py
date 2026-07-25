@@ -2,11 +2,17 @@
 
 Nothing else in ftmon may construct config/data/state paths. Tests override
 via FTMON_* environment variables (set before first get_paths() call).
+
+Also the PL-01 home for the other OS-identity primitives that don't warrant
+their own seam module: which platform is running (`current_platform`) and
+the PM-02 single-instance lock (`try_lock_exclusive`), both platform-specific
+but not one of the four named seams.
 """
 
 from __future__ import annotations
 
 import os
+import platform
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +20,34 @@ from pathlib import Path
 import platformdirs
 
 _APP = "ftmon"
+
+
+def current_platform() -> str:
+    """`platform.system()` ("Linux"/"Windows"/"Darwin") lowercased to exactly
+    the `monitor.platforms` vocabulary (PL-02, schema.PLATFORMS)."""
+    return platform.system().lower()
+
+
+def try_lock_exclusive(file) -> bool:
+    """PM-02 single-instance lock, platform seam: True if this process now
+    holds the exclusive advisory lock, False if another process holds it.
+    `fcntl`/`msvcrt` are imported locally so this module stays importable on
+    every platform regardless of which branch runs (PL-01)."""
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+    else:
+        import fcntl
+
+        try:
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -78,7 +112,8 @@ def atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
-        os.fchmod(fd, mode)
+        if hasattr(os, "fchmod"):  # POSIX only; Windows has no bit mode to set
+            os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
