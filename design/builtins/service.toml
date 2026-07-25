@@ -8,7 +8,7 @@ name = "service"
 description = "Watchdog for systemd units and expected processes"
 version = 1
 enabled = true
-platforms = ["linux"]
+platforms = ["linux", "windows"]
 interval = "60s"
 source = "unit"
 

@@ -59,7 +59,9 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
         metrics=(
             _m("cpu_pct", "%", "gauge", "CPU percent of one core since last sample"),
             _m("rss_bytes", "bytes", "gauge", "Resident set size"),
-            _m("num_fds", "count", "gauge", "Open file descriptors (may be None unprivileged)"),
+            _m("num_fds", "count", "gauge",
+               "Open file descriptors (None if unprivileged, or unsupported -- no Windows "
+               "equivalent exists)"),
             _m("num_threads", "count", "gauge", "Thread count"),
             _m("io_read_bytes", "bytes", "counter", "Cumulative bytes read (may be None)"),
             _m("io_write_bytes", "bytes", "counter", "Cumulative bytes written (may be None)"),

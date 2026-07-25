@@ -11,7 +11,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from ftmon.checks.model import CheckSpec
-from ftmon.checks.trust import trusted_owner
+from ftmon.checks.trust import trusted_owner, writable_beyond_owner
 from ftmon.definitions.schema import valid_name
 from ftmon.expr import ExprSyntaxError, parse_duration
 from ftmon.paths import Paths
@@ -59,7 +59,9 @@ def _regular_protected(path: Path, category: str, *, executable: bool = False) -
         raise RegistryError(category) from exc
     if not stat.S_ISREG(info.st_mode) or path.is_symlink():
         raise RegistryError(category)
-    if not trusted_owner(path, info, system_executable=executable) or info.st_mode & 0o022:
+    if not trusted_owner(path, info, system_executable=executable) or writable_beyond_owner(
+        path, info
+    ):
         raise RegistryError(category)
     return info
 
@@ -73,7 +75,7 @@ def _validate_registry_file(path: Path) -> None:
         parent = path.parent.lstat()
     except OSError as exc:
         raise RegistryError("registry_untrusted") from exc
-    if not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o022:
+    if not stat.S_ISDIR(parent.st_mode) or writable_beyond_owner(path.parent, parent):
         raise RegistryError("registry_untrusted")
 
 

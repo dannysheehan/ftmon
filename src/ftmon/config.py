@@ -21,6 +21,8 @@ from datetime import datetime, tzinfo
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from ftmon.checks.trust import accessible_beyond_owner, owned_by_self
+
 __all__ = [
     "AppConfig", "ChannelConfig", "QuietHours", "SecretRef", "SecretValue",
     "load_config", "parse_hhmm",
@@ -90,9 +92,9 @@ class SecretRef:
                 raise ValueError(f"secret credential file is not a regular file: {path}")
             if info.st_size > 8192:
                 raise ValueError(f"secret credential file exceeds 8 KiB: {path}")
-            if info.st_uid != os.geteuid():
+            if not owned_by_self(path, info):
                 raise ValueError(f"secret credential file is not owned by this account: {path}")
-            if stat.S_IMODE(info.st_mode) & 0o077:
+            if accessible_beyond_owner(path, info):
                 raise ValueError(
                     f"secret credential file must not be group/world accessible: {path}"
                 )

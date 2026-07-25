@@ -81,9 +81,12 @@ class DiskSampler:
         """Calculate inode usage percentage for a mount.
 
         Uses os.statvfs to get inode counts. Returns None if:
+        - os.statvfs doesn't exist (Windows/NTFS has no POSIX inode concept)
         - os.statvfs fails
         - f_files is 0 (filesystem doesn't support inode counting)
         """
+        if not hasattr(os, "statvfs"):
+            return None
         try:
             stat = os.statvfs(mountpoint)
             if stat.f_files == 0:

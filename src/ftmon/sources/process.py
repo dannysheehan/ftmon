@@ -129,10 +129,14 @@ class ProcessSampler:
         rss = _opt(lambda: proc.memory_info().rss)
         if rss is not None:
             metrics["rss_bytes"] = float(rss)  # type: ignore[arg-type]
-        for metric_name, read in (
-            ("num_fds", proc.num_fds),
-            ("num_threads", proc.num_threads),
-        ):
+        # num_fds doesn't exist on Windows psutil at all -- not "denied",
+        # genuinely absent (PL-01), so it's excluded before _opt ever runs;
+        # referencing the bound method itself (not just calling it) is what
+        # raises AttributeError there, which _opt's try/except never reaches.
+        reads: list[tuple[str, Callable[[], object]]] = [("num_threads", proc.num_threads)]
+        if hasattr(proc, "num_fds"):
+            reads.insert(0, ("num_fds", proc.num_fds))
+        for metric_name, read in reads:
             value = _opt(read)
             if value is not None:
                 metrics[metric_name] = float(value)  # type: ignore[arg-type]

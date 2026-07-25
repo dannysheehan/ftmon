@@ -9,7 +9,7 @@ name = "load"
 description = "System-wide CPU/memory/IO pressure and swap growth"
 version = 2
 enabled = true
-platforms = ["linux"]
+platforms = ["linux", "windows"]
 interval = "60s"
 source = "system"
 

@@ -24,7 +24,10 @@ def _builtin_monitors_source(profile: str):
     """Return a Path or Traversable directory of monitor TOML to install (FS-02).
 
     Desktop profile installs calibrated copies from profile/desktop; server
-    profile keeps the normative design/builtins defaults.
+    and windowsdesktop both keep the normative design/builtins defaults --
+    windowsdesktop has no calibrated tree of its own yet (no tuning data the
+    way profile/desktop's GNOME numbers have docs/tuning-desktop-xps15.md
+    behind them), it only changes _default_config_toml's channel defaults.
     """
     if profile == "desktop":
         try:
@@ -61,7 +64,7 @@ def _builtin_monitors_source(profile: str):
 
 def _default_config_toml(profile: str = "desktop") -> str:
     """Explicit profile scaffold (PM-08); no runtime profile switch remains."""
-    desktop_enabled = "true" if profile == "desktop" else "false"
+    desktop_enabled = "true" if profile in ("desktop", "windowsdesktop") else "false"
     return f"""\
 # FTMON v2 configuration
 # See docs/definitions.md for monitor setup; this file covers daemon behavior.
@@ -752,9 +755,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             else "ready" if channel.enabled else "disabled"
         )
         if name == "desktop" and status == "ready":
-            from ftmon.notify import DesktopNotifier
+            from ftmon.notify import desktop_notifier_for_platform
 
-            if not DesktopNotifier().available:
+            notifier = desktop_notifier_for_platform()
+            if notifier is None or not notifier.available:
                 status = "error (desktop_unavailable)"
         print(f"Notification {name}: {status}")
     for error in config_errors:
@@ -859,8 +863,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Re-install builtins (does not touch user config)"
     )
     init_parser.add_argument(
-        "--profile", choices=("desktop", "server"), default="desktop",
-        help="Write explicit desktop or server defaults (default: desktop)",
+        "--profile", choices=("desktop", "server", "windowsdesktop"), default="desktop",
+        help="Write explicit desktop, server, or windowsdesktop defaults (default: desktop)",
     )
 
     # check

@@ -84,6 +84,19 @@ class TestInit:
         assert "[notify.ntfy]" in content
         assert "# token_env = \"FTMON_NTFY_TOKEN\"" in content
 
+    def test_windowsdesktop_profile_enables_desktop_like_desktop_pm_08(
+        self, tmp_path, monkeypatch
+    ):
+        """[PM-08] windowsdesktop gets desktop-shaped notification defaults
+        (toast) but server-shaped monitor selection -- no calibrated
+        definitions exist for it yet, unlike the GNOME desktop profile."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "windowsdesktop"]) == 0
+        content = (tmp_path / "cfg" / "config.toml").read_text()
+        assert "Generated for the windowsdesktop profile" in content
+        desktop = content.split("[notify.desktop]", 1)[1].split("[", 1)[0]
+        assert "enabled = true" in desktop
+
     def test_init_does_not_overwrite_config(self, tmp_path, monkeypatch):
         """[FS-02] init writes config.toml only if absent."""
         setup_env(tmp_path, monkeypatch)
@@ -337,6 +350,41 @@ class TestStatus:
             assert "status" in obj or "message" in obj
         except json.JSONDecodeError:
             pytest.fail(f"status --json did not output valid JSON: {captured.out}")
+
+
+class TestDoctor:
+    """[CL-05][PL-01] ftmon doctor subcommand."""
+
+    def test_desktop_channel_status_uses_platform_dispatch_not_linux_hardcode(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """[PL-01] doctor's desktop-channel readiness must go through
+        desktop_notifier_for_platform(), not a hardcoded DesktopNotifier() --
+        found via a real Windows daemon reporting desktop_unavailable while
+        the actual (Windows) notifier was available."""
+        def seed(conn):
+            pass
+
+        _seed_db(tmp_path, monkeypatch, seed)
+        assert main(["init", "--profile", "desktop"]) == 0
+
+        class _FakeUnavailable:
+            available = False
+
+        class _FakeAvailable:
+            available = True
+
+        monkeypatch.setattr(
+            "ftmon.notify.desktop_notifier_for_platform", lambda: _FakeUnavailable(),
+        )
+        main(["doctor"])
+        assert "Notification desktop: error (desktop_unavailable)" in capsys.readouterr().out
+
+        monkeypatch.setattr(
+            "ftmon.notify.desktop_notifier_for_platform", lambda: _FakeAvailable(),
+        )
+        main(["doctor"])
+        assert "Notification desktop: ready" in capsys.readouterr().out
 
 
 class TestMonitors:

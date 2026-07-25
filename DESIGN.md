@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.14**. Companion to `SPEC.md` v0.29 — every design element
+Status: **DRAFT v0.15**. Companion to `SPEC.md` v0.30 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -252,9 +252,12 @@ owned by the service account and not group/world-readable, and has surrounding
 ASCII whitespace stripped. Environment and file forms are mutually exclusive.
 Literal `token`, `password`, or webhook `url` keys are rejected rather than
 deprecated, because silently accepting them would defeat SE-05. The generated
-desktop profile writes desktop enabled; the server profile writes it disabled.
-Profile effects are visible text in the generated file and disappear as a
-runtime concept after initialization.
+desktop and windowsdesktop profiles write desktop enabled; the server profile
+writes it disabled. windowsdesktop otherwise installs the same monitor
+selection as server (`cli.py::_builtin_monitors_source`) — only the channel
+default differs; there is no Windows-calibrated definition tree the way
+profile/desktop's GNOME tuning exists. Profile effects are visible text in
+the generated file and disappear as a runtime concept after initialization.
 
 M9 provides `Paths.check_registry_file`. It defaults to private
 `config_dir/checks.toml` for the desktop/single-user trust model. The hardened
@@ -280,6 +283,31 @@ files and paths under data/state/runtime, and records only a stable readiness
 category. The registry object, not raw TOML, is passed to `ExternalSampler`.
 Config reload swaps the complete object only after validation; failure retains
 the previous object (EC-01/06/08, SE-07).
+
+`checks/trust.py` is the single evaluator behind all of this — ownership
+(`trusted_owner`/`owned_by_self`) and writability
+(`writable_beyond_owner`/`accessible_beyond_owner`) each have one
+implementation shared by the registry loader, the external-check runner's
+pre-launch revalidation, config.py's SE-04 secret-credential-file check, and
+web/demo_app.py's SE-06 demo-database check — a second copy of the predicate
+anywhere would let one caller's notion of "trusted" drift from another's,
+exactly the TOCTOU-adjacent failure SE-07 calls out. On POSIX this is the
+familiar `uid in {0, os.geteuid()}` plus `st_mode & (S_IWGRP|S_IWOTH)`. On
+Windows, which has neither a real uid (`os.stat().st_uid` is always 0 there)
+nor meaningful mode bits (`st_mode`'s write bits are a fixed synthesized
+value, not real permissions), the same two questions are answered with the
+Win32 security APIs instead: `trusted_owner` compares the file's owner SID
+(`GetFileSecurity` + `GetSecurityDescriptorOwner`) against the current
+process token's user SID (`OpenProcessToken` + `GetTokenInformation`,
+`TokenUser`), treating the well-known SYSTEM and Administrators SIDs
+(`CreateWellKnownSid`) as the Windows analogue of POSIX root; the
+writability checks walk the file's DACL (`GetSecurityDescriptorDacl`/
+`GetAce`) and fail if any `ACCESS_ALLOWED` entry grants a write-capable (or,
+for the stricter secrets check, any) right to a trustee outside that same
+owner/SYSTEM/Administrators set. An unreadable ACL fails closed. The
+Linux-only `masked_system_executable` escape hatch (NoNewPrivileges masking
+distro plugin ownership to an overflow uid) has no Windows counterpart —
+it is a narrow systemd sandboxing workaround, not a general rule.
 
 There is deliberately no environment table. A generic secret-to-environment
 feature would make process output, diagnostics and third-party behavior part of

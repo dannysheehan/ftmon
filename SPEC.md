@@ -1,6 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.29** — v0.29 keeps churny historical process identities out
+Status: **DRAFT v0.30** — v0.30 adds the `windowsdesktop` init profile (PM-08)
+and gives EC-01/SE-07's ownership/writability trust check a real Windows ACL
+equivalent (owner SID + DACL walk in place of POSIX uid/mode bits) so the
+check registry, external-check runner, secret-credential files (SE-04), and
+the demo database (SE-06) all enforce their existing trust contract on
+Windows instead of only on POSIX. v0.29 keeps churny historical process identities out
 of the Trends entity selector while preserving direct incident and bookmark
 access to their retained history. v0.28 hardens the web response boundary, refreshes
 the remaining operational pages, and makes Metrics baselines unmistakably
@@ -170,12 +175,16 @@ These were decided during specification and are not open for re-litigation by im
 - **PM-05** MCP transport is **stdio only** in v1. The web UI binds **127.0.0.1** only, default port 8420, configurable. No other sockets are opened.
 - **PM-06** Definition-file coordination rules, binding on every process that writes to the config tree: (a) all writes are atomic — write to a temp file in the same directory, fsync, `rename()`; (b) directories 0700, files 0600 at creation; (c) symlinked definition files are rejected at load with a config_error; (d) approval (`drafts/x.toml` → `monitors/x.toml`) re-validates then renames atomically, and fails if the target exists; (e) concurrent writers are resolved last-write-wins — acceptable for a single-user tool — but every load path re-validates, so a torn outcome is at worst a config_error, never a partial load.
 - **PM-07** On each successful load, the daemon persists the monitor's normalized definition, content hash, and load timestamp in the DB. This is the substrate for change detection (PM-04), `get_monitor` history, and MD-06 — not a fallback config store (see PM-04).
-- **PM-08** `ftmon init --profile desktop|server` writes explicit initial
-  settings; the profile is scaffolding, not a permanent hidden behavior switch.
-  `desktop` enables the file and desktop channels. `server` enables the file
-  channel only, disables desktop delivery, and documents remote-channel setup.
-  Existing configuration is never rewritten; `--force` continues to reinstall
-  built-in monitor definitions only (FS-02), not user settings.
+- **PM-08** `ftmon init --profile desktop|server|windowsdesktop` writes explicit
+  initial settings; the profile is scaffolding, not a permanent hidden behavior
+  switch. `desktop` enables the file and desktop channels. `server` enables the
+  file channel only, disables desktop delivery, and documents remote-channel
+  setup. `windowsdesktop` enables the file and desktop (toast) channels like
+  `desktop`, but installs the same monitor selection `server` does — no
+  Windows-calibrated definitions exist yet, so it exists to get sane
+  notification defaults on Windows without fabricating tuning data. Existing
+  configuration is never rewritten; `--force` continues to reinstall built-in
+  monitor definitions only (FS-02), not user settings.
 - **PM-09** The supported server deployment runs the daemon as a dedicated
   unprivileged account or the administrator's ordinary account. It MUST NOT run
   as root. The normal web process remains on loopback; remote operational access
@@ -1187,6 +1196,26 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.30 (2026-07-25)** — Windows implementation: adds the `windowsdesktop`
+init profile (PM-08) so Windows users get sane desktop-notification defaults
+without fabricated calibration data standing in for the GNOME `desktop`
+profile's real tuning. Gives EC-01/SE-07's ownership and writability trust
+check a real Windows ACL equivalent (file owner SID compared against the
+current process token, DACL walked for grants beyond owner/SYSTEM/
+Administrators) in place of the POSIX uid/mode-bit check it previously only
+had — the check registry, external-check runner, SE-04 secret-credential
+files, and the SE-06 demo database all share this one evaluator on both
+platforms, so the trust contract cannot diverge between them. Windows
+Event Log (`win32evtlog.EvtSubscribe`), toast notifications
+(`windows-toasts`), and a named Win32 Event as the PM-11 reload-equivalent
+(no `SIGHUP` on Windows) fill the three platform seams PL-01 already
+reserved; the built-in `disk`/`hog`/`leak`/`load`/`net`/`service`/`events`
+monitors are enabled on Windows now that their samplers (already
+psutil-based) and event source have real implementations behind them, and
+`service`'s `{unit=...}` watchlist kind gains a Windows Service Manager
+backend alongside its existing systemd one (no restart-count metric there —
+no single queryable counter exists the way `systemctl`'s `NRestarts` does).
 
 **v0.29 (2026-07-23)** — bounds the Trends entity selector under process churn.
 Exited process history remains retained under DM-04 and available through

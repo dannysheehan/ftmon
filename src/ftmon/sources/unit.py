@@ -12,6 +12,16 @@ handful of watchlist entries at 60 s), and it works identically for system
 and --user units without a dbus binding. The exec is injected (run_cmd) so
 tests supply canned output instead of needing systemd in CI (TS-02).
 
+Windows has no `systemctl`; `_query_windows_service` queries the Service
+Control Manager instead (`win32serviceutil.QueryServiceStatus`) but returns
+the *same* `ActiveState=...` text contract `_systemctl_show` does, so
+`_sample_unit`'s parsing stays platform-neutral -- only the two leaf
+functions differ, selected by `_default_run_cmd`. There is no Windows
+equivalent of `NRestarts` (no single queryable restart counter the way
+systemd exposes one) -- omitted, same "None where unsupported" precedent as
+system.py's PSI metrics; a `{unit=...}` watchlist entry's `flapping` rule
+simply never fires on Windows rather than reporting something invented.
+
 The optional `during = "HH:MM-HH:MM"` field scopes *when the check applies*:
 outside the window the entity reports present=1 (a backup service is
 supposed to be dead at noon — that's health, not failure).
@@ -19,6 +29,7 @@ supposed to be dead at noon — that's health, not failure).
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections.abc import Callable, Mapping
@@ -34,9 +45,9 @@ from ftmon.sources.base import SOURCE_DECLS
 
 
 def _systemctl_show(unit: str) -> str:
-    """Default run_cmd: `systemctl show` never fails for unknown units (it
-    reports ActiveState=inactive), so a typo'd watchlist entry alerts as
-    down instead of crashing the sampler (PL-03)."""
+    """`systemctl show` never fails for unknown units (it reports
+    ActiveState=inactive), so a typo'd watchlist entry alerts as down
+    instead of crashing the sampler (PL-03)."""
     try:
         return subprocess.run(
             ["systemctl", "show", unit, "--property=ActiveState,NRestarts",
@@ -47,11 +58,32 @@ def _systemctl_show(unit: str) -> str:
         return ""
 
 
+def _query_windows_service(unit: str) -> str:
+    """Windows counterpart of _systemctl_show: same ActiveState=... text
+    contract, no NRestarts (see module docstring). An unknown service name
+    reports inactive rather than raising, same PL-03 posture as the
+    systemctl path."""
+    import pywintypes
+    import win32service
+    import win32serviceutil
+
+    try:
+        status = win32serviceutil.QueryServiceStatus(unit)
+    except pywintypes.error:
+        return "ActiveState=inactive"
+    active = "active" if status[1] == win32service.SERVICE_RUNNING else "inactive"
+    return f"ActiveState={active}"
+
+
+def _default_run_cmd(unit: str) -> str:
+    return _query_windows_service(unit) if os.name == "nt" else _systemctl_show(unit)
+
+
 class UnitSampler:
     decl: ClassVar[SourceDecl] = SOURCE_DECLS["unit"]
 
     def __init__(self, clock: Clock,
-                 run_cmd: Callable[[str], str] = _systemctl_show) -> None:
+                 run_cmd: Callable[[str], str] = _default_run_cmd) -> None:
         self._clock = clock
         self._run_cmd = run_cmd
 
