@@ -589,38 +589,36 @@ def cmd_paths(args: argparse.Namespace) -> int:
 
 
 def _monitor_rescan(paths) -> int:
-    """CL-07: SIGHUP the daemon recorded in the PM-02 lock file. Acquiring
-    the flock proves no daemon holds it — never signal a stale pid."""
-    import fcntl
-    import os
-    import signal
+    """CL-07: signal the daemon recorded in the PM-02 lock file to reload
+    (SIGHUP on POSIX, a named Event on Windows — paths.signal_reload).
+    Acquiring the lock proves no daemon holds it — never signal a stale pid."""
+    from ftmon.paths import signal_reload, try_lock_exclusive
 
     try:
-        f = open(paths.lock_file)
+        # "r+": msvcrt.locking (Windows side of try_lock_exclusive) needs a
+        # write-permitted mode or it fails with EACCES regardless of whether
+        # anyone else holds the lock — plain "r" would misreport as busy.
+        f = open(paths.lock_file, "r+")
     except OSError:
         print("daemon not running (no lock file); start it with `ftmon daemon`",
               file=sys.stderr)
         return 1
     with f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if try_lock_exclusive(f):
             print("daemon not running (lock not held); start it with "
                   "`ftmon daemon`", file=sys.stderr)
             return 1
-        except BlockingIOError:
-            pass
         pid_text = f.read().strip()
     if not pid_text.isdigit():
         print("daemon lock held but no pid recorded — daemon predates "
               "CL-07; send SIGHUP manually or restart it", file=sys.stderr)
         return 1
     try:
-        os.kill(int(pid_text), signal.SIGHUP)
+        signal_reload(int(pid_text))
     except (ProcessLookupError, PermissionError) as exc:
         print(f"cannot signal daemon pid {pid_text}: {exc}", file=sys.stderr)
         return 1
-    print(f"reload requested (SIGHUP to pid {pid_text}); "
-          "applied at the next tick")
+    print(f"reload requested (pid {pid_text}); applied at the next tick")
     return 0
 
 
