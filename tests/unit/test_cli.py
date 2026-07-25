@@ -84,18 +84,70 @@ class TestInit:
         assert "[notify.ntfy]" in content
         assert "# token_env = \"FTMON_NTFY_TOKEN\"" in content
 
-    def test_windowsdesktop_profile_enables_desktop_like_desktop_pm_08(
-        self, tmp_path, monkeypatch
-    ):
-        """[PM-08] windowsdesktop gets desktop-shaped notification defaults
-        (toast) but server-shaped monitor selection -- no calibrated
-        definitions exist for it yet, unlike the GNOME desktop profile."""
+    def test_windesktop_profile_enables_desktop_channel_pm_08(self, tmp_path, monkeypatch):
+        """[PM-08] windesktop gets desktop-shaped (toast) notification
+        defaults, like the GNOME desktop profile."""
         setup_env(tmp_path, monkeypatch)
-        assert main(["init", "--profile", "windowsdesktop"]) == 0
+        assert main(["init", "--profile", "windesktop"]) == 0
         content = (tmp_path / "cfg" / "config.toml").read_text()
-        assert "Generated for the windowsdesktop profile" in content
+        assert "Generated for the windesktop profile" in content
         desktop = content.split("[notify.desktop]", 1)[1].split("[", 1)[0]
         assert "enabled = true" in desktop
+
+    def test_winserver_profile_disables_desktop_channel_pm_08(self, tmp_path, monkeypatch):
+        """[PM-08] winserver gets server-shaped notification defaults."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "winserver"]) == 0
+        content = (tmp_path / "cfg" / "config.toml").read_text()
+        assert "Generated for the winserver profile" in content
+        desktop = content.split("[notify.desktop]", 1)[1].split("[", 1)[0]
+        assert "enabled = false" in desktop
+
+    def test_windesktop_and_winserver_share_one_monitor_tree_pm_08(self):
+        """[PM-08] No Windows tuning data exists to justify two separate
+        calibrated trees -- both profiles resolve to the same source."""
+        from ftmon.cli import _builtin_monitors_source
+
+        assert _builtin_monitors_source("windesktop") == _builtin_monitors_source(
+            "winserver"
+        )
+
+    def test_windows_profile_installs_the_calibrated_windows_tree_pm_08(
+        self, tmp_path, monkeypatch
+    ):
+        """[PM-08] Installed-artifact check, not just source-path equality:
+        the bytes actually written to disk must match profile/windows/,
+        with all 8 files present and each declaring platforms=["windows"]
+        only (except self, which stays multi-platform -- RB-02)."""
+        import tomllib
+        from pathlib import Path
+
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "windesktop"]) == 0
+
+        monitors_dir = tmp_path / "cfg" / "monitors"
+        installed = {f.name: f for f in monitors_dir.glob("*.toml")}
+        expected_names = {
+            "disk.toml", "events.toml", "hog.toml", "leak.toml",
+            "load.toml", "net.toml", "self.toml", "service.toml",
+        }
+        assert set(installed) == expected_names
+
+        source_dir = (
+            Path(__file__).resolve().parents[2]
+            / "src" / "ftmon" / "definitions" / "profile" / "windows"
+        )
+        for name, installed_path in installed.items():
+            source_bytes = (source_dir / name).read_bytes()
+            assert installed_path.read_bytes() == source_bytes, (
+                f"{name}: installed bytes don't match profile/windows source"
+            )
+            parsed = tomllib.loads(installed_path.read_text(encoding="utf-8"))
+            platforms = tuple(parsed["monitor"]["platforms"])
+            if name == "self.toml":
+                assert platforms == ("linux", "windows", "darwin")
+            else:
+                assert platforms == ("windows",), f"{name}: platforms={platforms}"
 
     def test_init_does_not_overwrite_config(self, tmp_path, monkeypatch):
         """[FS-02] init writes config.toml only if absent."""

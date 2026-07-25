@@ -1,6 +1,13 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.30** — v0.30 adds the `windowsdesktop` init profile (PM-08)
+Status: **DRAFT v0.31** — v0.31 replaces the `windowsdesktop` placeholder
+profile with `windesktop`/`winserver` (PM-08), sharing one Windows-adapted
+monitor tree that drops rules dead on Windows by construction (an
+inode-based ladder — NTFS has no POSIX inode concept — and a
+journald-provider-gated OOM rule) rather than leaving them silently
+inert; `load`'s PSI-gated rules are deliberately left unchanged, since
+§7.7.5 already specifies "absent, not replaced by an inferred metric" for
+exactly this case. v0.30 adds the `windowsdesktop` init profile (PM-08)
 and gives EC-01/SE-07's ownership/writability trust check a real Windows ACL
 equivalent (owner SID + DACL walk in place of POSIX uid/mode bits) so the
 check registry, external-check runner, secret-credential files (SE-04), and
@@ -175,16 +182,22 @@ These were decided during specification and are not open for re-litigation by im
 - **PM-05** MCP transport is **stdio only** in v1. The web UI binds **127.0.0.1** only, default port 8420, configurable. No other sockets are opened.
 - **PM-06** Definition-file coordination rules, binding on every process that writes to the config tree: (a) all writes are atomic — write to a temp file in the same directory, fsync, `rename()`; (b) directories 0700, files 0600 at creation; (c) symlinked definition files are rejected at load with a config_error; (d) approval (`drafts/x.toml` → `monitors/x.toml`) re-validates then renames atomically, and fails if the target exists; (e) concurrent writers are resolved last-write-wins — acceptable for a single-user tool — but every load path re-validates, so a torn outcome is at worst a config_error, never a partial load.
 - **PM-07** On each successful load, the daemon persists the monitor's normalized definition, content hash, and load timestamp in the DB. This is the substrate for change detection (PM-04), `get_monitor` history, and MD-06 — not a fallback config store (see PM-04).
-- **PM-08** `ftmon init --profile desktop|server|windowsdesktop` writes explicit
-  initial settings; the profile is scaffolding, not a permanent hidden behavior
-  switch. `desktop` enables the file and desktop channels. `server` enables the
-  file channel only, disables desktop delivery, and documents remote-channel
-  setup. `windowsdesktop` enables the file and desktop (toast) channels like
-  `desktop`, but installs the same monitor selection `server` does — no
-  Windows-calibrated definitions exist yet, so it exists to get sane
-  notification defaults on Windows without fabricating tuning data. Existing
-  configuration is never rewritten; `--force` continues to reinstall built-in
-  monitor definitions only (FS-02), not user settings.
+- **PM-08** `ftmon init --profile desktop|server|windesktop|winserver` writes
+  explicit initial settings; the profile is scaffolding, not a permanent
+  hidden behavior switch. `desktop` enables the file and desktop channels,
+  installing GNOME-calibrated monitor definitions (real host-tuning data,
+  `docs/tuning-desktop-xps15.md`). `server` enables the file channel only,
+  disables desktop delivery, and documents remote-channel setup, installing
+  the normative uncalibrated definitions. `windesktop` and `winserver` share
+  one Windows monitor tree — not host-tuning data, but OS-semantic fixes: an
+  inode-based rule ladder and a journald-provider-gated event rule are
+  dropped because they are dead on Windows by construction (NTFS has no
+  POSIX inodes; no Windows Event Log provider is ever named `"kernel"`),
+  not because of any threshold tuning. `windesktop` enables the file and
+  desktop (toast) channels like `desktop`; `winserver` enables the file
+  channel only, like `server`. Existing configuration is never rewritten;
+  `--force` continues to reinstall built-in monitor definitions only
+  (FS-02), not user settings.
 - **PM-09** The supported server deployment runs the daemon as a dedicated
   unprivileged account or the administrator's ordinary account. It MUST NOT run
   as root. The normal web process remains on loopback; remote operational access
@@ -650,10 +663,10 @@ Metrics: `rss_bytes` (+ derived `rss_slope_bph` = slope in bytes/hour). Promotio
 Metrics: `cpu_pct`. Rules (group `hog`): warning when `avg(cpu_pct, "5m") > 80` for `confirm_cycles = 5`; error rung at `avg(cpu_pct, "15m") > 90`. Default exempt examples (commented): `matches(name, "^(cc1|rustc|ld|clang|make|cargo|ffmpeg)")`. Glance: maximum five-minute CPU average with only its matching warning parameter; the fifteen-minute error threshold MUST NOT be presented as though it applied to that value.
 
 #### 7.7.3 `events` — journal/event-log entries of interest
-Consumes the event stream; rules are **episode** rules (IN-08). Example shipped enabled: `severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")`; a specific-ID example (`event_id == "6008"`, styled for future Windows use) ships commented. Episode identity: `(rule, provider, event_id if present else msg_hash)`. `msg_hash` is normatively defined: lowercase the message, collapse whitespace, replace digit runs and hex runs (≥ 8 chars) with `#`, then SHA-256, first 16 hex chars — collisions merely group unrelated events, which is harmless. Per-rule `cooldown` (default `"10m"`) limits renotification; `clear_after` (default `"30m"` without a matching event) closes the episode with `clear_reason = quiet_period` and **no recovery notification** by default (`notify_recovery = false` for event rules). A new matching event after clearing opens a new episode; the flap guard (IN-05) applies.
+Consumes the event stream; rules are **episode** rules (IN-08). Example shipped enabled: `severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")`; a specific-ID example (`event_id == "6008"`, styled for future Windows use) ships commented; a third rule targeting `provider == "kernel"` OOM messages also ships enabled on the generic/Linux tree. Episode identity: `(rule, provider, event_id if present else msg_hash)`. `msg_hash` is normatively defined: lowercase the message, collapse whitespace, replace digit runs and hex runs (≥ 8 chars) with `#`, then SHA-256, first 16 hex chars — collisions merely group unrelated events, which is harmless. Per-rule `cooldown` (default `"10m"`) limits renotification; `clear_after` (default `"30m"` without a matching event) closes the episode with `clear_reason = quiet_period` and **no recovery notification** by default (`notify_recovery = false` for event rules). A new matching event after clearing opens a new episode; the flap guard (IN-05) applies. The `windesktop`/`winserver` profile tree drops the `provider == "kernel"` OOM rule: `"kernel"` is a journald syslog-identifier convention no Windows Event Log provider is ever named, so the rule would sit in the file permanently dead rather than degrading gracefully; no replacement Windows low-memory event is wired up yet.
 
 #### 7.7.4 `disk` — space + filling
-Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`.
+Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`. The `windesktop`/`winserver` profile tree drops the `inodes` group entirely: NTFS has no POSIX inode concept, so `inode_used_pct` is always absent there and the ladder would never fire — dropped rather than left in the file to imply coverage that doesn't exist.
 
 #### 7.7.5 `load` — system pressure
 Metrics: `load1`, `cpu_pct`, `mem_available_bytes`, `mem_total_bytes`, `swap_used_pct`, PSI `psi_some_cpu`/`psi_some_mem`/`psi_some_io` (60 s avg) where present. Rules: group `pressure` — warning when `avg(psi_some_cpu, "5m") > 40` or `pct(mem_available_bytes, mem_total_bytes) < 5` for 5 cycles; error rung on `slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > 25`. Glance: five-minute CPU PSI with its warning parameter. On kernels without PSI the readout is absent rather than replaced by an inferred secondary metric.
@@ -1196,6 +1209,24 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.31 (2026-07-25)** — replaces the `windowsdesktop` placeholder profile
+(v0.30) with `windesktop`/`winserver` (PM-08), sharing one Windows monitor
+tree built from checking every builtin rule's *body* against real data
+from a live Windows daemon, not just whether the sampler crashes. Two
+concrete, permanent gaps were found and fixed: `disk`'s `inodes` rule
+group (NTFS has no POSIX inode concept, always absent) and `events`'
+`provider == "kernel"` OOM rule (a journald-only convention no Windows
+Event Log provider uses) are both dropped from the Windows tree rather
+than left silently dead. `load`'s PSI-gated rules were evaluated the same
+way and deliberately left unchanged: §7.7.5 already specifies that a
+PSI-less system gets an absent readout, not a substitute metric, and
+Windows is exactly that case — substituting `cpu_pct` thresholds would
+have both contradicted that existing decision and invented an unvalidated
+signal (PSI's stall-time measurement is not the same claim as raw CPU%).
+`hog`/`leak`/`net`/`self` needed no changes, confirmed against real
+process/connection/memory data from the same live daemon. `service` is
+reworded (Windows service name examples) with no rule changes.
 
 **v0.30 (2026-07-25)** — Windows implementation: adds the `windowsdesktop`
 init profile (PM-08) so Windows users get sane desktop-notification defaults

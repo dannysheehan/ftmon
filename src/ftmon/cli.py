@@ -19,21 +19,27 @@ from pathlib import Path
 import ftmon
 from ftmon.paths import get_paths
 
+# Profile -> calibrated-tree subdirectory under profile/. desktop's is real
+# host-tuning data (docs/tuning-desktop-xps15.md); windesktop/winserver share
+# one Windows tree that fixes OS-semantic dead rules (no PSI/inodes/journald
+# on Windows) rather than tuning thresholds -- there is no Windows tuning
+# data yet. server has no tree of its own and falls through to the generic
+# design/builtins defaults below, same as any profile not listed here.
+_PROFILE_CALIBRATED_DIRS = {
+    "desktop": "desktop",
+    "windesktop": "windows",
+    "winserver": "windows",
+}
+
 
 def _builtin_monitors_source(profile: str):
-    """Return a Path or Traversable directory of monitor TOML to install (FS-02).
-
-    Desktop profile installs calibrated copies from profile/desktop; server
-    and windowsdesktop both keep the normative design/builtins defaults --
-    windowsdesktop has no calibrated tree of its own yet (no tuning data the
-    way profile/desktop's GNOME numbers have docs/tuning-desktop-xps15.md
-    behind them), it only changes _default_config_toml's channel defaults.
-    """
-    if profile == "desktop":
+    """Return a Path or Traversable directory of monitor TOML to install (FS-02)."""
+    subdir = _PROFILE_CALIBRATED_DIRS.get(profile)
+    if subdir:
         try:
             import importlib.resources
 
-            resources = importlib.resources.files("ftmon.definitions") / "profile" / "desktop"
+            resources = importlib.resources.files("ftmon.definitions") / "profile" / subdir
             try:
                 for item in resources.iterdir():
                     if item.is_file() and item.name.endswith(".toml"):
@@ -42,7 +48,7 @@ def _builtin_monitors_source(profile: str):
                 pass
         except ImportError:
             pass
-        fallback = Path(__file__).resolve().parents[2] / "design" / "profile" / "desktop"
+        fallback = Path(__file__).resolve().parents[2] / "design" / "profile" / subdir
         if fallback.is_dir():
             return fallback
 
@@ -64,7 +70,7 @@ def _builtin_monitors_source(profile: str):
 
 def _default_config_toml(profile: str = "desktop") -> str:
     """Explicit profile scaffold (PM-08); no runtime profile switch remains."""
-    desktop_enabled = "true" if profile in ("desktop", "windowsdesktop") else "false"
+    desktop_enabled = "true" if profile in ("desktop", "windesktop") else "false"
     return f"""\
 # FTMON v2 configuration
 # See docs/definitions.md for monitor setup; this file covers daemon behavior.
@@ -134,7 +140,8 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     - Creates all dirs (0700)
     - Writes config.toml only if absent (unless --force)
-    - Installs 8 builtin *.toml files (desktop profile uses calibrated monitors)
+    - Installs 8 builtin *.toml files (desktop/windesktop/winserver profiles
+      use calibrated monitors)
     - Prints summary of what was installed
     """
     from ftmon.paths import atomic_write
@@ -863,8 +870,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Re-install builtins (does not touch user config)"
     )
     init_parser.add_argument(
-        "--profile", choices=("desktop", "server", "windowsdesktop"), default="desktop",
-        help="Write explicit desktop, server, or windowsdesktop defaults (default: desktop)",
+        "--profile", choices=("desktop", "server", "windesktop", "winserver"),
+        default="desktop",
+        help="Write explicit desktop, server, windesktop, or winserver defaults "
+             "(default: desktop)",
     )
 
     # check

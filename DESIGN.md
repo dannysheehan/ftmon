@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.15**. Companion to `SPEC.md` v0.30 — every design element
+Status: **DRAFT v0.16**. Companion to `SPEC.md` v0.31 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -252,12 +252,18 @@ owned by the service account and not group/world-readable, and has surrounding
 ASCII whitespace stripped. Environment and file forms are mutually exclusive.
 Literal `token`, `password`, or webhook `url` keys are rejected rather than
 deprecated, because silently accepting them would defeat SE-05. The generated
-desktop and windowsdesktop profiles write desktop enabled; the server profile
-writes it disabled. windowsdesktop otherwise installs the same monitor
-selection as server (`cli.py::_builtin_monitors_source`) — only the channel
-default differs; there is no Windows-calibrated definition tree the way
-profile/desktop's GNOME tuning exists. Profile effects are visible text in
-the generated file and disappear as a runtime concept after initialization.
+desktop and windesktop profiles write desktop enabled; server and winserver
+write it disabled. `cli.py::_PROFILE_CALIBRATED_DIRS` maps profile name to
+calibrated-tree subdirectory: `desktop` → `profile/desktop` (real
+GNOME host-tuning data, `docs/tuning-desktop-xps15.md`); `windesktop` and
+`winserver` both → `profile/windows`, one shared tree since the fixes it
+carries are OS-semantic (dead rules removed because the metrics they key on
+can never exist on Windows), not a desktop-vs-server tuning distinction —
+there is no Windows tuning data to justify two separate trees. Any profile
+not in that map (`server`, and anything else) falls through to the
+normative uncalibrated `design/builtins` set. Profile effects are visible
+text in the generated file and disappear as a runtime concept after
+initialization.
 
 M9 provides `Paths.check_registry_file`. It defaults to private
 `config_dir/checks.toml` for the desktop/single-user trust model. The hardened
