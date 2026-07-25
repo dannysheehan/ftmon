@@ -713,6 +713,10 @@ def run(args) -> int:
     if hasattr(signal, "SIGHUP"):  # POSIX only; no reload signal on Windows
         signal.signal(signal.SIGHUP, _reload)
 
+    from ftmon.paths import start_reload_watcher
+
+    start_reload_watcher(core.request_reload)  # PM-11 equivalent on Windows; no-op on POSIX
+
     tick_s = core.config.tick_seconds if core.config else 5.0
     total = len(core.monitors) + len(core.event_monitors)
     print(f"ftmon daemon started ({total} monitors)", file=sys.stderr)

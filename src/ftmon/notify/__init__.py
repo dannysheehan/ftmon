@@ -29,4 +29,8 @@ def desktop_notifier_for_platform(platform: str | None = None) -> Notifier | Non
     current = platform or current_platform()
     if current == "linux":
         return DesktopNotifier()
+    if current == "windows":
+        from ftmon.notify.toast import ToastNotifier
+
+        return ToastNotifier()
     return None
