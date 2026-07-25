@@ -148,6 +148,58 @@ Script: [`task_scheduler_spike.py`](task_scheduler_spike.py), [`reload_signal_sp
   rights, no filesystem coordination, auto non-signaled reset
   (`bManualReset=False` in `CreateEvent`) so it can't double-fire.
 
+## 4. Running the actual package on Windows (not spike code -- the real `src/ftmon`)
+
+Outside the checklist, also tried `uv sync` + `ftmon init/web/daemon/check/doctor`
+against the real codebase (main-branch state, not this branch's spike scripts)
+to see how far it gets. No code changes from this were kept -- the two
+one-line patches made to get past the first two crashes were reverted; they're
+listed here only as findings, same as the rest of this document.
+
+- `ftmon init --profile desktop`: **crashes**. `paths.py::atomic_write` calls
+  `os.fchmod(fd, mode)` unconditionally; `os.fchmod` doesn't exist on Windows
+  (`AttributeError`). This is a hard blocker before anything else can run --
+  every command that writes config touches this path.
+- `ftmon web`: after working around the above, the dashboard itself renders
+  fine (starlette/uvicorn, loopback bind, static assets, monitor list from
+  the 8 builtin defs) -- **but** the first request 500s in
+  `checks/registry.py` -> `checks/trust.py::trusted_owner`, which calls
+  `os.geteuid()` (also POSIX-only, also `AttributeError`). Worth flagging
+  loudly, not just patching: **`os.stat().st_uid` is always `0` on Windows**
+  regardless of actual file owner, so even with the crash fixed,
+  `uid in {0, os.geteuid()}` is trivially true for every file -- the EC-01/
+  SE-07 ownership-trust check is not just broken by the missing function,
+  it's *meaningless* on Windows as written. This needs a real ACL-based
+  design (owner SID + DACL check), not a guard clause, before any Windows
+  build should be treated as enforcing EC-01 for real. Once past both
+  crashes, `ftmon check`'s registry validation then flags the check registry
+  file itself as `registry_untrusted` -- because it also tests POSIX
+  group/other-writable bits (`st_mode & 0o022`) against a Windows mode value
+  that doesn't carry the same meaning (a fresh `ftmon init`-written file
+  reported `0o666`, which trips that bit unconditionally). So the *whole*
+  trust chain (ownership + writability) is POSIX-shaped and needs Windows-
+  native equivalents, not incremental patching.
+- `ftmon daemon`: **crashes immediately at import time** -- `daemon.py` does
+  `import fcntl` at module scope for the PM-02 single-instance advisory
+  lock (`fcntl.flock`, one call site: `daemon.py:645`). No Windows
+  equivalent exists in stdlib; needs a real primitive (e.g. `msvcrt.locking`
+  or a named mutex) behind whatever seam PM-02's lock ends up living behind.
+  This is the single largest blocker to a Windows daemon existing at all --
+  everything else in this doc assumes the daemon can start.
+- `ftmon doctor` / `ftmon check` degrade sensibly (no daemon running ->
+  clear "start the daemon once" message) once past the trust crash --
+  no additional platform issues found in the CLI status-reporting paths.
+
+**Net effect**: three independent POSIX-only hard dependencies block the
+package from running at all on Windows today: `os.fchmod` (paths.py),
+`os.geteuid` (checks/trust.py, plus the deeper st_uid=0 trust-model gap
+described above), and `fcntl` (daemon.py, PM-02 lock). None of these are
+new information relative to PL-01's stated scope ("no platform conditionals
+outside the four seams") -- they're confirmation, with exact file:line
+locations, of the gap PLAN-platform-foundation.md already predicted, plus
+one previously-unlisted item: the check-registry trust model (EC-01/SE-07)
+needs its own Windows design, not just a fifth seam.
+
 ## Summary for the platform-foundation PR
 
 | Windows row (SPEC SS4.1) | Verdict |
@@ -157,3 +209,6 @@ Script: [`task_scheduler_spike.py`](task_scheduler_spike.py), [`reload_signal_sp
 | Notification (`windows-toasts`) | Confirmed viable, actively maintained, zero-setup -- better than expected |
 | Service wrapper (Task Scheduler logon) | Creation blocked by access denial on this machine for a standard user; needs re-test on a clean install and a documented Startup-folder fallback either way |
 | PM-11 reload equivalent | Not provided by Task Scheduler; named Win32 Event object spiked and confirmed working as the substitute |
+| `paths.py` (`os.fchmod`) | Confirmed hard blocker, real fix belongs on platform-foundation |
+| `checks/trust.py` (`os.geteuid`, `st_uid`) | Confirmed hard blocker *and* a deeper EC-01/SE-07 design gap (POSIX ownership model doesn't map to Windows ACLs at all) -- not previously listed in PLAN-platform-foundation.md, worth adding as its own line item |
+| `daemon.py` (`fcntl`, PM-02 lock) | Confirmed hard blocker, single call site, needs a Windows lock primitive behind the seam |
