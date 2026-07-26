@@ -72,8 +72,14 @@ class DaemonCore:
     event_source: EventSource | None = None
     background_dispatch: bool = False
     stop: bool = False
+    # None = current_platform() (production). Tests for a monitor.platforms
+    # set that excludes the host running the suite (e.g. Windows-only
+    # profiles, exercised on Linux CI) override this the same way they
+    # override Clock, rather than the host OS gating what's testable.
+    platform: str | None = None
 
     def __post_init__(self) -> None:
+        self.platform = self.platform or current_platform()
         self.stats = SelfStats()
         self._delivery_failures: SimpleQueue[tuple[str, str, float]] = SimpleQueue()
         self._reload_global_config = self.config is None
@@ -310,18 +316,17 @@ class DaemonCore:
             # daemon itself must keep running (PM-04).
             print(f"config_error: {path}: {err}", file=sys.stderr)
             self.stats.count("config_errors")
-        running_platform = current_platform()
         seen = set()
         for mdef in defs:
             seen.add(mdef.name)
-            if running_platform not in mdef.platforms:
+            if self.platform not in mdef.platforms:
                 # PL-01/PL-02: declared but unenforced was the actual gap —
                 # a monitor's platforms list must gate loading, not just
                 # validate as a well-formed subset of schema.PLATFORMS.
                 if initial:
                     print(
                         f"monitor {mdef.name}: not applicable on platform "
-                        f"{running_platform!r} (declares {sorted(mdef.platforms)}); skipped",
+                        f"{self.platform!r} (declares {sorted(mdef.platforms)}); skipped",
                         file=sys.stderr,
                     )
                 continue

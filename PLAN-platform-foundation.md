@@ -119,3 +119,22 @@ Validate before writing any SPEC prose — these are the concrete choices
 Findings from both go back into the `platform-foundation` PR's SPEC/DESIGN
 diff (new `PL-*` IDs, matrix rows flipped from "planned" to real), not
 directly into the platform branches.
+
+macOS spike completed on `feature/macos-support` (`83fa5d7`) and transferred
+into SPEC v0.30 / DESIGN v0.15 on this branch:
+
+- custom non-Apple unified-log streaming works unelevated; DM-15 uses
+  overlapping wall-time replay plus bounded identities because stream/store
+  timestamps are not an exact bookmark;
+- zero-bundle `osascript` delivery works under Script Editor's identity, with
+  no supported global-disable preflight;
+- a user LaunchAgent bootstraps unelevated and passes SIGHUP through unchanged;
+  `launchctl kickstart -k` is a restart;
+- the actual package's POSIX guards and platform filter work on Darwin, but
+  full locked installation on Intel macOS 12 is blocked by the current
+  `cryptography` wheel/native OpenSSL build path.
+
+No new `PL-*` requirement ID was added for spike-only behavior: TS-18 forbids
+adding a testable requirement without its implementation tests. The validated
+targets instead refine existing PL-01/PL-03, DM-15, NO-02, and PM-11 contracts;
+platform-specific implementation branches can add tested IDs when they ship.

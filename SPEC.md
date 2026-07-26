@@ -1,18 +1,21 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.31** — v0.31 replaces the `windowsdesktop` placeholder
+Status: **DRAFT v0.32** — v0.32 replaces the `windowsdesktop` placeholder
 profile with `windesktop`/`winserver` (PM-08), sharing one Windows-adapted
 monitor tree that drops rules dead on Windows by construction (an
 inode-based ladder — NTFS has no POSIX inode concept — and a
 journald-provider-gated OOM rule) rather than leaving them silently
 inert; `load`'s PSI-gated rules are deliberately left unchanged, since
 §7.7.5 already specifies "absent, not replaced by an inferred metric" for
-exactly this case. v0.30 adds the `windowsdesktop` init profile (PM-08)
+exactly this case. v0.31 adds the `windowsdesktop` init profile (PM-08)
 and gives EC-01/SE-07's ownership/writability trust check a real Windows ACL
 equivalent (owner SID + DACL walk in place of POSIX uid/mode bits) so the
 check registry, external-check runner, secret-credential files (SE-04), and
 the demo database (SE-06) all enforce their existing trust contract on
-Windows instead of only on POSIX. v0.29 keeps churny historical process identities out
+Windows instead of only on POSIX. v0.30 records real-hardware macOS
+platform-spike contracts for unified-log replay, Script Editor
+notifications, and LaunchAgent reload behavior. v0.29 keeps churny
+historical process identities out
 of the Trends entity selector while preserving direct incident and bookmark
 access to their retained history. v0.28 hardens the web response boundary, refreshes
 the remaining operational pages, and makes Metrics baselines unmistakably
@@ -145,12 +148,12 @@ These were decided during specification and are not open for re-litigation by im
 
 ### 4.1 Platform matrix
 
-| Capability | Linux (v1) | Windows (v1.x, planned) | macOS (v1.x, planned) |
+| Capability | Linux (v1) | Windows (v1.x, planned) | macOS (validated target; implementation planned) |
 |---|---|---|---|
 | Process/CPU/mem/disk sampling | psutil | psutil | psutil |
 | Event source | journald (`journalctl -o json` subprocess) | `win32evtlog.EvtSubscribe` (pywin32) | `log stream --style ndjson` subprocess |
-| Event cursor (DM-15) | journald cursor string | `EvtBookmark` XML | last-seen timestamp |
-| Notification | `notify-send` (fallback: D-Bus) | toast (`windows-toasts`) | `osascript display notification` |
+| Event cursor (DM-15) | journald cursor string | `EvtBookmark` XML | wall-time high-water mark + bounded recent-event identities |
+| Notification | `notify-send` (fallback: D-Bus) | toast (`windows-toasts`) | `osascript display notification` (Script Editor identity) |
 | External checks | local executable; Nagios + FTMON JSON | FTMON JSON planned | FTMON JSON planned |
 | Service wrapper | systemd user unit | Task Scheduler (logon) | launchd LaunchAgent |
 | Config/data paths | XDG dirs | `%APPDATA%` / `%LOCALAPPDATA%` | `~/Library/Application Support` |
@@ -165,6 +168,11 @@ These were decided during specification and are not open for re-litigation by im
   EC-04 performance-data mappings; no runtime output can add a name to the
   expression namespace. Validation (MD-01) resolves expressions against the
   resulting declaration, which is also the documentation source for DO-01.
+
+The macOS matrix entries are validated spike targets, not claims that the
+adapters ship yet. On Intel macOS 12, the locked dependency set also lacks a
+`cryptography==49.0.0` x86_64 wheel and requires a native OpenSSL/Rust build;
+support policy and packaging must be resolved before macOS is advertised.
 
 ### 4.2 Processes
 
@@ -217,7 +225,10 @@ These were decided during specification and are not open for re-litigation by im
   refresh as the periodic rescan (PM-04): notification channels, the
   external-check registry, monitor definitions, and acknowledgements. A reload
   request MUST NOT interrupt an in-progress tick. The packaged daemon systemd
-  units MUST expose this via `ExecReload=` so `systemctl reload` works.
+  units MUST expose this via `ExecReload=` so `systemctl reload` works. A
+  macOS LaunchAgent MUST preserve the same signal contract: sending SIGHUP to
+  the launchd-managed PID reloads in place. `launchctl kickstart -k` is a
+  restart (new PID), not a reload substitute.
 
 ### 4.3 Filesystem layout (Linux)
 
@@ -277,7 +288,21 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 - **DM-08** `severity` is normalized to the 5-level scale: `info(0) notice(1) warning(2) error(3) critical(4)`. Each `EventSource` documents and tests its mapping (journald PRIORITY 0–7 → this scale; Event Log Level; os_log messageType).
 - **DM-09** Stored events are kept 30 d (subject to DM-05 degradation). A **store-filter** (v0.3 amendment, capacity-driven) decides what is stored: events with severity ≥ `notice` (configurable `store_min_severity`) plus any event matching a loaded event rule; info-level non-matching events are counted in a self-metric but not stored — a desktop journal's full volume (50–200 k lines/day) cannot fit the DM-05 budget. Event *rules* (§7.7.3) evaluate against the live stream before the store-filter (a rule can match info-level events; matching forces storage) and match on canonical fields only — a rule written against journald fields MUST be expressible identically against Event Log fields.
 - **DM-10** Event ingestion MUST be rate-defended: per (source, provider), more than 100 stored events/min collapses into a single `event_storm` self-event with a count, until the rate drops. (A log-spamming app must not fill the DB.)
-- **DM-15** Each `EventSource` persists a **cursor** in the DB after every drained batch (journald cursor string / EvtBookmark / last-seen timestamp). First run ever starts at "now" (no historical backfill). On daemon restart the reader resumes from the cursor, which replays events that occurred while the daemon was down; the cursor's monotonicity is the dedup guarantee. Events carry both source timestamp (stored as `ts`) and ingest timestamp; ordering for rules is ingest order, so late-arriving source timestamps cannot re-trigger past windows.
+- **DM-15** Each `EventSource` persists a source-specific **checkpoint** in the
+  DB after every drained batch. Journald stores its cursor string and Windows
+  stores `EvtBookmark` XML. macOS unified log has no persistent bookmark: its
+  checkpoint is a wall-time high-water mark plus a bounded set of recent event
+  identities. First run ever starts at "now" (no historical backfill). On
+  daemon restart the reader resumes from the checkpoint and replays events
+  that occurred while the daemon was down. Bookmark sources resume after the
+  exact checkpoint; macOS MUST replay from before its watermark and
+  deduplicate the overlap, including the `log show` → `log stream` handoff.
+  The checkpoint advances only after the corresponding events are durably
+  accepted. An expired macOS replay boundary MUST record an observable
+  retention-gap self-event rather than silently claiming exact resume. Events
+  carry both source timestamp (stored as `ts`) and ingest timestamp; ordering
+  for rules is ingest order, so late-arriving source timestamps cannot
+  re-trigger past windows.
 
 ### 5.4 Incident
 
@@ -818,7 +843,16 @@ message = "Disk {entity} at {used_pct:.0f}% used"
   monitor's tray pile-up is what arms gnome-shell's notification/calendar
   SIGABRT (LP #2138529, issue #40). Capabilities are probed from the installed
   `notify-send`; a missing flag degrades that behavior to plain persistent
-  delivery, never to a delivery failure.
+  delivery, never to a delivery failure. The planned macOS adapter invokes
+  `osascript display notification` without requiring an FTMON app bundle; the
+  OS attributes these notifications to Script Editor
+  (`com.apple.ScriptEditor2`). Exit 0 means accepted for best-effort delivery,
+  not proof that Notification Center displayed a banner. The adapter MUST NOT
+  depend on private `com.apple.ncprefs` flags to infer global notification,
+  Focus, or per-app state; command failure/timeout is reported normally, while
+  OS suppression after exit 0 degrades silently. A future FTMON-specific
+  authorization preflight requires a bundled `UNUserNotificationCenter`
+  helper and is outside the `osascript` adapter.
 - **NO-03** Global quiet hours (`config.toml`, default off): during quiet hours, `warning`-and-below notifications are held and delivered as one digest at quiet-hours end; `error`+ always notify. Incidents open/clear regardless — quiet hours affect delivery only. Global-only in v1 (per-monitor overrides deferred).
 - **NO-04** **Delivery guarantee — at-least-once, honestly.** The notification
   and its DM-18 channel deliveries are committed with the incident transition;
@@ -1210,8 +1244,8 @@ Implementation lands in stages; each stage is independently usable, ships the §
 
 ## 21. Changelog & review disposition
 
-**v0.31 (2026-07-25)** — replaces the `windowsdesktop` placeholder profile
-(v0.30) with `windesktop`/`winserver` (PM-08), sharing one Windows monitor
+**v0.32 (2026-07-25)** — replaces the `windowsdesktop` placeholder profile
+(v0.31) with `windesktop`/`winserver` (PM-08), sharing one Windows monitor
 tree built from checking every builtin rule's *body* against real data
 from a live Windows daemon, not just whether the sampler crashes. Two
 concrete, permanent gaps were found and fixed: `disk`'s `inodes` rule
@@ -1228,7 +1262,7 @@ signal (PSI's stall-time measurement is not the same claim as raw CPU%).
 process/connection/memory data from the same live daemon. `service` is
 reworded (Windows service name examples) with no rule changes.
 
-**v0.30 (2026-07-25)** — Windows implementation: adds the `windowsdesktop`
+**v0.31 (2026-07-25)** — Windows implementation: adds the `windowsdesktop`
 init profile (PM-08) so Windows users get sane desktop-notification defaults
 without fabricated calibration data standing in for the GNOME `desktop`
 profile's real tuning. Gives EC-01/SE-07's ownership and writability trust
@@ -1247,6 +1281,20 @@ psutil-based) and event source have real implementations behind them, and
 `service`'s `{unit=...}` watchlist kind gains a Windows Service Manager
 backend alongside its existing systemd one (no restart-count metric there —
 no single queryable counter exists the way `systemctl`'s `NRestarts` does).
+
+**v0.30 (2026-07-26)** — records the macOS platform spike on real Intel
+macOS 12 hardware, unelevated. A custom non-Apple `os_log` subsystem streams
+without sudo or a TCC prompt, but `--style ndjson` includes non-JSON/status
+lines and unified log exposes no persistent bookmark. DM-15 therefore uses an
+overlapping wall-time replay with bounded event identities and an observable
+retention-gap path, rather than claiming timestamp monotonicity is an exact
+cursor. Zero-bundle `osascript display notification` succeeds under Script
+Editor's identity, but has no supported global-disable preflight. A user-domain
+LaunchAgent bootstraps without elevation and passes SIGHUP through to reload
+the same PID; `kickstart -k` is explicitly a restart. The package's POSIX
+guards and platform-definition filter work on Darwin, while full installation
+on Intel macOS 12 is blocked by the current dependency wheel/native-build
+story; none of these validated targets is a claim that macOS adapters ship.
 
 **v0.29 (2026-07-23)** — bounds the Trends entity selector under process churn.
 Exited process history remains retained under DM-04 and available through

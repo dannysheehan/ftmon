@@ -112,7 +112,7 @@ class TestDiskWindowsProfile:
         threshold -- the "false" side of the review's bidirectional check."""
         paths = _windows_core_env(tmp_path, "disk")
         clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-        core = DaemonCore(paths=paths, clock=clock)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
         sampler = ScriptedDiskSampler()
         for _ in range(5):
             sampler.push(_disk_entity(50.0))
@@ -131,7 +131,7 @@ class TestDiskWindowsProfile:
         DaemonCore/pipeline, not just evaluated in isolation."""
         paths = _windows_core_env(tmp_path, "disk")
         clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-        core = DaemonCore(paths=paths, clock=clock)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
         sampler = ScriptedDiskSampler()
         for _ in range(5):
             sampler.push(_disk_entity(95.0))
@@ -187,7 +187,7 @@ class TestHogWindowsProfile:
         cpu_pct reads -- driven through the real DaemonCore/pipeline."""
         paths = _windows_core_env(tmp_path, "hog")
         clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-        core = DaemonCore(paths=paths, clock=clock)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
         sampler = ScriptedProcessSampler()
         for _ in range(6):
             sampler.push(_process_entity("System Idle Process:0:0", "System Idle Process", 1795.0))
@@ -205,7 +205,7 @@ class TestHogWindowsProfile:
         same extreme cpu_pct still alerts."""
         paths = _windows_core_env(tmp_path, "hog")
         clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-        core = DaemonCore(paths=paths, clock=clock)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
         sampler = ScriptedProcessSampler()
         for _ in range(6):
             sampler.push(_process_entity("runaway.exe:9999:123", "runaway.exe", 1795.0))
@@ -260,7 +260,7 @@ class TestSelfWindowsProfile:
         against the recalibrated budget -- the "false" side."""
         paths = _windows_core_env(tmp_path, "self")
         clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-        core = DaemonCore(paths=paths, clock=clock)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
         sampler = ScriptedSelfSampler()
         for _ in range(4):
             sampler.push(_self_entity(16.0))
@@ -280,7 +280,7 @@ class TestSelfWindowsProfile:
         proves the recalibration didn't quietly gut RB-02's purpose."""
         paths = _windows_core_env(tmp_path, "self")
         clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-        core = DaemonCore(paths=paths, clock=clock)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
         sampler = ScriptedSelfSampler()
         for _ in range(4):
             sampler.push(_self_entity(80.0))
