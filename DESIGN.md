@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.14**. Companion to `SPEC.md` v0.29 — every design element
+Status: **DRAFT v0.15**. Companion to `SPEC.md` v0.30 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -643,6 +643,16 @@ Desktop readiness is validated before rows are created; a runtime `notify-send`
 timeout is retryable and other non-zero exits are permanent. These rules avoid
 an absent desktop session creating an endless queue on a server.
 
+The planned Darwin desktop adapter launches `/usr/bin/osascript` with a
+`display notification` expression and a bounded timeout. It needs no FTMON app
+bundle or code signature, but Notification Center attributes it to
+`com.apple.ScriptEditor2`; adapter documentation and doctor output must name
+that identity. A zero exit is delivery success for NO-04 purposes even when
+Notification Center or Focus suppresses presentation. The adapter does not
+read the private `com.apple.ncprefs.plist` bit field: it is undocumented, does
+not cleanly represent Focus/global suppression, and supplies no FTMON-specific
+authorization state.
+
 The ntfy adapter POSTs the rendered title/body to
 `{base_url}/{urlquoted_topic}` with a fixed, control-free `FTMON <severity>` title,
 priority (`info=2, notice=3, warning=4, error|critical=5`), tags
@@ -674,7 +684,12 @@ invalid channel fails closed while the other channels reload (NO-10).
 flag on `DaemonCore` and the top of the next tick consumes it — the handler
 itself never touches the filesystem or database, so it cannot race the tick
 loop or block in a signal context. The packaged daemon units map it to
-`ExecReload=`.
+`ExecReload=`. A Darwin LaunchAgent uses absolute `ProgramArguments`, explicit
+FTMON path environment, `RunAtLoad`, and `KeepAlive` in the user
+`gui/<uid>` domain. launchd passes SIGHUP to the managed process unchanged, so
+the service wrapper signals the current PID and retains the existing PM-11
+handler. `launchctl kickstart -k` is reserved for an explicit restart because
+it replaces the PID.
 
 ### 10.8 External check execution and projection (EC-*, MD-11, SE-07)
 
@@ -850,6 +865,26 @@ adapters in ignored/personal locations, never separately committed skills.
 ## 11. Event pipeline (SA-03/08, DM-07..10, DM-15)
 
 `journald.py`: spawns `journalctl -f -o json --output-fields=MESSAGE,PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,__CURSOR [--after-cursor=C]`. Reader thread appends raw lines to deque. `drain()` (main thread): parse JSON (malformed → count, skip), normalize → `EventRecord` (severity map: PRIORITY 0–2→critical, 3→error, 4→warning, 5→notice, 6–7→info; provider = `_SYSTEMD_UNIT` else `SYSLOG_IDENTIFIER`), return last `__CURSOR`. Cursor is persisted in the tick's write txn (DM-15). Storm counter per (source, provider) sliding minute (DM-10); store-filter per amended DM-09; matching against loaded event rules uses the same compiled `when` expressions with the event-field NameEnv. Reader death → `alive()` false → scheduler restarts with backoff (SA-03).
+
+The planned `oslog.py` first replays `/usr/bin/log show --style ndjson` from
+several seconds before its persisted wall-time watermark, then starts
+`/usr/bin/log stream --style ndjson` with the same predicate. Both outputs are
+line-framed but not pure event NDJSON: the reader ignores human filter text,
+blank lines, and terminal `{"count": ..., "finished": 1}` objects, accepting
+only `eventType == "logEvent"`. Records are sparse; normalization uses
+`timestamp`, `eventMessage`, `subsystem`, `category`, `processImagePath`,
+`processID`, and `messageType` when present.
+
+The replay overlap is deduplicated against a bounded durable identity set.
+The preferred identity is `(bootUUID, machTimestamp, traceID, processID,
+senderProgramCounter)` plus a normalized-payload hash fallback. The set covers
+at least the replay/handoff overlap and is committed with the watermark only
+after events are accepted. This is deliberately at-least-once: Monterey
+accepts only second-resolution `--start` values, the boundary is inclusive,
+and the same event's stream and archived timestamps differed by milliseconds
+on real hardware. If the requested boundary predates retained unified-log
+data, the source records a retention-gap self-event before tailing current
+events.
 
 ---
 
