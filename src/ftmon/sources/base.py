@@ -92,6 +92,9 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
         attrs=(
             _a("fstype", "Filesystem type, e.g. ext4"),
             _a("device", "Backing device"),
+            _a("mountpoint", "Mounted path"),
+            _a("readonly", "true when the mount is read-only"),
+            _a("mount_options", "Comma-separated mount options"),
         ),
     ),
     "system": SourceDecl(

@@ -498,7 +498,10 @@ async def metrics(request: Request):
             seconds = float(p["hours"]) * 3600
             range_text = f"{p['hours']}h"
         else:
-            range_text = p.get("range", "24h")
+            # Fresh installs have raw samples immediately but no completed
+            # five-minute rollups yet. Six hours selects the raw tier, so the
+            # default explorer never looks empty while data is arriving.
+            range_text = p.get("range", "6h")
             seconds = parse_duration(range_text)
     except (ValueError, ExprError):
         return Response("Invalid range; use values such as 6h, 7d, or 30d", status_code=400)

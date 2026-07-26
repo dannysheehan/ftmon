@@ -1,6 +1,7 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.32** — v0.32 replaces the `windowsdesktop` placeholder
+Status: **DRAFT v0.33** — v0.33 ships the validated macOS event, notification,
+LaunchAgent, and builtin-profile seams. v0.32 replaces the `windowsdesktop` placeholder
 profile with `windesktop`/`winserver` (PM-08), sharing one Windows-adapted
 monitor tree that drops rules dead on Windows by construction (an
 inode-based ladder — NTFS has no POSIX inode concept — and a
@@ -148,7 +149,7 @@ These were decided during specification and are not open for re-litigation by im
 
 ### 4.1 Platform matrix
 
-| Capability | Linux (v1) | Windows (v1.x, planned) | macOS (validated target; implementation planned) |
+| Capability | Linux (v1) | Windows (v1.x) | macOS (v1.x) |
 |---|---|---|---|
 | Process/CPU/mem/disk sampling | psutil | psutil | psutil |
 | Event source | journald (`journalctl -o json` subprocess) | `win32evtlog.EvtSubscribe` (pywin32) | `log stream --style ndjson` subprocess |
@@ -169,8 +170,7 @@ These were decided during specification and are not open for re-litigation by im
   expression namespace. Validation (MD-01) resolves expressions against the
   resulting declaration, which is also the documentation source for DO-01.
 
-The macOS matrix entries are validated spike targets, not claims that the
-adapters ship yet. On Intel macOS 12, the locked dependency set also lacks a
+On Intel macOS 12, the locked dependency set lacks a
 `cryptography==49.0.0` x86_64 wheel and requires a native OpenSSL/Rust build;
 support policy and packaging must be resolved before macOS is advertised.
 
@@ -190,7 +190,8 @@ support policy and packaging must be resolved before macOS is advertised.
 - **PM-05** MCP transport is **stdio only** in v1. The web UI binds **127.0.0.1** only, default port 8420, configurable. No other sockets are opened.
 - **PM-06** Definition-file coordination rules, binding on every process that writes to the config tree: (a) all writes are atomic — write to a temp file in the same directory, fsync, `rename()`; (b) directories 0700, files 0600 at creation; (c) symlinked definition files are rejected at load with a config_error; (d) approval (`drafts/x.toml` → `monitors/x.toml`) re-validates then renames atomically, and fails if the target exists; (e) concurrent writers are resolved last-write-wins — acceptable for a single-user tool — but every load path re-validates, so a torn outcome is at worst a config_error, never a partial load.
 - **PM-07** On each successful load, the daemon persists the monitor's normalized definition, content hash, and load timestamp in the DB. This is the substrate for change detection (PM-04), `get_monitor` history, and MD-06 — not a fallback config store (see PM-04).
-- **PM-08** `ftmon init --profile desktop|server|windesktop|winserver` writes
+- **PM-08** `ftmon init --profile desktop|server|windesktop|winserver|macdesktop|macserver`
+  writes
   explicit initial settings; the profile is scaffolding, not a permanent
   hidden behavior switch. `desktop` enables the file and desktop channels,
   installing GNOME-calibrated monitor definitions (real host-tuning data,
@@ -205,7 +206,12 @@ support policy and packaging must be resolved before macOS is advertised.
   desktop (toast) channels like `desktop`; `winserver` enables the file
   channel only, like `server`. Existing configuration is never rewritten;
   `--force` continues to reinstall built-in monitor definitions only
-  (FS-02), not user settings.
+  (FS-02), not user settings. `macdesktop` and `macserver` share a Darwin
+  tree: PSI and foreign event rules are removed; unified-log fault alerting is
+  opt-in; read-only/nobrowse mounts and inode rules are excluded; connection
+  alerts require an explicit listener watchlist; service examples are
+  process-based; and only the desktop variant enables best-effort Script
+  Editor notifications.
 - **PM-09** The supported server deployment runs the daemon as a dedicated
   unprivileged account or the administrator's ordinary account. It MUST NOT run
   as root. The normal web process remains on loopback; remote operational access
@@ -843,7 +849,7 @@ message = "Disk {entity} at {used_pct:.0f}% used"
   monitor's tray pile-up is what arms gnome-shell's notification/calendar
   SIGABRT (LP #2138529, issue #40). Capabilities are probed from the installed
   `notify-send`; a missing flag degrades that behavior to plain persistent
-  delivery, never to a delivery failure. The planned macOS adapter invokes
+  delivery, never to a delivery failure. The macOS adapter invokes
   `osascript display notification` without requiring an FTMON app bundle; the
   OS attributes these notifications to Script Editor
   (`com.apple.ScriptEditor2`). Exit 0 means accepted for best-effort delivery,
@@ -1243,6 +1249,12 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.33 (2026-07-26)** — ships the macOS implementation validated by the
+v0.30 spike: unified-log replay/stream dedup checkpoints with observable
+retention gaps (DM-15), best-effort `osascript` desktop delivery (NO-02), a
+LaunchAgent service template preserving SIGHUP (PM-11), and conservative
+Darwin-specific init profiles with behavior-tested rule bodies (PM-08).
 
 **v0.32 (2026-07-25)** — replaces the `windowsdesktop` placeholder profile
 (v0.31) with `windesktop`/`winserver` (PM-08), sharing one Windows monitor

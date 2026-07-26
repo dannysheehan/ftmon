@@ -89,6 +89,7 @@ def parse_line(line: bytes) -> tuple[dict, str] | None:
 
 class JournaldEventSource:
     decl: ClassVar[SourceDecl] = SOURCE_DECLS["events"]
+    cursor_name = "journald"
 
     def __init__(self, journalctl: str = "journalctl"):
         self._journalctl = journalctl

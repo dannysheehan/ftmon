@@ -22,4 +22,8 @@ def event_source_for_platform(platform: str | None = None) -> EventSource | None
         from ftmon.sources.win_evtlog import WindowsEventSource
 
         return WindowsEventSource()
+    if current == "darwin":
+        from ftmon.sources.oslog import MacOSLogEventSource
+
+        return MacOSLogEventSource()
     return None

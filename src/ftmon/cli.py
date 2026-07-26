@@ -20,7 +20,7 @@ import ftmon
 from ftmon.paths import get_paths
 
 # Profile -> calibrated-tree subdirectory under profile/. desktop's is real
-# host-tuning data (docs/tuning-desktop-xps15.md); windesktop/winserver share
+# host-tuning data (docs/tuning-desktop-xps15.md); platform profile pairs share
 # one Windows tree that fixes OS-semantic dead rules (no PSI/inodes/journald
 # on Windows) rather than tuning thresholds -- there is no Windows tuning
 # data yet. server has no tree of its own and falls through to the generic
@@ -29,6 +29,8 @@ _PROFILE_CALIBRATED_DIRS = {
     "desktop": "desktop",
     "windesktop": "windows",
     "winserver": "windows",
+    "macdesktop": "macos",
+    "macserver": "macos",
 }
 
 
@@ -70,7 +72,9 @@ def _builtin_monitors_source(profile: str):
 
 def _default_config_toml(profile: str = "desktop") -> str:
     """Explicit profile scaffold (PM-08); no runtime profile switch remains."""
-    desktop_enabled = "true" if profile in ("desktop", "windesktop") else "false"
+    desktop_enabled = (
+        "true" if profile in ("desktop", "windesktop", "macdesktop") else "false"
+    )
     return f"""\
 # FTMON v2 configuration
 # See docs/definitions.md for monitor setup; this file covers daemon behavior.
@@ -140,7 +144,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     - Creates all dirs (0700)
     - Writes config.toml only if absent (unless --force)
-    - Installs 8 builtin *.toml files (desktop/windesktop/winserver profiles
+    - Installs 8 builtin *.toml files (platform desktop/server profiles
       use calibrated monitors)
     - Prints summary of what was installed
     """
@@ -870,10 +874,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Re-install builtins (does not touch user config)"
     )
     init_parser.add_argument(
-        "--profile", choices=("desktop", "server", "windesktop", "winserver"),
+        "--profile",
+        choices=("desktop", "server", "windesktop", "winserver", "macdesktop", "macserver"),
         default="desktop",
-        help="Write explicit desktop, server, windesktop, or winserver defaults "
-             "(default: desktop)",
+        help="Write explicit desktop/server, Windows, or macOS defaults (default: desktop)",
     )
 
     # check

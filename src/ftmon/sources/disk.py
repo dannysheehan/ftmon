@@ -54,7 +54,15 @@ class DiskSampler:
                 # Skip inaccessible mountpoints [PL-03]
                 continue
 
-            attrs = {"fstype": partition.fstype, "device": partition.device}
+            raw_options = getattr(partition, "opts", "")
+            options = {item.strip() for item in raw_options.split(",") if item.strip()}
+            attrs = {
+                "fstype": partition.fstype,
+                "device": partition.device,
+                "mountpoint": partition.mountpoint,
+                "readonly": "true" if "ro" in options else "false",
+                "mount_options": ",".join(sorted(options)),
+            }
 
             metrics: dict[str, float] = {
                 "total_bytes": float(usage.total),

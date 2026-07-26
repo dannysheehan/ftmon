@@ -146,8 +146,12 @@ class DaemonCore:
         # started lazily once an events-source monitor is actually loaded.
         self.event_monitors: dict[str, MonitorDef] = {}
         self.events_engine = (
-            EventEngine(source=self.event_source, executor=self.executor,
-                        counter=self.stats.count)
+            EventEngine(
+                source=self.event_source,
+                executor=self.executor,
+                counter=self.stats.count,
+                cursor_name=getattr(self.event_source, "cursor_name", "journald"),
+            )
             if self.event_source is not None else None
         )
         self._load_definitions(initial=True)
@@ -318,7 +322,6 @@ class DaemonCore:
             self.stats.count("config_errors")
         seen = set()
         for mdef in defs:
-            seen.add(mdef.name)
             if self.platform not in mdef.platforms:
                 # PL-01/PL-02: declared but unenforced was the actual gap —
                 # a monitor's platforms list must gate loading, not just
@@ -330,6 +333,13 @@ class DaemonCore:
                         file=sys.stderr,
                     )
                 continue
+            # Disabled definitions remain installed and editable, but must
+            # contribute no sampling, event ingestion, or rule evaluation.
+            # Leaving them out of `seen` also drives the normal removal path
+            # when an active monitor is disabled during a rescan.
+            if not mdef.enabled:
+                continue
+            seen.add(mdef.name)
             if mdef.source == "events":
                 # Event monitors have no sampler/rings/schedule: the event
                 # engine consumes them every tick against the live stream.
@@ -375,6 +385,12 @@ class DaemonCore:
             if self.events_engine is not None:
                 self.events_engine.supersede(name, now)  # MD-09
             del self.event_monitors[name]
+        if (
+            self.events_engine is not None
+            and self.events_engine._started
+            and not self.event_monitors
+        ):
+            self.events_engine.stop()
 
     def _index_groups(self, mdef: MonitorDef) -> None:
         """Rung configs per (monitor, group), severity-descending — the

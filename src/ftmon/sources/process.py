@@ -140,10 +140,14 @@ class ProcessSampler:
             value = _opt(read)
             if value is not None:
                 metrics[metric_name] = float(value)  # type: ignore[arg-type]
-        io = _opt(proc.io_counters)
-        if io is not None:
-            metrics["io_read_bytes"] = float(io.read_bytes)  # type: ignore[union-attr]
-            metrics["io_write_bytes"] = float(io.write_bytes)  # type: ignore[union-attr]
+        # Process.io_counters is unavailable on some psutil/macOS builds,
+        # just as num_fds is unavailable on Windows. Capability absence is
+        # normal platform shape, not an entity failure (PL-01/PL-03).
+        if hasattr(proc, "io_counters"):
+            io = _opt(proc.io_counters)
+            if io is not None:
+                metrics["io_read_bytes"] = float(io.read_bytes)  # type: ignore[union-attr]
+                metrics["io_write_bytes"] = float(io.write_bytes)  # type: ignore[union-attr]
 
         return EntitySample(
             entity_id=f"{name}:{proc.pid}:{create_time}", attrs=attrs, metrics=metrics

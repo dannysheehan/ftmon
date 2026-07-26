@@ -133,7 +133,7 @@ def test_editing_enabled_definition_supersedes_open_incidents_md_06(tmp_path):
     paths.ensure()
     (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     sampler = ScriptedSampler()
     for i in range(8):
         sampler.push(grower(i))

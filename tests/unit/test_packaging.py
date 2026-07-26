@@ -13,6 +13,16 @@ def test_systemd_user_unit_is_packaged_do_02():
     assert "User=root" not in unit
 
 
+def test_launchagent_is_packaged_and_preserves_sighup_pm_11():
+    """[PM-11] launchd owns lifecycle but does not substitute restart for reload."""
+    plist = files("ftmon").joinpath("launchd/org.ftmon.daemon.plist").read_text()
+    assert "<string>org.ftmon.daemon</string>" in plist
+    assert "<key>ProgramArguments</key>" in plist
+    assert "<key>RunAtLoad</key>" in plist
+    assert "<key>KeepAlive</key>" in plist
+    assert "kickstart" not in plist
+
+
 def test_hardened_server_unit_is_packaged_pm_09_do_06():
     """[PM-09][DO-06] The server unit fixes identity, paths, and write scope."""
     unit = files("ftmon").joinpath("systemd/ftmon-server.service").read_text()

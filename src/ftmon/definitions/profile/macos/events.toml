@@ -1,0 +1,20 @@
+# FTMON built-in: journal/event-log entries of interest (SPEC 7.7.3)
+# Event rules open "episodes" (IN-08): a matching event opens/refreshes an
+# incident; it clears after clear_after with no matching events.
+schema = 1
+
+[monitor]
+name = "events"
+description = "Raises incidents for macOS unified-log entries of interest"
+version = 2
+enabled = false
+platforms = ["darwin"]
+source = "events"
+
+[[rule]]
+id = "third-party-fault"
+when = 'severity >= critical and not matches(provider, "^(com\\.apple\\.|unknown$)")'
+severity = "critical"
+cooldown = "10m"
+clear_after = "30m"
+message = "Third-party macOS fault from {provider}: {message}"

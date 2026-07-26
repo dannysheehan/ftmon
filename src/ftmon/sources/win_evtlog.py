@@ -121,6 +121,7 @@ def _synthesize_message(root: ET.Element, event_id: str | None, provider: str) -
 
 class WindowsEventSource:
     decl: ClassVar[SourceDecl] = SOURCE_DECLS["events"]
+    cursor_name = "eventlog"
 
     def __init__(self, channels: tuple[str, ...] = _DEFAULT_CHANNELS):
         self._channels = channels

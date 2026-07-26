@@ -33,4 +33,8 @@ def desktop_notifier_for_platform(platform: str | None = None) -> Notifier | Non
         from ftmon.notify.toast import ToastNotifier
 
         return ToastNotifier()
+    if current == "darwin":
+        from ftmon.notify.osascript import OsaScriptNotifier
+
+        return OsaScriptNotifier()
     return None

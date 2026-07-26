@@ -115,6 +115,7 @@ class EventEngine:
 
     def stop(self) -> None:
         self.source.stop()
+        self._started = False
 
     def tick(self, monitors: list[MonitorDef], now: float, mono: float, writer) -> None:
         if not self._started:

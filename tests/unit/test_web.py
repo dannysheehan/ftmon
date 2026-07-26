@@ -303,6 +303,11 @@ def test_metrics_explorer_uses_cascading_catalog_selectors_ui_02(tmp_path):
     conn.commit()
     conn.close()
     headers = {"host": "localhost:8420"}
+    default_page = client.get("/metrics", headers=headers)
+    assert ">disk</option>" in default_page.text
+    assert "No persisted metric observations are available" not in default_page.text
+    assert "<option selected>6h</option>" in default_page.text
+
     page = client.get(
         "/metrics?monitor=disk&entity=/home&metric=used_pct&range=6h&statistic=last",
         headers=headers,

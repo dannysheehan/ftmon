@@ -85,6 +85,15 @@ uv run ftmon init --profile desktop  # use "server" for a headless host
 uv run ftmon check     # validates every monitor definition
 ```
 
+Platform-specific equivalents are `windesktop`/`winserver` and
+`macdesktop`/`macserver`. The macOS desktop channel uses Script Editor's
+Notification Center identity because it deliberately requires no app bundle.
+The initial macOS event monitor is disabled and network/service rules are
+watchlist-driven, avoiding alerts from routine Apple diagnostics and ordinary
+desktop connection churn.
+The reasoning and platform limitations are documented in
+[macOS monitoring rationale](macos-monitoring.md).
+
 Directories FTMON uses (Linux):
 
 | Path | Purpose |

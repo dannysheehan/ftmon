@@ -69,6 +69,34 @@ new `config.toml`—they do not
 become a hidden runtime mode. Running init again preserves existing settings;
 `--force` replaces built-in definitions only (PM-08).
 
+On macOS choose `macdesktop` (file audit plus best-effort Notification Center
+delivery) or `macserver` (file audit only). Desktop notifications appear under
+**Script Editor** in System Settings because the zero-bundle adapter uses
+`/usr/bin/osascript`; exit zero means accepted, not proof that Focus displayed
+a banner.
+
+The macOS profile keeps unified-log incidents disabled initially. Enable and
+customize `events.toml` only for subsystems you operate; a blanket
+`severity >= error` rule is intentionally not supplied because routine Apple
+services emit error-level diagnostics. Writable visible volumes are monitored,
+while read-only/nobrowse disk images are excluded.
+See [macOS monitoring rationale](macos-monitoring.md) for the rule-by-rule
+selection and deliberately deferred Apple-native signals.
+
+For a per-user service, copy the packaged
+`ftmon/launchd/org.ftmon.daemon.plist` to
+`~/Library/LaunchAgents/org.ftmon.daemon.plist`, replace
+`/Users/REPLACE_ME/.local/bin/ftmon` with the absolute result of
+`command -v ftmon`, then bootstrap it:
+
+```sh
+plutil -lint ~/Library/LaunchAgents/org.ftmon.daemon.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/org.ftmon.daemon.plist
+```
+
+Send SIGHUP to the managed PID to reload in place. `launchctl kickstart -k`
+is an explicit restart with a new PID, not a reload substitute.
+
 ## Upgrade
 
 Upgrading replaces the installed `ftmon` executable. Configuration,

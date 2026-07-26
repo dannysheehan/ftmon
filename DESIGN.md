@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.17**. Companion to `SPEC.md` v0.32 — every design element
+Status: **DRAFT v0.18**. Companion to `SPEC.md` v0.33 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -677,7 +677,7 @@ Desktop readiness is validated before rows are created; a runtime `notify-send`
 timeout is retryable and other non-zero exits are permanent. These rules avoid
 an absent desktop session creating an endless queue on a server.
 
-The planned Darwin desktop adapter launches `/usr/bin/osascript` with a
+The Darwin desktop adapter launches `/usr/bin/osascript` with a
 `display notification` expression and a bounded timeout. It needs no FTMON app
 bundle or code signature, but Notification Center attributes it to
 `com.apple.ScriptEditor2`; adapter documentation and doctor output must name
@@ -900,7 +900,7 @@ adapters in ignored/personal locations, never separately committed skills.
 
 `journald.py`: spawns `journalctl -f -o json --output-fields=MESSAGE,PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,__CURSOR [--after-cursor=C]`. Reader thread appends raw lines to deque. `drain()` (main thread): parse JSON (malformed → count, skip), normalize → `EventRecord` (severity map: PRIORITY 0–2→critical, 3→error, 4→warning, 5→notice, 6–7→info; provider = `_SYSTEMD_UNIT` else `SYSLOG_IDENTIFIER`), return last `__CURSOR`. Cursor is persisted in the tick's write txn (DM-15). Storm counter per (source, provider) sliding minute (DM-10); store-filter per amended DM-09; matching against loaded event rules uses the same compiled `when` expressions with the event-field NameEnv. Reader death → `alive()` false → scheduler restarts with backoff (SA-03).
 
-The planned `oslog.py` first replays `/usr/bin/log show --style ndjson` from
+`oslog.py` first replays `/usr/bin/log show --style ndjson` from
 several seconds before its persisted wall-time watermark, then starts
 `/usr/bin/log stream --style ndjson` with the same predicate. Both outputs are
 line-framed but not pure event NDJSON: the reader ignores human filter text,
@@ -919,6 +919,14 @@ and the same event's stream and archived timestamps differed by milliseconds
 on real hardware. If the requested boundary predates retained unified-log
 data, the source records a retention-gap self-event before tailing current
 events.
+
+The macOS profile does not turn unified-log severity into actionability:
+routine Apple components emit `error` during normal operation, and an
+`osascript` notification itself can produce TCC/RunningBoard errors. Events
+therefore ship disabled with only an opt-in, non-Apple `fault` example. Disk
+rules exclude read-only and `nobrowse` mounts (including mounted application
+images), omit APFS inode thresholds, and retain capacity rules only for
+writable visible volumes. Network rules are watchlist-only.
 
 ---
 
