@@ -8,7 +8,7 @@ name = "events"
 description = "Raises incidents for journal entries of interest"
 version = 1
 enabled = true
-platforms = ["linux"]
+platforms = ["linux", "windows"]
 source = "events"
 
 [[rule]]
@@ -27,12 +27,10 @@ cooldown = "5m"
 clear_after = "30m"
 message = "OOM killer fired: {message}"
 
-# Windows-style specific event id (works unchanged once the eventlog source
-# lands — event_id is a string on every platform, PL-02):
-# [[rule]]
-# id = "unexpected-shutdown"
-# when = 'event_id == "6008"'
-# severity = "error"
-# cooldown = "1h"
-# clear_after = "1h"
-# message = "Unexpected shutdown recorded ({provider})"
+[[rule]]
+id = "unexpected-shutdown"
+when = 'event_id == "6008"'
+severity = "error"
+cooldown = "1h"
+clear_after = "1h"
+message = "Unexpected shutdown recorded ({provider})"

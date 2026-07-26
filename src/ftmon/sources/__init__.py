@@ -18,4 +18,8 @@ def event_source_for_platform(platform: str | None = None) -> EventSource | None
         from ftmon.sources.journald import JournaldEventSource
 
         return JournaldEventSource()
+    if current == "windows":
+        from ftmon.sources.win_evtlog import WindowsEventSource
+
+        return WindowsEventSource()
     return None

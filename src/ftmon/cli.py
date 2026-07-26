@@ -19,18 +19,27 @@ from pathlib import Path
 import ftmon
 from ftmon.paths import get_paths
 
+# Profile -> calibrated-tree subdirectory under profile/. desktop's is real
+# host-tuning data (docs/tuning-desktop-xps15.md); windesktop/winserver share
+# one Windows tree that fixes OS-semantic dead rules (no PSI/inodes/journald
+# on Windows) rather than tuning thresholds -- there is no Windows tuning
+# data yet. server has no tree of its own and falls through to the generic
+# design/builtins defaults below, same as any profile not listed here.
+_PROFILE_CALIBRATED_DIRS = {
+    "desktop": "desktop",
+    "windesktop": "windows",
+    "winserver": "windows",
+}
+
 
 def _builtin_monitors_source(profile: str):
-    """Return a Path or Traversable directory of monitor TOML to install (FS-02).
-
-    Desktop profile installs calibrated copies from profile/desktop; server
-    profile keeps the normative design/builtins defaults.
-    """
-    if profile == "desktop":
+    """Return a Path or Traversable directory of monitor TOML to install (FS-02)."""
+    subdir = _PROFILE_CALIBRATED_DIRS.get(profile)
+    if subdir:
         try:
             import importlib.resources
 
-            resources = importlib.resources.files("ftmon.definitions") / "profile" / "desktop"
+            resources = importlib.resources.files("ftmon.definitions") / "profile" / subdir
             try:
                 for item in resources.iterdir():
                     if item.is_file() and item.name.endswith(".toml"):
@@ -39,7 +48,7 @@ def _builtin_monitors_source(profile: str):
                 pass
         except ImportError:
             pass
-        fallback = Path(__file__).resolve().parents[2] / "design" / "profile" / "desktop"
+        fallback = Path(__file__).resolve().parents[2] / "design" / "profile" / subdir
         if fallback.is_dir():
             return fallback
 
@@ -61,7 +70,7 @@ def _builtin_monitors_source(profile: str):
 
 def _default_config_toml(profile: str = "desktop") -> str:
     """Explicit profile scaffold (PM-08); no runtime profile switch remains."""
-    desktop_enabled = "true" if profile == "desktop" else "false"
+    desktop_enabled = "true" if profile in ("desktop", "windesktop") else "false"
     return f"""\
 # FTMON v2 configuration
 # See docs/definitions.md for monitor setup; this file covers daemon behavior.
@@ -131,7 +140,8 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     - Creates all dirs (0700)
     - Writes config.toml only if absent (unless --force)
-    - Installs 8 builtin *.toml files (desktop profile uses calibrated monitors)
+    - Installs 8 builtin *.toml files (desktop/windesktop/winserver profiles
+      use calibrated monitors)
     - Prints summary of what was installed
     """
     from ftmon.paths import atomic_write
@@ -589,38 +599,36 @@ def cmd_paths(args: argparse.Namespace) -> int:
 
 
 def _monitor_rescan(paths) -> int:
-    """CL-07: SIGHUP the daemon recorded in the PM-02 lock file. Acquiring
-    the flock proves no daemon holds it — never signal a stale pid."""
-    import fcntl
-    import os
-    import signal
+    """CL-07: signal the daemon recorded in the PM-02 lock file to reload
+    (SIGHUP on POSIX, a named Event on Windows — paths.signal_reload).
+    Acquiring the lock proves no daemon holds it — never signal a stale pid."""
+    from ftmon.paths import signal_reload, try_lock_exclusive
 
     try:
-        f = open(paths.lock_file)
+        # "r+": msvcrt.locking (Windows side of try_lock_exclusive) needs a
+        # write-permitted mode or it fails with EACCES regardless of whether
+        # anyone else holds the lock — plain "r" would misreport as busy.
+        f = open(paths.lock_file, "r+")
     except OSError:
         print("daemon not running (no lock file); start it with `ftmon daemon`",
               file=sys.stderr)
         return 1
     with f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if try_lock_exclusive(f):
             print("daemon not running (lock not held); start it with "
                   "`ftmon daemon`", file=sys.stderr)
             return 1
-        except BlockingIOError:
-            pass
         pid_text = f.read().strip()
     if not pid_text.isdigit():
         print("daemon lock held but no pid recorded — daemon predates "
               "CL-07; send SIGHUP manually or restart it", file=sys.stderr)
         return 1
     try:
-        os.kill(int(pid_text), signal.SIGHUP)
+        signal_reload(int(pid_text))
     except (ProcessLookupError, PermissionError) as exc:
         print(f"cannot signal daemon pid {pid_text}: {exc}", file=sys.stderr)
         return 1
-    print(f"reload requested (SIGHUP to pid {pid_text}); "
-          "applied at the next tick")
+    print(f"reload requested (pid {pid_text}); applied at the next tick")
     return 0
 
 
@@ -754,9 +762,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             else "ready" if channel.enabled else "disabled"
         )
         if name == "desktop" and status == "ready":
-            from ftmon.notify import DesktopNotifier
+            from ftmon.notify import desktop_notifier_for_platform
 
-            if not DesktopNotifier().available:
+            notifier = desktop_notifier_for_platform()
+            if notifier is None or not notifier.available:
                 status = "error (desktop_unavailable)"
         print(f"Notification {name}: {status}")
     for error in config_errors:
@@ -861,8 +870,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Re-install builtins (does not touch user config)"
     )
     init_parser.add_argument(
-        "--profile", choices=("desktop", "server"), default="desktop",
-        help="Write explicit desktop or server defaults (default: desktop)",
+        "--profile", choices=("desktop", "server", "windesktop", "winserver"),
+        default="desktop",
+        help="Write explicit desktop, server, windesktop, or winserver defaults "
+             "(default: desktop)",
     )
 
     # check

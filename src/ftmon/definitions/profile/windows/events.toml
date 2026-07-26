@@ -1,0 +1,33 @@
+# FTMON built-in: journal/event-log entries of interest (SPEC 7.7.3)
+# Event rules open "episodes" (IN-08): a matching event opens/refreshes an
+# incident; it clears after clear_after with no matching events.
+# The generic copy's "oom" rule is dropped here: it gates on
+# provider == "kernel", a journald syslog-identifier convention no Windows
+# Event Log provider is ever named -- permanently dead on Windows. No
+# equivalent low-memory Windows event is wired up yet (future addition,
+# not guessed at here).
+schema = 1
+
+[monitor]
+name = "events"
+description = "Raises incidents for Windows Event Log entries of interest"
+version = 2
+enabled = true
+platforms = ["windows"]
+source = "events"
+
+[[rule]]
+id = "errors"
+when = 'severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")'
+severity = "error"
+cooldown = "10m"
+clear_after = "30m"
+message = "{provider}: {message}"
+
+[[rule]]
+id = "unexpected-shutdown"
+when = 'event_id == "6008"'
+severity = "error"
+cooldown = "1h"
+clear_after = "1h"
+message = "Unexpected shutdown recorded ({provider})"

@@ -4,8 +4,10 @@ canned systemctl output (no systemd needed in CI), real sockets for net."""
 from __future__ import annotations
 
 import socket
+import sys
 
 import psutil
+import pytest
 
 from ftmon.clock import FakeClock
 from ftmon.sources.net import NetSampler
@@ -85,6 +87,40 @@ class TestUnitSampler:
                       {"watchlist": ["notadict", {"neither": 1},
                                      {"unit": "ok.service"}]})
         assert [e.entity_id for e in snap.entities] == ["unit:ok.service"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="win32serviceutil is Windows-only")
+class TestWindowsServiceQuery:
+    """[SA-04][PL-01][PL-03] unit.py's {unit=...} kind against the real
+    Windows Service Control Manager -- no NRestarts equivalent exists there
+    (see unit.py's module docstring), only ActiveState."""
+
+    def test_real_running_service_reports_active(self):
+        """[SA-04] Task Scheduler ('Schedule') runs by default on every
+        Windows install -- a real, always-available positive case."""
+        from ftmon.sources.unit import _query_windows_service
+
+        assert _query_windows_service("Schedule") == "ActiveState=active"
+
+    def test_unknown_service_reports_inactive_not_an_exception(self):
+        """[PL-03] a typo'd watchlist entry alerts as down, never crashes."""
+        from ftmon.sources.unit import _query_windows_service
+
+        assert _query_windows_service("NoSuchServiceXYZ") == "ActiveState=inactive"
+
+    def test_default_run_cmd_dispatches_to_windows_query(self):
+        from ftmon.sources.unit import _default_run_cmd, _query_windows_service
+
+        assert _default_run_cmd("Schedule") == _query_windows_service("Schedule")
+
+    def test_unit_sampler_end_to_end_against_a_real_service(self):
+        """[SA-04] UnitSampler's default run_cmd (no override) against the
+        real Service Control Manager, not a canned string."""
+        s = UnitSampler(FakeClock())
+        snap = sample(s, {"watchlist": [{"unit": "Schedule"}]})
+        (ent,) = snap.entities
+        assert ent.metrics["present"] == 1.0
+        assert "restarts" not in ent.metrics
 
 
 class TestNetSampler:

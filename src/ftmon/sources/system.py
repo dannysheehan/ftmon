@@ -6,7 +6,6 @@ metrics, and optional PSI pressure stall information when available.
 
 from __future__ import annotations
 
-import os
 import re
 import socket
 from collections.abc import Mapping
@@ -59,8 +58,11 @@ class SystemSampler:
         """Sample system metrics into a single entity snapshot."""
         attrs = {"hostname": socket.gethostname()}
 
-        # Get load averages
-        load1, load5, load15 = os.getloadavg()
+        # Get load averages. psutil.getloadavg() proxies to os.getloadavg()
+        # on POSIX and computes a CPU-percent-derived approximation on
+        # Windows (which has no native load-average concept) -- one call
+        # works correctly on every platform, no branching needed (PL-01).
+        load1, load5, load15 = psutil.getloadavg()
 
         # Get CPU percent (cached: rate since last call)
         cpu_pct = psutil.cpu_percent(None)

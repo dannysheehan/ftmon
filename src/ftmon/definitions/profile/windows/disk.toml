@@ -1,0 +1,111 @@
+# FTMON built-in: disk space + filling detection (SPEC 7.7.4)
+# The "filling" rule is the legacy FTMON monotonic test: sustained growth,
+# even slow, gets flagged before the thresholds trip.
+# The generic copy's inode ladder is dropped here: NTFS has no POSIX inode
+# concept, so inode_used_pct is always None on Windows (PL-01/EX-06) and
+# those three rules would sit in the file permanently dead. Everything
+# else (space ladder, filling) is unchanged and fully correct on Windows.
+schema = 1
+
+# NOTE: exempt is a top-level key, so it must appear BEFORE the first [table]
+# header - TOML binds bare keys to the most recently opened table otherwise.
+exempt = [ 'matches(fstype, "^(tmpfs|iso9660|squashfs|overlay)$")' ]
+
+[monitor]
+name = "disk"
+description = "Disk space thresholds and filling-rate detection"
+version = 5
+enabled = true
+platforms = ["windows"]
+interval = "60s"
+source = "disk"
+
+[parameters]
+space_notice_pct = { value = 85, doc = "Notice threshold, percent used" }
+space_warn_pct = { value = 92, doc = "Warning threshold, percent used" }
+space_crit_pct = { value = 97, doc = "Error threshold, percent used" }
+filling_frac = { value = 0.85, doc = "Fraction of consecutive growth samples (70m) that counts as filling" }
+
+[glance]
+metric = "used_pct"
+unit = "percent"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "space_warn_pct" },
+  { label = "error", parameter = "space_crit_pct" },
+]
+
+[[derived]]
+name = "filling"
+expr = 'monot(used_bytes, "70m")'
+
+[[derived]]
+# Signed rate is stored before display downsampling so historical cleanup is
+# not misrepresented as growth and long-range forecasts remain honest (CA-09).
+name = "fill_rate_bph"
+expr = 'slope(used_bytes, "70m") * 3600'
+
+[[derived]]
+# Hours until full at the current 70m growth rate; huge when not growing.
+name = "full_in_h"
+expr = 'free_bytes / clamp(slope(used_bytes, "70m") * 3600, 1, 1000000000000000)'
+
+[[trend]]
+id = "space-growth"
+kind = "capacity"
+title = "Disk capacity growth"
+value_metric = "used_pct"
+value_unit = "percent"
+rate_metric = "fill_rate_bph"
+rate_unit = "bytes/hour"
+confidence_metric = "filling"
+confidence_threshold_param = "filling_frac"
+remaining_metric = "free_bytes"
+value_threshold_params = ["space_notice_pct", "space_warn_pct", "space_crit_pct"]
+
+# --- space ladder (one incident per mount, IN-03) ---
+[[rule]]
+id = "space-notice"
+group = "space"
+when = 'used_pct > space_notice_pct'
+severity = "notice"
+confirm_cycles = 3
+message = "Disk {entity} at {used_pct:.0f}% used"
+
+[[rule]]
+id = "space-warn"
+group = "space"
+when = 'used_pct > space_warn_pct'
+severity = "warning"
+confirm_cycles = 3
+message = "Disk {entity} at {used_pct:.0f}% used"
+
+[[rule]]
+id = "space-crit"
+group = "space"
+when = 'used_pct > space_crit_pct'
+severity = "error"
+confirm_cycles = 2
+message = "Disk {entity} nearly full: {used_pct:.0f}% used, {free_mb:.0f} MB left"
+
+# Baseline-relative alternative (silent until ~24h of learning, CA-05):
+# [[rule]]
+# id = "space-baseline"
+# group = "space"
+# when = 'free_bytes < baseline(free_bytes) * 0.3'
+# severity = "warning"
+# confirm_cycles = 3
+# message = "Disk {entity} well below its normal free space"
+
+# --- filling (legacy monotonic test) ---
+[[rule]]
+id = "filling"
+group = "filling"
+when = 'filling >= filling_frac and used_pct > 50'
+severity = "warning"
+confirm_cycles = 3
+message = "Disk {entity} filling steadily; full in ~{full_in_h:.1f} h at current rate"
+
+[[derived]]
+name = "free_mb"
+expr = 'free_bytes / MB'

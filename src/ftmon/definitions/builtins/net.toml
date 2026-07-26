@@ -8,7 +8,7 @@ name = "net"
 description = "Expected listeners and abnormal connection counts"
 version = 1
 enabled = true
-platforms = ["linux"]
+platforms = ["linux", "windows"]
 interval = "60s"
 source = "net"
 

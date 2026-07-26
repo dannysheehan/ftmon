@@ -7,7 +7,7 @@ name = "leak"
 description = "Detects processes whose memory grows steadily (memory leaks)"
 version = 3
 enabled = true
-platforms = ["linux"]
+platforms = ["linux", "windows"]
 interval = "60s"
 source = "process"
 

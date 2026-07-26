@@ -347,6 +347,17 @@ def test_process_deadline_stops_iteration(monkeypatch):
 # --- DiskSampler tests ---
 
 
+def test_disk_inode_omitted_when_statvfs_unavailable(monkeypatch):
+    """[SA-04, DM-02, PL-01] os.statvfs doesn't exist on Windows at all
+    (AttributeError, not OSError) -- the guard must return None rather than
+    crash the sampler. delattr(raising=False) exercises the same "absent"
+    path on POSIX too, so this runs on every platform, not just Windows."""
+    clock = FakeClock()
+    sampler = DiskSampler(clock)
+    monkeypatch.delattr("os.statvfs", raising=False)
+    assert sampler._get_inode_usage_pct("/mnt") is None
+
+
 def test_disk_inode_used_pct_computation(monkeypatch):
     """[SA-04, DM-02] Inode usage % computed from statvfs."""
     clock = FakeClock()
@@ -497,7 +508,7 @@ def test_system_single_entity_hostname(monkeypatch):
     sampler = SystemSampler(clock)
 
     monkeypatch.setattr("socket.gethostname", lambda: "testhost")
-    monkeypatch.setattr("os.getloadavg", lambda: (1.0, 2.0, 3.0))
+    monkeypatch.setattr("psutil.getloadavg", lambda: (1.0, 2.0, 3.0))
     monkeypatch.setattr(
         "psutil.cpu_percent", lambda interval: 25.0
     )
@@ -540,7 +551,7 @@ def test_system_psi_metrics_parsed(monkeypatch):
     sampler = SystemSampler(clock)
 
     monkeypatch.setattr("socket.gethostname", lambda: "testhost")
-    monkeypatch.setattr("os.getloadavg", lambda: (0.0, 0.0, 0.0))
+    monkeypatch.setattr("psutil.getloadavg", lambda: (0.0, 0.0, 0.0))
     monkeypatch.setattr("psutil.cpu_percent", lambda interval: 0.0)
     monkeypatch.setattr(
         "psutil.virtual_memory",
