@@ -60,6 +60,8 @@ def test_platform_noise_rules_are_removed_and_events_are_opt_in():
     assert not any(r["id"].startswith("inodes-") for r in disk["rule"])
     filling = next(r for r in disk["rule"] if r["id"] == "filling")
     assert 'coverage(used_bytes, "70m") >= min_filling_coverage' in filling["when"]
+    assert "used_pct > 70" in filling["when"]
+    assert filling["confirm_cycles"] == 9
     assert 'readonly == "true"' in disk["exempt"]
     assert (
         'contains(mount_options, "nobrowse") and mountpoint != "/System/Volumes/Data"'
@@ -69,6 +71,18 @@ def test_platform_noise_rules_are_removed_and_events_are_opt_in():
     assert {r["id"] for r in net["rule"]} == {"listener-down"}
     service = (PROFILE / "service.toml").read_text()
     assert "{ unit =" not in service
+
+
+def test_leak_profile_requires_persistent_growth_and_exempts_gui_helpers():
+    leak = tomllib.loads((PROFILE / "leak.toml").read_text())
+    assert leak["parameters"]["warn_mb_per_h"]["value"] == 96
+    assert leak["parameters"]["crit_mb_per_h"]["value"] == 256
+    assert leak["parameters"]["min_net_mb"]["value"] == 48
+    assert all(rule["confirm_cycles"] == 9 for rule in leak["rule"])
+    exemptions = " ".join(leak["exempt"])
+    assert "Google Chrome Helper" in exemptions
+    assert "com\\\\.apple\\\\.WebKit" in exemptions
+    assert "node" not in exemptions
 
 
 def test_disabled_events_profile_does_not_start_unified_log(tmp_path):

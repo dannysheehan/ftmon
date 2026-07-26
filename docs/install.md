@@ -83,19 +83,24 @@ while read-only/nobrowse disk images are excluded.
 See [macOS monitoring rationale](macos-monitoring.md) for the rule-by-rule
 selection and deliberately deferred Apple-native signals.
 
-For a per-user service, copy the packaged
-`ftmon/launchd/org.ftmon.daemon.plist` to
-`~/Library/LaunchAgents/org.ftmon.daemon.plist`, replace
-`/Users/REPLACE_ME/.local/bin/ftmon` with the absolute result of
-`command -v ftmon`, then bootstrap it:
+For persistent per-user services, copy the packaged daemon and web
+LaunchAgents to `~/Library/LaunchAgents/`. Replace
+`/Users/REPLACE_ME/.local/bin/ftmon` in both files with the absolute result of
+`command -v ftmon`, and replace `REPLACE_ME` in the web log paths with the
+account name:
 
 ```sh
+cp /path/to/ftmon/launchd/org.ftmon.{daemon,web}.plist ~/Library/LaunchAgents/
 plutil -lint ~/Library/LaunchAgents/org.ftmon.daemon.plist
+plutil -lint ~/Library/LaunchAgents/org.ftmon.web.plist
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/org.ftmon.daemon.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/org.ftmon.web.plist
 ```
 
 Send SIGHUP to the managed PID to reload in place. `launchctl kickstart -k`
-is an explicit restart with a new PID, not a reload substitute.
+is an explicit restart with a new PID, not a reload substitute. The web
+LaunchAgent binds to the CLI's loopback-only default and writes startup or
+crash diagnostics to `~/Library/Logs/ftmon-web.log`.
 
 ## Upgrade
 

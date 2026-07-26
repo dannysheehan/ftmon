@@ -2,22 +2,31 @@
 # Tune parameters below; run `ftmon check` after editing.
 schema = 1
 
+# macOS desktop helpers use cache/process churn that looked like a leak during
+# the overnight soak but always recovered without operator action. Runtime
+# names such as node stay visible because they may be real services.
+exempt = [
+  'matches(name, "^(Finder|Code|Cursor|Google Chrome|Google Chrome Helper.*|Safari|Safari Web Content|com\\.apple\\.WebKit\\..*|photoanalysisd)$")',
+]
+
 [monitor]
 name = "leak"
 description = "Detects processes whose memory grows steadily (memory leaks)"
-version = 3
+version = 4
 enabled = true
 platforms = ["darwin"]
 interval = "60s"
 source = "process"
 
 [parameters]
-warn_mb_per_h = { value = 32, doc = "Warn when RSS grows faster than this (MB/hour), sustained" }
-crit_mb_per_h = { value = 128, doc = "Error when RSS grows faster than this (MB/hour)" }
-promote_mb = { value = 16, doc = "Growth over 15m that makes a process worth tracking long-term" }
-growth_confidence = { value = 0.8, doc = "Fraction of rising samples that indicates sustained growth" }
+# These match the calibrated desktop persistence gate; lower values produced
+# repeated short-lived incidents from ordinary interactive workloads.
+warn_mb_per_h = { value = 96, doc = "Warn when RSS grows faster than this (MB/hour), sustained" }
+crit_mb_per_h = { value = 256, doc = "Error when RSS grows faster than this (MB/hour)" }
+promote_mb = { value = 48, doc = "Growth over 15m that makes a process worth tracking long-term" }
+growth_confidence = { value = 0.85, doc = "Fraction of rising samples that indicates sustained growth" }
 min_coverage = { value = 0.8, doc = "Fraction of the 45m slope window that must actually be observed (v0.19 #20) - otherwise a short-lived spike that vanished after a few minutes can pass for a 45-minute verdict" }
-min_net_mb = { value = 16, doc = "Net RSS growth (MB) the 45m window must show - an earlier rise that has since fallen back is not an active leak" }
+min_net_mb = { value = 48, doc = "Net RSS growth (MB) the 45m window must show - an earlier rise that has since fallen back is not an active leak" }
 
 [glance]
 metric = "rss_slope_mbph"
@@ -50,7 +59,7 @@ id = "leak-warn"
 group = "leak"
 when = 'coverage(rss_bytes, "45m") >= min_coverage and delta(rss_bytes, "45m") > min_net_mb * MB and slope(rss_bytes, "45m") * 3600 > warn_mb_per_h * MB'
 severity = "warning"
-confirm_cycles = 3
+confirm_cycles = 9
 message = "{entity} sustained RSS growth: {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
 
 [[rule]]
@@ -58,7 +67,7 @@ id = "leak-crit"
 group = "leak"
 when = 'coverage(rss_bytes, "45m") >= min_coverage and delta(rss_bytes, "45m") > min_net_mb * MB and slope(rss_bytes, "45m") * 3600 > crit_mb_per_h * MB'
 severity = "error"
-confirm_cycles = 3
+confirm_cycles = 9
 message = "{entity} sustained RSS growth, fast: {rss_slope_mbph:.0f} MB/h (now {rss_mb:.0f} MB)"
 
 [[derived]]

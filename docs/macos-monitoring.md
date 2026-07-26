@@ -34,6 +34,13 @@ a leak candidate from launch-time allocation or ordinary cache oscillation.
 Per-process I/O is optional because some macOS psutil builds do not expose
 `Process.io_counters`.
 
+The default thresholds and nine-cycle confirmation match the calibrated
+desktop persistence gate. Finder, browser/WebKit helpers, editors and
+`photoanalysisd` are excluded because overnight testing showed their
+cache/process churn repeatedly recovered without operator action. Generic
+`node` and other service runtimes remain monitored: exempting an interpreter
+name would hide genuine application leaks.
+
 ### Writable volume capacity (`disk`)
 
 Only writable, visible volumes are capacity-alert targets. The macOS system
@@ -45,6 +52,10 @@ disk images, snapshots and helper volumes—are excluded.
 Space thresholds and filling-rate projection remain useful. Inode thresholds
 are removed: APFS allocation does not present the fixed-inode exhaustion model
 that makes those rules actionable on common Linux filesystems.
+
+The filling rule also requires 90% monotonicity, at least 70% usage and nine
+confirmation cycles. This avoids reporting ordinary background writes to a
+mostly empty APFS data volume as an urgent capacity problem.
 
 ### System memory (`load`)
 

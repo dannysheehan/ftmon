@@ -14,7 +14,7 @@ exempt = [
 [monitor]
 name = "disk"
 description = "Writable local disk space and filling-rate detection"
-version = 5
+version = 6
 enabled = true
 platforms = ["darwin"]
 interval = "60s"
@@ -24,7 +24,9 @@ source = "disk"
 space_notice_pct = { value = 85, doc = "Notice threshold, percent used" }
 space_warn_pct = { value = 92, doc = "Warning threshold, percent used" }
 space_crit_pct = { value = 97, doc = "Error threshold, percent used" }
-filling_frac = { value = 0.85, doc = "Fraction of consecutive growth samples (70m) that counts as filling" }
+# Ordinary APFS background writes are often monotonic on a mostly empty Data
+# volume, so filling needs stronger confidence than a capacity threshold.
+filling_frac = { value = 0.90, doc = "Fraction of consecutive growth samples (70m) that counts as filling" }
 min_filling_coverage = { value = 0.8, doc = "Fraction of the 70m window required before a filling verdict" }
 
 [glance]
@@ -102,9 +104,9 @@ message = "Disk {entity} nearly full: {used_pct:.0f}% used, {free_mb:.0f} MB lef
 [[rule]]
 id = "filling"
 group = "filling"
-when = 'coverage(used_bytes, "70m") >= min_filling_coverage and filling >= filling_frac and used_pct > 50'
+when = 'coverage(used_bytes, "70m") >= min_filling_coverage and filling >= filling_frac and used_pct > 70'
 severity = "warning"
-confirm_cycles = 3
+confirm_cycles = 9
 message = "Disk {entity} filling steadily; full in ~{full_in_h:.1f} h at current rate"
 
 [[derived]]

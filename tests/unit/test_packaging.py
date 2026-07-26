@@ -23,6 +23,17 @@ def test_launchagent_is_packaged_and_preserves_sighup_pm_11():
     assert "kickstart" not in plist
 
 
+def test_web_launchagent_is_packaged_and_supervises_process_do_02():
+    """[DO-02] The macOS web UI has a persistent, diagnosable user service."""
+    plist = files("ftmon").joinpath("launchd/org.ftmon.web.plist").read_text()
+    assert "<string>org.ftmon.web</string>" in plist
+    assert "<string>web</string>" in plist
+    assert "<key>RunAtLoad</key>" in plist
+    assert "<key>KeepAlive</key>" in plist
+    assert "<key>StandardErrorPath</key>" in plist
+    assert "0.0.0.0" not in plist
+
+
 def test_hardened_server_unit_is_packaged_pm_09_do_06():
     """[PM-09][DO-06] The server unit fixes identity, paths, and write scope."""
     unit = files("ftmon").joinpath("systemd/ftmon-server.service").read_text()

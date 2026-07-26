@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Keep web separate from the daemon so a UI failure cannot interrupt
+       collection; launchd restarts it and the log preserves the exit cause. -->
+  <key>Label</key>
+  <string>org.ftmon.web</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/REPLACE_ME/.local/bin/ftmon</string>
+    <string>web</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/ftmon-web.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/ftmon-web.log</string>
+</dict>
+</plist>
