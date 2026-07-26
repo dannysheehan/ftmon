@@ -72,7 +72,7 @@ def _windows_core_env(tmp_path, monitor_name: str):
     paths = get_paths(env)
     paths.ensure()
     text = (WINDOWS_PROFILE / f"{monitor_name}.toml").read_text(encoding="utf-8")
-    (paths.monitors_dir / f"{monitor_name}.toml").write_text(text)
+    (paths.monitors_dir / f"{monitor_name}.toml").write_text(text, encoding="utf-8")
     return paths
 
 
@@ -145,6 +145,154 @@ class TestDiskWindowsProfile:
         conn.close()
         assert row is not None
         assert row["severity"] == 2  # warning (space-crit needs 97%, not reached)
+
+
+class ScriptedProcessSampler:
+    """Minimal fixture mirroring test_engine.py's ScriptedSampler, for the
+    "process" source hog/leak share."""
+
+    decl = SOURCE_DECLS["process"]
+
+    def __init__(self) -> None:
+        self.script: list[list[tuple[str, dict, dict]]] = []
+        self.calls = 0
+
+    def push(self, *entities) -> None:
+        self.script.append(list(entities))
+
+    def sample(self, now, deadline_mono, options) -> Snapshot:
+        ents = self.script[min(self.calls, len(self.script) - 1)]
+        self.calls += 1
+        return Snapshot(
+            source="process", ts=now,
+            entities=tuple(EntitySample(entity_id=e, attrs=a, metrics=m) for e, a, m in ents),
+        )
+
+
+def _process_entity(entity_id: str, name: str, cpu_pct: float) -> tuple[str, dict, dict]:
+    return (entity_id, {"name": name}, {"cpu_pct": cpu_pct})
+
+
+class TestHogWindowsProfile:
+    def test_system_idle_process_is_exempt(self):
+        """[PL-01] The exempt clause targets exactly the entity found
+        opening a permanently-stuck critical incident on a real overnight
+        run (cpu_pct up to 1795%)."""
+        parsed = tomllib.loads((WINDOWS_PROFILE / "hog.toml").read_text(encoding="utf-8"))
+        assert parsed["exempt"] == ['matches(name, "^System Idle Process$")']
+
+    def test_system_idle_process_opens_no_incident_even_at_extreme_cpu(self, tmp_path):
+        """[SA-04][PL-03] The "false" side: an exempt entity must not open
+        an incident no matter how far past threshold its (meaningless)
+        cpu_pct reads -- driven through the real DaemonCore/pipeline."""
+        paths = _windows_core_env(tmp_path, "hog")
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock)
+        sampler = ScriptedProcessSampler()
+        for _ in range(6):
+            sampler.push(_process_entity("System Idle Process:0:0", "System Idle Process", 1795.0))
+        core.samplers["process"] = sampler
+        _tick_n(core, clock, 6)
+
+        conn = connect(paths.db_file, readonly=True)
+        row = conn.execute("SELECT state FROM incidents WHERE state='open'").fetchone()
+        conn.close()
+        assert row is None
+
+    def test_a_real_process_at_the_same_cpu_still_opens_an_incident(self, tmp_path):
+        """[SA-04] The "true" side: exempt is scoped to the one entity name,
+        not a blanket loosening of the hog rule -- a normal process at the
+        same extreme cpu_pct still alerts."""
+        paths = _windows_core_env(tmp_path, "hog")
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock)
+        sampler = ScriptedProcessSampler()
+        for _ in range(6):
+            sampler.push(_process_entity("runaway.exe:9999:123", "runaway.exe", 1795.0))
+        core.samplers["process"] = sampler
+        _tick_n(core, clock, 6)
+
+        conn = connect(paths.db_file, readonly=True)
+        row = conn.execute("SELECT state FROM incidents WHERE state='open'").fetchone()
+        conn.close()
+        assert row is not None
+
+
+class ScriptedSelfSampler:
+    """Minimal fixture for the "self" source, mirroring the other Scripted*
+    samplers in this file."""
+
+    decl = SOURCE_DECLS["self"]
+
+    def __init__(self) -> None:
+        self.script: list[list[tuple[str, dict, dict]]] = []
+        self.calls = 0
+
+    def push(self, *entities) -> None:
+        self.script.append(list(entities))
+
+    def sample(self, now, deadline_mono, options) -> Snapshot:
+        ents = self.script[min(self.calls, len(self.script) - 1)]
+        self.calls += 1
+        return Snapshot(
+            source="self", ts=now,
+            entities=tuple(EntitySample(entity_id=e, attrs=a, metrics=m) for e, a, m in ents),
+        )
+
+
+def _self_entity(cpu_pct: float) -> tuple[str, dict, dict]:
+    return ("ftmon", {}, {"cpu_pct": cpu_pct, "rss_bytes": 0.0, "db_bytes": 0.0,
+                           "source_activity_age_s": 0.0})
+
+
+class TestSelfWindowsProfile:
+    def test_cpu_budget_recalibrated_and_platforms_narrowed(self):
+        """[RB-01][RB-02][PL-01] Recalibrated for measured Windows overhead
+        (see WIN-BACKLOG.md); platforms narrowed to windows-only so this looser
+        threshold can never load on Linux/macOS, where RB-01's 1.0 default
+        still applies via the generic builtins/self.toml."""
+        parsed = tomllib.loads((WINDOWS_PROFILE / "self.toml").read_text(encoding="utf-8"))
+        assert parsed["parameters"]["cpu_budget_pct"]["value"] == 30
+        assert tuple(parsed["monitor"]["platforms"]) == ("windows",)
+
+    def test_cpu_below_recalibrated_budget_opens_no_incident(self, tmp_path):
+        """[SA-04] The steady-state overnight reading (~16%) must not alert
+        against the recalibrated budget -- the "false" side."""
+        paths = _windows_core_env(tmp_path, "self")
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock)
+        sampler = ScriptedSelfSampler()
+        for _ in range(4):
+            sampler.push(_self_entity(16.0))
+        core.samplers["self"] = sampler
+        _tick_n(core, clock, 4)
+
+        conn = connect(paths.db_file, readonly=True)
+        row = conn.execute(
+            "SELECT state FROM incidents WHERE state='open' AND grp='budget'"
+        ).fetchone()
+        conn.close()
+        assert row is None
+
+    def test_cpu_above_recalibrated_budget_still_opens_an_incident(self, tmp_path):
+        """[SA-04][RB-02] The watchdog must still fire for a genuine
+        regression well past the recalibrated budget -- the "true" side;
+        proves the recalibration didn't quietly gut RB-02's purpose."""
+        paths = _windows_core_env(tmp_path, "self")
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock)
+        sampler = ScriptedSelfSampler()
+        for _ in range(4):
+            sampler.push(_self_entity(80.0))
+        core.samplers["self"] = sampler
+        _tick_n(core, clock, 4)
+
+        conn = connect(paths.db_file, readonly=True)
+        row = conn.execute(
+            "SELECT state FROM incidents WHERE state='open' AND grp='budget'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
 
 
 class TestEventsWindowsProfile:

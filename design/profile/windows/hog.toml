@@ -1,10 +1,21 @@
 # FTMON built-in: CPU hog detector (SPEC 7.7.2)
 schema = 1
+# NOTE: exempt is a top-level key, so it must appear BEFORE the first [table]
+# header - TOML binds bare keys to the most recently opened table otherwise.
+#
+# System Idle Process (PID 0) is exempted by default on Windows: psutil
+# reports its cpu_pct as accumulated idle time across all cores, not real
+# load, so it trivially exceeds any "hog" threshold whenever the machine is
+# mostly idle -- confirmed on a real overnight run, where it opened a
+# permanently-stuck critical incident at cpu_pct up to 1795% (avg 1668%).
+# Not a platform conditional (PL-01): this entity only ever appears via
+# psutil on Windows, so the regex is inert everywhere else regardless.
+exempt = [ 'matches(name, "^System Idle Process$")' ]
 
 [monitor]
 name = "hog"
 description = "Detects processes with sustained high CPU use"
-version = 2
+version = 3
 enabled = true
 platforms = ["windows"]
 interval = "60s"

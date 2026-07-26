@@ -118,7 +118,8 @@ class TestInit:
         """[PM-08] Installed-artifact check, not just source-path equality:
         the bytes actually written to disk must match profile/windows/,
         with all 8 files present and each declaring platforms=["windows"]
-        only (except self, which stays multi-platform -- RB-02)."""
+        only -- including self, whose cpu_budget_pct is recalibrated for
+        Windows and must not be loadable elsewhere (RB-01/RB-02)."""
         import tomllib
         from pathlib import Path
 
@@ -144,10 +145,11 @@ class TestInit:
             )
             parsed = tomllib.loads(installed_path.read_text(encoding="utf-8"))
             platforms = tuple(parsed["monitor"]["platforms"])
-            if name == "self.toml":
-                assert platforms == ("linux", "windows", "darwin")
-            else:
-                assert platforms == ("windows",), f"{name}: platforms={platforms}"
+            # self.toml is windows-only-narrowed here too, unlike the generic
+            # cross-platform copy: its cpu_budget_pct is recalibrated for
+            # measured Windows overhead (WIN-BACKLOG.md) and must never load
+            # elsewhere with that loosened threshold.
+            assert platforms == ("windows",), f"{name}: platforms={platforms}"
 
     def test_init_does_not_overwrite_config(self, tmp_path, monkeypatch):
         """[FS-02] init writes config.toml only if absent."""
