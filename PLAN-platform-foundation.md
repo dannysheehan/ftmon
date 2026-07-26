@@ -138,3 +138,51 @@ No new `PL-*` requirement ID was added for spike-only behavior: TS-18 forbids
 adding a testable requirement without its implementation tests. The validated
 targets instead refine existing PL-01/PL-03, DM-15, NO-02, and PM-11 contracts;
 platform-specific implementation branches can add tested IDs when they ship.
+
+## Windows implementation (`feature/windows-support`)
+
+Went past spike into real implementation (`5d90f19`..`05781f8`, merged with
+`feature/platform-foundation` at `5e15ff1`): `WindowsEventSource`
+(`sources/win_evtlog.py`, EvtSubscribe + per-channel EvtBookmark cursor),
+`ToastNotifier` (`notify/toast.py`), a named-Win32-Event PM-11 reload
+primitive, `windesktop`/`winserver` init profiles with a real Windows
+monitor-definition tree (dead-rule removal validated against live data, not
+just "doesn't crash"), and — reversing the earlier "ship v1 fail-closed,
+defer ACL design" call — a real Windows ACL/DACL implementation of EC-01/
+SE-07's ownership/writability trust check in `checks/trust.py`, replacing the
+POSIX-only `os.geteuid()`/`st_mode` check that crashed outright on Windows.
+
+**Security review of the EC-01 ACL trust reversal (2026-07-26):** run per
+the condition attached to reversing the fail-closed decision — a trust/
+authorization boundary change gets a dedicated adversarial pass, not just a
+single read-through. Process: one sub-agent pass to identify candidate
+vulnerabilities against `checks/trust.py`'s new Windows ACL code
+(`_win_grants_beyond_owner`, `writable_beyond_owner`, `accessible_beyond_owner`,
+`trusted_owner`) and its callers (`checks/registry.py`, `checks/runner.py`),
+then independent verification sub-agents scoring each candidate's real-world
+exploitability. Two candidates were raised and both were ruled out on
+verification:
+
+- NULL-DACL handling in `_win_grants_beyond_owner` treating `None` as "no
+  grants" (pywin32 collapses "DACL absent" and "DACL present but NULL" to
+  the same return) — ruled out (3/10): reaching that state requires
+  `WRITE_DAC` on the file or write access to its parent directory, both of
+  which the surrounding checks (`writable_beyond_owner`'s own ACE walk,
+  `registry.py`'s parent-directory validation) already independently catch
+  first.
+- Missing `MapGenericMask` before filtering ACE masks, theoretically
+  letting a raw unmapped `GENERIC_ALL`/`GENERIC_WRITE` ACE evade the write
+  check — ruled out (2/10): real DACL-authoring tools (`icacls`, PowerShell
+  `Set-Acl`, the Windows Security UI) always persist OS-mapped specific
+  rights, never raw generic bits: the precondition doesn't occur in
+  practice, and even if it did, Windows' real access-check wouldn't grant
+  the claimed access either (the reviewer's exploit mechanics were
+  backwards).
+
+**Verdict: clear to ship.** No findings met the exploitability bar. Full
+transcript lives in this conversation's history, not duplicated here —
+this entry is the pointer for whoever cuts the next release to confirm the
+condition was met, per DO-09 (review artifacts are maintainer-facing
+records, not user documentation, and don't need their own `docs/REVIEW-N.md`
+for a scoped single-module pass — that convention is for whole-repository
+milestone audits).
