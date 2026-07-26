@@ -393,6 +393,22 @@ class Query:
             return "5m"
         return "1h"
 
+    def series_catalog(self, *, now: float, start: float, end: float) -> list[sqlite3.Row]:
+        """Series with observations in the tier the requested range will query."""
+        resolution = self._resolution(now, start, end)
+        table, time_column = {
+            "raw": ("samples", "ts"),
+            "5m": ("rollup5m", "bucket"),
+            "1h": ("rollup1h", "bucket"),
+        }[resolution]
+        return self._conn.execute(
+            "SELECT s.monitor, s.entity_id, s.metric FROM series s "
+            f"WHERE EXISTS (SELECT 1 FROM {table} d "  # noqa: S608
+            f"WHERE d.series_id=s.id AND d.{time_column}>=? AND d.{time_column}<=?) "
+            "ORDER BY s.monitor, s.entity_id, s.metric",
+            (round(start), round(end)),
+        ).fetchall()
+
     def series(
         self,
         monitor: str,
@@ -686,11 +702,20 @@ class Query:
             },
         }
 
-    def entities(self, monitor: str, *, alive_only: bool = False) -> list[sqlite3.Row]:
+    def entities(
+        self,
+        monitor: str,
+        *,
+        alive_only: bool = False,
+        seen_since: float | None = None,
+    ) -> list[sqlite3.Row]:
         sql = "SELECT * FROM entities WHERE monitor=?"
         params: list[object] = [monitor]
         if alive_only:
             sql += " AND gone_ts IS NULL"
+        if seen_since is not None:
+            sql += " AND last_seen >= ?"
+            params.append(round(seen_since))
         sql += " ORDER BY entity_id"
         return self._conn.execute(sql, params).fetchall()
 

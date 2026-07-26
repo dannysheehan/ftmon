@@ -318,6 +318,25 @@ def test_metrics_explorer_uses_cascading_catalog_selectors_ui_02(tmp_path):
     assert "rss_mb" not in page.text  # another monitor's metric is not offered
     assert "using last" in page.text
 
+    conn = connect(paths.db_file)
+    conn.execute(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(4,'leak','expired:8:1','rss_mb',0)"
+    )
+    conn.commit()
+    conn.close()
+    leak_page = client.get("/metrics?monitor=leak&range=6h", headers=headers)
+    assert "firefox:7:1" in leak_page.text
+    assert "expired:8:1" not in leak_page.text
+
+    expired = client.get(
+        "/metrics?monitor=leak&entity=expired%3A8%3A1&metric=rss_mb&range=6h",
+        headers=headers,
+    )
+    assert "expired:8:1" in expired.text
+    assert "No observations are retained for this series" in expired.text
+    assert "data-metric-chart" not in expired.text
+
 
 def test_series_api_uplot_contract_envelope_gaps_incidents_and_trend_ts_11(tmp_path):
     """[TS-11][UI-13] Metrics shares envelopes, gaps, markers, units and links."""
@@ -667,6 +686,41 @@ def test_generic_leak_trend_and_context_links_ui_12_ts_10(tmp_path):
     assert 'href="/trends/leak/rss-growth"' in dashboard
     incident = client.get("/incidents/2", headers=headers).text
     assert "/trends/leak/rss-growth?entity=firefox%3A7%3A1" in incident
+
+
+def test_trends_selector_hides_gone_entities_but_keeps_linked_history_ui_12(tmp_path):
+    """[UI-12] The primary selector stays operational without breaking incident links."""
+    client, paths = _client(tmp_path)
+    builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/leak.toml"
+    (paths.monitors_dir / "leak.toml").write_text(builtin.read_text())
+    conn = connect(paths.db_file)
+    conn.executemany(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts,attrs) "
+        "VALUES('leak',?,1,?,?,'{}')",
+        [
+            ("active:1:1", 1000, None),
+            ("stale-null:4:1", 100, None),
+            ("exited:2:1", 1000, 1000),
+            ("exited:3:1", 1000, 1000),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    headers = {"host": "localhost:8420"}
+
+    default_page = client.get("/trends/leak/rss-growth", headers=headers)
+    assert default_page.status_code == 200
+    assert '<option value="active:1:1" selected>active:1:1</option>' in default_page.text
+    assert "stale-null:4:1" not in default_page.text
+    assert "exited:2:1" not in default_page.text
+    assert "exited:3:1" not in default_page.text
+
+    linked_page = client.get(
+        "/trends/leak/rss-growth?entity=exited%3A2%3A1", headers=headers
+    )
+    assert linked_page.status_code == 200
+    assert '<option value="exited:2:1" selected>exited:2:1</option>' in linked_page.text
+    assert "exited:3:1" not in linked_page.text
 
 
 def test_incident_detail_shows_display_and_attrs_sa_09(tmp_path):

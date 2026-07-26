@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.14**. Companion to `SPEC.md` v0.28 — every design element
+Status: **DRAFT v0.14**. Companion to `SPEC.md` v0.29 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -1002,13 +1002,21 @@ The generic view uses up to four synchronized panels: required value and signed-
 
 Routes: `GET /trends[/{monitor}/{profile}]?entity=…&range=…` and `GET /api/trend?monitor=…&profile=…&entity=…&range=…`. `/disks` redirects to `/trends/disk/space_growth`. Dashboard, monitor and incident links all target this same explorer rather than creating alternate render/query paths.
 
+The Trends selector queries active entity rows seen within the greater of two
+monitor intervals or CA-08's default five-minute grace. The freshness bound
+also excludes legacy null-`gone_ts` rows left by an earlier daemon lifetime.
+When a URL explicitly names an older entity, the view adds that one identity
+back to the selector and queries its retained history. This bounds the common
+discovery path without breaking forensic links; Metrics deliberately remains
+the complete persisted series catalogue.
+
 Reference profiles prove both shapes: disk `space-growth` supplies all four panels; leak `rss-growth` supplies value/rate/confidence and explicit `projection: null`. A process has no single honest capacity ceiling because host memory, swap, cgroups and the OOM killer differ, so FTMON refuses to invent one.
 
 ### 15.2 Metrics versus Trends (M7.2, UI-13)
 
 Metrics and Trends share one uPlot adapter, series-envelope JSON shape, cursor/time-axis behavior, incident-marker plugin, and server-rendered text-summary rules. Sharing is a correctness decision, not merely visual consistency: two renderers previously disagreed about time axes, gaps, long-range rollups, and interaction, making the diagnostic view a poor way to verify a Trend.
 
-Their semantics remain deliberately separate. `/metrics` selects one persisted `(monitor, entity, metric)` and a rollup statistic; it reports observations and never infers that a name containing `slope`, `pct`, or `rate` has special meaning. `/trends` joins only definition-declared panels and may qualify confidence or projection. A matching-profile link is navigation, not automatic interpretation inside Metrics.
+Their semantics remain deliberately separate. `/metrics` selects one persisted `(monitor, entity, metric)` and a rollup statistic; its selector catalogue uses `EXISTS` against the same raw/5-minute/hourly tier selected for the requested range, so expired metadata cannot produce default empty charts. An exact requested series bypasses catalogue filtering for stable bookmarks but renders no chart when that tier has no points. Metrics reports observations and never infers that a name containing `slope`, `pct`, or `rate` has special meaning. `/trends` joins only definition-declared panels and may qualify confidence or projection. A matching-profile link is navigation, not automatic interpretation inside Metrics.
 
 `GET /api/series?monitor=…&entity=…&metric=…&range=…&statistic=…` returns `{monitor, entity, metric, unit, statistic, resolution, points, lower, upper, incidents, summary, matching_trends}`. Raw metric units come from `SourceDecl`; derived units come from explicit trend-profile use when available, otherwise the neutral label `value`. Server-side Query remains authoritative for tier selection, envelopes, incident filtering, and the 2 000-point cap.
 

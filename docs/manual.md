@@ -273,6 +273,10 @@ as separate synchronized panels because their units and meanings differ. Long
 ranges use stored 5-minute or hourly rollups with min/max envelopes; missing
 observations remain visible gaps. The complete selection stays in the URL for
 bookmarking and links from dashboards or incidents open the same explorer.
+The entity selector lists recently seen active entities so exited or stale
+process identities cannot overwhelm it; a bookmark or incident link for an
+older entity still opens its retained history. Use Metrics when you need to
+browse the complete historical series catalogue.
 
 The leak profile shows process RSS, MiB/hour growth, and growth consistency. It
 does not forecast when memory will be “full”: host RAM, swap, cgroup limits, and
@@ -285,11 +289,14 @@ instead of displaying an enormous artificial number.
 ### Metrics explorer
 
 The **Metrics** page is the lower-level companion to Trends. Its cascading
-monitor, entity, and metric selectors list every series actually present in the
-database, including historical series no longer in the current definition. Use
-it to inspect one metric that has no curated profile, or follow an “Underlying
-series” link from a Trend panel. Range and rollup value (`avg`, `min`, `max`, or
-`last`) stay in the URL, so the exact diagnostic view can be bookmarked.
+monitor, entity, and metric selectors list series with retained observations in
+the selected range, including historical series no longer in the current
+definition. This prevents expired process metadata from leading to empty
+graphs. An exact bookmark remains stable after its observations expire and says
+that no observations remain rather than silently selecting another series. Use
+Metrics to inspect one metric that has no curated profile, or follow an
+“Underlying series” link from a Trend panel. Range and rollup value (`avg`,
+`min`, `max`, or `last`) stay in the URL, so the exact view can be bookmarked.
 Metrics uses the same interactive time axis, zoom/cursor, min/max rollup
 envelope, missing-data gaps, and incident markers as Trends. It remains
 intentionally one series at a time and never invents rate, confidence, or
