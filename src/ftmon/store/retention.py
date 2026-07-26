@@ -19,6 +19,7 @@ incremental_vacuum has already reclaimed-in-place does not retrigger prunes.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 
@@ -31,6 +32,11 @@ BASELINE_HALF_LIFE_S = 3 * 86400.0
 BASELINE_MIN_UPDATES = 240  # ~24h of actual data — counted updates, not elapsed time
 
 _DAY = 86400
+
+# DM-13: incident_history is capped per incident; on overflow the oldest
+# batch collapses into one summary entry rather than growing unboundedly.
+HISTORY_CAP = 500
+HISTORY_TRIM = 100
 
 
 class Retention:
@@ -85,6 +91,7 @@ class Retention:
             self._rollup_5m(cur, now)
             self._rollup_1h(cur, now)
             self._prune_normal(cur, now)
+            self._cap_incident_history(cur)
             notes = self._degrade_if_over_budget(cur, now)
         except BaseException:
             self._conn.rollback()
@@ -260,6 +267,55 @@ class Retention:
             "(SELECT id FROM events WHERE ts < ? LIMIT ?)",
             (int(now) - self._events_keep,),
         )
+
+    # -- history cap (DM-13) ----------------------------------------------
+
+    def _cap_incident_history(self, cur: sqlite3.Cursor) -> None:
+        """Each incident's history is capped at HISTORY_CAP rows; on overflow
+        the oldest HISTORY_TRIM collapse into one `summary` entry (count,
+        time range, severity range — DM-13's exact wording). One
+        summarization step per incident per pass: bounded work, same
+        catch-up-over-many-ticks shape as the rollup passes above rather
+        than a single pass trying to clear an arbitrarily large backlog."""
+        overflowing = cur.execute(
+            "SELECT incident_id FROM incident_history "
+            "GROUP BY incident_id HAVING COUNT(*) > ?",
+            (HISTORY_CAP,),
+        ).fetchall()
+        for row in overflowing:
+            incident_id = row["incident_id"]
+            oldest = cur.execute(
+                "SELECT seq, ts, detail FROM incident_history "
+                "WHERE incident_id = ? ORDER BY seq LIMIT ?",
+                (incident_id, HISTORY_TRIM),
+            ).fetchall()
+            seqs = [r["seq"] for r in oldest]
+            severities = []
+            for r in oldest:
+                try:
+                    parsed = json.loads(r["detail"] or "{}")
+                except ValueError:
+                    continue
+                severity = parsed.get("severity") if isinstance(parsed, dict) else None
+                if isinstance(severity, int):
+                    severities.append(severity)
+            detail = {
+                "replaced": len(seqs),
+                "from_ts": oldest[0]["ts"],
+                "to_ts": oldest[-1]["ts"],
+                "severity_min": min(severities) if severities else None,
+                "severity_max": max(severities) if severities else None,
+            }
+            cur.execute(
+                "DELETE FROM incident_history WHERE incident_id = ? AND seq IN ("
+                + ",".join("?" * len(seqs)) + ")",
+                (incident_id, *seqs),
+            )
+            cur.execute(
+                "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) "
+                "VALUES (?, ?, ?, 'summary', ?)",
+                (incident_id, seqs[0], oldest[-1]["ts"], json.dumps(detail, sort_keys=True)),
+            )
 
     # -- degradation (DM-05) ----------------------------------------------
 

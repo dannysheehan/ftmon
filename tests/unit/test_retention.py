@@ -1,7 +1,10 @@
-"""[DM-04][DM-05][CA-05][CA-06] Rollups, retention windows, degradation
-order, and EW-mean baselines — golden-value tests against a real SQLite db."""
+"""[DM-04][DM-05][DM-13][CA-05][CA-06] Rollups, retention windows,
+degradation order, incident-history cap, and EW-mean baselines —
+golden-value tests against a real SQLite db."""
 
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -353,3 +356,105 @@ class TestPruneAndDegrade:
         add_samples(conn, 1, [(T0, 1.0)])
         assert Retention(conn).run(now=T0 + 60) == []
         assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 1
+
+
+def add_incident(conn, incident_id=1):
+    conn.execute(
+        "INSERT INTO incidents(id, monitor, grp, entity_id, state, severity, "
+        "owning_rule, opened_ts, last_change_ts, notify_count, occurrences) "
+        "VALUES (?, 'm', 'g', 'e', 'open', 2, 'r', ?, ?, 0, 1)",
+        (incident_id, T0, T0),
+    )
+
+
+def add_history_rows(conn, incident_id, count, *, start_seq=1, severities=None):
+    """Rows with no severity look like 'acked'/'notified' entries; entries
+    listed in `severities` (seq -> severity) look like open/escalate/downgrade."""
+    severities = severities or {}
+    rows = []
+    for i in range(count):
+        seq = start_seq + i
+        detail = {"severity": severities[seq]} if seq in severities else {"by": "x"}
+        rows.append((incident_id, seq, T0 + seq, "note", json.dumps(detail)))
+    conn.executemany(
+        "INSERT INTO incident_history(incident_id, seq, ts, kind, detail) VALUES (?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+
+
+class TestHistoryCap:
+    def test_dm13_overflow_collapses_oldest_batch_into_one_summary(self, conn):
+        """[DM-13] > 500 rows: the oldest 100 collapse into one summary entry
+        carrying count, time range, and severity range; newer rows survive
+        untouched, seq ordering intact."""
+        add_incident(conn, 1)
+        add_history_rows(conn, 1, 510, severities={10: 1, 50: 3, 90: 2})
+        Retention(conn).run(now=T0 + 1000)
+
+        rows = conn.execute(
+            "SELECT seq, ts, kind, detail FROM incident_history "
+            "WHERE incident_id = 1 ORDER BY seq"
+        ).fetchall()
+        assert len(rows) == 411  # 510 - 100 + 1 summary
+        summary = rows[0]
+        assert (summary["seq"], summary["kind"]) == (1, "summary")
+        assert summary["ts"] == T0 + 100  # to_ts of the collapsed batch
+        detail = json.loads(summary["detail"])
+        assert detail == {
+            "replaced": 100,
+            "from_ts": T0 + 1,
+            "to_ts": T0 + 100,
+            "severity_min": 1,
+            "severity_max": 3,
+        }
+        assert [r["seq"] for r in rows[1:5]] == [101, 102, 103, 104]
+
+    def test_dm13_under_cap_is_untouched(self, conn):
+        """[DM-13] exactly at the cap: no summarization, nothing silently lost."""
+        add_incident(conn, 1)
+        add_history_rows(conn, 1, 500)
+        Retention(conn).run(now=T0 + 1000)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM incident_history WHERE incident_id = 1"
+        ).fetchone()[0] == 500
+        assert conn.execute(
+            "SELECT COUNT(*) FROM incident_history WHERE kind = 'summary'"
+        ).fetchone()[0] == 0
+
+    def test_dm13_large_backlog_catches_up_over_multiple_passes(self, conn):
+        """[DM-13] one summarization step per incident per pass — same
+        bounded catch-up shape as the rollup passes, not one giant collapse."""
+        add_incident(conn, 1)
+        add_history_rows(conn, 1, 700)
+        r = Retention(conn)
+        r.run(now=T0 + 1000)
+        after_one = conn.execute(
+            "SELECT COUNT(*) FROM incident_history WHERE incident_id = 1"
+        ).fetchone()[0]
+        assert after_one == 601  # 700 - 100 + 1, still over the 500 cap
+        r.run(now=T0 + 1000)
+        after_two = conn.execute(
+            "SELECT COUNT(*) FROM incident_history WHERE incident_id = 1"
+        ).fetchone()[0]
+        assert after_two == 502  # converges toward the cap over successive passes
+
+    def test_dm13_no_severity_in_batch_yields_null_range(self, conn):
+        """[DM-13] a collapsed batch with no severity-bearing entries (e.g.
+        all acks/notifications) reports a null range rather than a bogus 0."""
+        add_incident(conn, 1)
+        add_history_rows(conn, 1, 510)  # no severities anywhere
+        Retention(conn).run(now=T0 + 1000)
+        summary = conn.execute(
+            "SELECT detail FROM incident_history WHERE incident_id = 1 AND seq = 1"
+        ).fetchone()
+        detail = json.loads(summary["detail"])
+        assert (detail["severity_min"], detail["severity_max"]) == (None, None)
+
+    def test_dm13_is_silent_like_other_normal_pruning(self, conn):
+        """[DM-13] cap enforcement is normal housekeeping, not a DM-05
+        degradation step — it must not appear in the notes list."""
+        add_incident(conn, 1)
+        add_history_rows(conn, 1, 510)
+        notes = Retention(conn).run(now=T0 + 1000)
+        assert notes == []
