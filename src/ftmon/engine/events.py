@@ -107,6 +107,7 @@ class EventEngine:
     last_activity_age_s: float = 0.0  # -> SelfStats.source_activity_age_s
     queue_depth: int = 0
     dropped: int = 0
+    _reported_channel_errors: set[str] = field(default_factory=set)
 
     def start(self, cursor: str | None) -> None:
         self._last_cursor = cursor
@@ -132,6 +133,7 @@ class EventEngine:
         )
         self.queue_depth = getattr(self.source, "queue_depth", lambda: 0)()
         self.dropped = getattr(self.source, "dropped", 0)
+        self._report_channel_errors(now, writer)
 
         # 1) rules against the live stream; matches keyed by episode identity
         matches: dict[EpisodeKey, list[tuple[float, str]]] = {}
@@ -179,6 +181,28 @@ class EventEngine:
                 self._states.pop(key, None)
             else:
                 self._states[key] = st
+
+    # -- per-channel subscribe errors --------------------------------------
+
+    def _report_channel_errors(self, now: float, writer) -> None:
+        """A bad channel name or filter query fails that one EvtSubscribe
+        call (win_evtlog.py isolates it per channel) but never recovers on
+        its own -- unlike SA-03's death/restart, there is nothing to retry.
+        Surface each failing channel once per daemon lifetime so "why isn't
+        X showing up" is answered from `ftmon events`, not silently."""
+        errors: Mapping[str, str] = getattr(self.source, "subscribe_errors", {})
+        for channel, reason in errors.items():
+            if channel in self._reported_channel_errors:
+                continue
+            self._reported_channel_errors.add(channel)
+            writer.add_event(EventRecord(
+                ts=now, ingest_ts=now, source="self", provider="ftmon.events",
+                event_id=None, severity=2,
+                message=(
+                    f"channel {channel!r} subscribe failed, looks like a config "
+                    f"problem (not transient, will not retry itself): {reason}"
+                ),
+            ))
 
     # -- supervision (SA-03) ---------------------------------------------
 

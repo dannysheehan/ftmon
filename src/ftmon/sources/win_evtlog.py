@@ -133,6 +133,9 @@ class WindowsEventSource:
         self._bookmarks: dict[str, str] = {}
         self.dropped = 0
         self.malformed = 0
+        # channel -> str(exception) for the most recent EvtSubscribe failure;
+        # EventEngine.tick() surfaces each once as a self-event.
+        self.subscribe_errors: dict[str, str] = {}
 
     def start(self, cursor: str | None) -> None:
         import pywintypes
@@ -140,6 +143,7 @@ class WindowsEventSource:
 
         self._subs = []
         self._channel_ok = {}
+        self.subscribe_errors = {}
 
         prior: dict[str, str] = {}
         if cursor:
@@ -166,9 +170,20 @@ class WindowsEventSource:
                 if bookmark is not None
                 else win32evtlog.EvtSubscribeToFutureEvents
             )
-            sub = win32evtlog.EvtSubscribe(
-                channel, flags, Callback=self._make_callback(channel), Bookmark=bookmark,
-            )
+            # One bad channel (unknown name, or -- once callers pass Query --
+            # a malformed XPath filter) must not abort subscription setup for
+            # the rest: isolate per channel, same swallow-the-whole-exception
+            # convention as the bookmark decode above, no win32 error-code
+            # special-casing.
+            try:
+                sub = win32evtlog.EvtSubscribe(
+                    channel, flags, Callback=self._make_callback(channel), Bookmark=bookmark,
+                )
+            except pywintypes.error as exc:
+                with self._lock:
+                    self._channel_ok[channel] = False
+                    self.subscribe_errors[channel] = str(exc)
+                continue
             self._subs.append(sub)
             self._channel_ok[channel] = True
 

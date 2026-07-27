@@ -279,3 +279,19 @@ class TestWindowsEventSourceLive:
             assert src.alive() is True  # still subscribed, just from now
         finally:
             src.stop()
+
+    def test_bad_channel_isolated_from_good_channel_sa_10(self):
+        """A nonexistent channel fails EvtSubscribe with a catchable
+        pywintypes.error; it must not abort subscription setup for the rest
+        -- the good channel still comes up, and the bad one is recorded in
+        subscribe_errors rather than raising."""
+        src = WindowsEventSource(
+            channels=("Application", "ThisChannelDoesNotExist12345"))
+        try:
+            src.start(None)
+            assert src.alive() is True  # Application still subscribed
+            assert src._channel_ok["Application"] is True
+            assert src._channel_ok["ThisChannelDoesNotExist12345"] is False
+            assert "ThisChannelDoesNotExist12345" in src.subscribe_errors
+        finally:
+            src.stop()
