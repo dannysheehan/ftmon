@@ -38,7 +38,8 @@ CREATE UNIQUE INDEX inc_live ON incidents(monitor, grp, entity_id) WHERE state !
 CREATE INDEX inc_state ON incidents(state, last_change_ts);
 
 CREATE TABLE incident_history(incident_id INT, seq INT, ts INT, kind TEXT, detail TEXT,
-  PRIMARY KEY(incident_id, seq)) WITHOUT ROWID;              -- DM-12/13 (cap enforced in code)
+  PRIMARY KEY(incident_id, seq)) WITHOUT ROWID;    -- DM-12/13, cap enforced by
+                                                    -- Retention._cap_incident_history
 
 CREATE TABLE outbox(    id INTEGER PRIMARY KEY, incident_id INT, kind TEXT, body TEXT,
   created_ts INT, delivered_ts INT, stale INT DEFAULT 0);    -- DM-14/NO-04
