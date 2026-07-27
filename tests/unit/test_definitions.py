@@ -731,3 +731,107 @@ def test_normalized_toml_is_deterministic_and_hash_matches():
     import hashlib
 
     assert md1.content_hash == hashlib.sha256(md1.normalized_toml.encode("utf-8")).hexdigest()
+
+
+# --------------------------------------------------------------------------
+# [MD-13] events source_options: channels[]/query + store_min_severity
+# --------------------------------------------------------------------------
+
+
+def test_events_source_options_channels_and_store_min_severity_parse():
+    """[MD-13] channels[] (path + optional query) and store_min_severity
+    parse into MonitorDef.source_options exactly as declared."""
+    definition = load_text(VALID_EVENTS + '''
+[source_options]
+store_min_severity = "warning"
+
+[[source_options.channels]]
+path = "Security"
+query = "*[System[(EventID=4688 or EventID=4689)]]"
+
+[[source_options.channels]]
+path = "System"
+''')
+    assert definition.source_options["channels"] == [
+        {"path": "Security", "query": "*[System[(EventID=4688 or EventID=4689)]]"},
+        {"path": "System", "query": None},
+    ]
+    assert definition.source_options["store_min_severity"] == "warning"
+
+
+def test_events_source_options_defaults_to_empty_channels():
+    """No [source_options] at all -> channels defaults to [], same shape
+    _union_event_channels()/configure() expect, not a missing key."""
+    definition = load_text(VALID_EVENTS)
+    assert definition.source_options == {"channels": []}
+
+
+def test_events_channels_must_be_an_array():
+    errors = _errors_of(VALID_EVENTS + '\n[source_options]\nchannels = "Security"\n')
+    _assert_error(errors, code="invalid_type", path_prefix="source_options.channels")
+
+
+def test_events_channels_count_is_capped():
+    channels = "".join(
+        f'[[source_options.channels]]\npath = "Chan{i}"\n' for i in range(17)
+    )
+    errors = _errors_of(VALID_EVENTS + "\n[source_options]\n\n" + channels)
+    _assert_error(errors, code="too_many_items", path_prefix="source_options.channels")
+
+
+def test_events_channel_missing_path_is_rejected():
+    errors = _errors_of(VALID_EVENTS + '''
+[[source_options.channels]]
+query = "*"
+''')
+    _assert_error(errors, code="invalid_value", path_prefix="source_options.channels[0].path")
+
+
+def test_events_channel_duplicate_path_is_rejected():
+    errors = _errors_of(VALID_EVENTS + '''
+[[source_options.channels]]
+path = "Security"
+
+[[source_options.channels]]
+path = "Security"
+''')
+    _assert_error(
+        errors, code="duplicate_name", path_prefix="source_options.channels[1].path",
+    )
+
+
+def test_events_channel_query_too_long_is_rejected():
+    errors = _errors_of(VALID_EVENTS + f'''
+[[source_options.channels]]
+path = "Security"
+query = "{"x" * 2049}"
+''')
+    _assert_error(errors, code="invalid_value", path_prefix="source_options.channels[0].query")
+
+
+def test_events_channel_unknown_key_is_rejected():
+    errors = _errors_of(VALID_EVENTS + '''
+[[source_options.channels]]
+path = "Security"
+bogus = "x"
+''')
+    _assert_error(errors, code="unknown_key", path_prefix="source_options.channels[0].bogus")
+
+
+def test_events_store_min_severity_accepts_int_or_name():
+    definition = load_text(VALID_EVENTS + "\n[source_options]\nstore_min_severity = 2\n")
+    assert definition.source_options["store_min_severity"] == 2
+
+
+def test_events_store_min_severity_rejects_bad_value():
+    errors = _errors_of(VALID_EVENTS + '\n[source_options]\nstore_min_severity = "bogus"\n')
+    _assert_error(
+        errors, code="invalid_value", path_prefix="source_options.store_min_severity",
+    )
+
+
+def test_events_source_options_rejects_keys_from_other_sources():
+    """watchlist is valid source_options for unit/net, not events -- the new
+    events branch must not accidentally inherit other sources' keys."""
+    errors = _errors_of(VALID_EVENTS + "\n[source_options]\nwatchlist = []\n")
+    _assert_error(errors, code="unknown_key", path_prefix="source_options.watchlist")

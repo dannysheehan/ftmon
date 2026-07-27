@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.17**. Companion to `SPEC.md` v0.32 — every design element
+Status: **DRAFT v0.17**. Companion to `SPEC.md` v0.33 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -464,6 +464,8 @@ class SmallWrites:
 | `source_options.check` | registered alias | external |
 | `source_options.entity` | stable non-empty string ≤ 256 | external |
 | `source_options.perfdata[]` | `{label, metric, plugin_uom, unit, kind, scale?}`; ≤32, unique labels/metrics | external |
+| `source_options.channels[]` | `{path, query?}`; path required + unique ≤256, query optional ≤2048 (MD-13, DM-19) | events |
+| `source_options.store_min_severity` | severity name or int 0-4 (default notice, DM-09) | events |
 | `parameters.*` | `{value: num, doc: str}` | all |
 | `promotion.expr` | expression (bool) — SA-05(c) heuristic | process |
 | `derived[].name/expr` | metric name / expression | sampler sources |

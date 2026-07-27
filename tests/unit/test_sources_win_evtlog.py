@@ -17,6 +17,7 @@ from ftmon.model import EventRecord
 from ftmon.sources.base import SOURCE_DECLS
 from ftmon.sources.win_evtlog import (
     LEVEL_TO_SEVERITY,
+    ChannelSpec,
     WindowsEventSource,
     parse_event_xml,
 )
@@ -281,7 +282,7 @@ class TestWindowsEventSourceLive:
             src.stop()
 
     def test_bad_channel_isolated_from_good_channel_sa_10(self):
-        """A nonexistent channel fails EvtSubscribe with a catchable
+        """[SA-10] A nonexistent channel fails EvtSubscribe with a catchable
         pywintypes.error; it must not abort subscription setup for the rest
         -- the good channel still comes up, and the bad one is recorded in
         subscribe_errors rather than raising."""
@@ -293,5 +294,62 @@ class TestWindowsEventSourceLive:
             assert src._channel_ok["Application"] is True
             assert src._channel_ok["ThisChannelDoesNotExist12345"] is False
             assert "ThisChannelDoesNotExist12345" in src.subscribe_errors
+        finally:
+            src.stop()
+
+    def test_configure_before_start_changes_channels(self):
+        """[DM-19] configure() overrides the constructed channel list before
+        the first start() -- the pre-start hook daemon.py's _start_events()
+        uses once source_options.channels are known."""
+        src = WindowsEventSource(channels=("Application",))
+        src.configure((ChannelSpec(path="Application"), ChannelSpec(path="System")))
+        try:
+            src.start(None)
+            assert src._channel_ok == {"Application": True, "System": True}
+        finally:
+            src.stop()
+
+    def test_configure_after_start_is_a_noop(self):
+        """[DM-19] Changing channels after subscriptions exist needs a
+        restart, not a hot reconfigure -- configure() silently ignores the
+        attempt rather than tearing down live subscriptions."""
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(None)
+            src.configure((ChannelSpec(path="System"),))
+            assert set(src._channel_ok) == {"Application"}  # unchanged
+        finally:
+            src.stop()
+
+    def test_query_filter_passthrough_valid_xpath_subscribes_cleanly(self):
+        """[DM-19] A syntactically valid XPath Query narrows the subscription
+        without raising -- delivery semantics aren't asserted here (no
+        live event wait, per this class's docstring), just that
+        EvtSubscribe accepts a Query and still comes up healthy."""
+        src = WindowsEventSource()
+        src.configure((ChannelSpec(
+            path="Application", query="*[System[(Level=1 or Level=2)]]"),))
+        try:
+            src.start(None)
+            assert src._channel_ok["Application"] is True
+            assert "Application" not in src.subscribe_errors
+        finally:
+            src.stop()
+
+    def test_malformed_query_isolated_like_bad_channel(self):
+        """[SA-10] A syntactically invalid XPath Query fails EvtSubscribe for
+        that channel only -- same per-channel isolation as a bad channel
+        name."""
+        src = WindowsEventSource()
+        src.configure((
+            ChannelSpec(path="Application", query="not valid xpath((("),
+            ChannelSpec(path="System"),
+        ))
+        try:
+            src.start(None)
+            assert src._channel_ok["Application"] is False
+            assert "Application" in src.subscribe_errors
+            assert src._channel_ok["System"] is True
+            assert src.alive() is True  # System still came up
         finally:
             src.stop()

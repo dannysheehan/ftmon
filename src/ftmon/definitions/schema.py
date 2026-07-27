@@ -41,6 +41,11 @@ __all__ = [
     "PERFDATA_KEYS",
     "MAX_PERFDATA_MAPPINGS",
     "EXTERNAL_ENTITY_MAX_LEN",
+    "EVENTS_SOURCE_OPTIONS_KEYS",
+    "EVENT_CHANNEL_KEYS",
+    "MAX_EVENT_CHANNELS",
+    "EVENT_CHANNEL_PATH_MAX_LEN",
+    "EVENT_QUERY_MAX_LEN",
     "external_decl",
     "TOP_N_MIN",
     "TOP_N_MAX",
@@ -95,6 +100,13 @@ EXTERNAL_SOURCE_OPTIONS_KEYS = frozenset({"check", "entity", "perfdata"})
 PERFDATA_KEYS = frozenset({"label", "metric", "plugin_uom", "unit", "kind", "scale"})
 MAX_PERFDATA_MAPPINGS = 32  # EC-08 bounds definition-controlled schema growth.
 EXTERNAL_ENTITY_MAX_LEN = 256
+EVENTS_SOURCE_OPTIONS_KEYS = frozenset({"channels", "store_min_severity"})
+EVENT_CHANNEL_KEYS = frozenset({"path", "query"})
+MAX_EVENT_CHANNELS = 16  # bounds definition-controlled EvtSubscribe fan-out
+EVENT_CHANNEL_PATH_MAX_LEN = 256
+# Windows XPath queries run longer than EX-07's regex cap (MAX_REGEX_LEN=512
+# in expr/parse.py) -- multi-EventID OR chains get verbose quickly.
+EVENT_QUERY_MAX_LEN = 2048
 
 # --- [parameters] ---
 PARAM_KEYS = frozenset({"value", "doc"})

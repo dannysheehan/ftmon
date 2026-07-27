@@ -286,19 +286,80 @@ class DaemonCore:
         self.outbox = self._new_outbox(notifiers, config.quiet)
         self.config = config
 
+    def _union_event_channels(self) -> tuple[dict[str, dict], dict[str, str]]:
+        """Union channels across every loaded event-sourced monitor -- there
+        is one shared EvtSubscribe pass for the whole daemon, not one per
+        monitor (win_evtlog.py). Same channel path requested with
+        conflicting non-empty queries keeps the first-seen query and reports
+        the conflict (via the caller merging into subscribe_errors) rather
+        than silently picking one. A no-op on Linux/macOS: JournaldEventSource
+        monitors never populate source_options.channels."""
+        by_path: dict[str, dict] = {}
+        conflicts: dict[str, str] = {}
+        for mdef in self.event_monitors.values():
+            for entry in mdef.source_options.get("channels", ()):
+                path, query = entry["path"], entry.get("query")
+                existing = by_path.get(path)
+                if existing is None:
+                    by_path[path] = {"path": path, "query": query}
+                elif existing["query"] != query and query:
+                    conflicts[path] = (
+                        f"channel {path!r} requested with conflicting queries "
+                        f"across monitors; kept {existing['query']!r}, ignored "
+                        f"{query!r} from monitor {mdef.name!r}"
+                    )
+        return by_path, conflicts
+
     def _start_events(self) -> None:
         """DM-15: resume from the persisted cursor; rebuild open episodes so
         a restart cannot re-open (and re-notify) a live one."""
         assert self.events_engine is not None
+        by_path, conflicts = self._union_event_channels()
+        configure = getattr(self.event_source, "configure", None)
+        if configure is not None and by_path:
+            from ftmon.sources.win_evtlog import ChannelSpec
+
+            configure(tuple(ChannelSpec(**c) for c in by_path.values()))
         row = self.conn.execute(
             "SELECT cursor FROM cursors WHERE source = ?",
             (self.events_engine.cursor_name,),
         ).fetchone()
         self.events_engine.start(row["cursor"] if row else None)
+        if conflicts:
+            # start() just reset subscribe_errors; merge conflicts in after,
+            # not before -- a real EvtSubscribe failure for the same channel
+            # takes priority over the conflict note.
+            errors = getattr(self.event_source, "subscribe_errors", None)
+            if errors is not None:
+                for path, msg in conflicts.items():
+                    errors.setdefault(path, msg)
         rows = self.conn.execute(
             "SELECT * FROM incidents WHERE state IN ('open', 'acked')"
         ).fetchall()
         self.events_engine.rebuild(rows, list(self.event_monitors.values()))
+
+    def _warn_on_unapplied_event_channels(self) -> None:
+        """Once the event reader has started, its subscribed channels are
+        fixed for the daemon's lifetime (win_evtlog.py: one EvtSubscribe
+        pass, not a hot-reconfigure path) -- a monitor loaded afterward
+        (e.g. a newly-approved draft) requesting a channel nobody
+        subscribed to yet would otherwise sit there silently, never
+        receiving anything. Surfaced the same way a bad EvtSubscribe query
+        is surfaced (EventEngine._report_channel_errors)."""
+        errors = getattr(self.event_source, "subscribe_errors", None)
+        configured_fn = getattr(self.event_source, "configured_paths", None)
+        if errors is None or configured_fn is None:
+            return
+        configured = configured_fn()
+        by_path, _conflicts = self._union_event_channels()
+        for path in by_path:
+            if path in configured or path in errors:
+                continue
+            errors[path] = (
+                f"channel {path!r} requested by a monitor loaded after the "
+                "event reader already started; restart the daemon to "
+                "subscribe to it"
+            )
 
     def _load_definitions(self, initial: bool = False) -> None:
         """PM-04: apply adds/changes/removes; an invalid file keeps the
@@ -541,6 +602,8 @@ class DaemonCore:
         if self.events_engine is not None and self.event_monitors:
             if not self.events_engine._started:
                 self._start_events()  # an events monitor appeared on rescan
+            else:
+                self._warn_on_unapplied_event_channels()
             self.events_engine.tick(list(self.event_monitors.values()), wall,
                                     mono, self.writer)
             self.stats.event_queue_depth = self.events_engine.queue_depth

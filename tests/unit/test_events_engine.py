@@ -223,7 +223,7 @@ class TestEpisodeEndToEnd:
 
 class TestChannelSubscribeErrors:
     def test_subscribe_error_surfaces_once_as_self_event_sa_10(self, core_env):
-        """A channel that failed to subscribe (bad name/query,
+        """[SA-10] A channel that failed to subscribe (bad name/query,
         win_evtlog.py isolates it per channel) is surfaced as a self-event
         once, not silently -- and not repeated on later ticks since nothing
         about the failure changes on its own.
@@ -271,3 +271,124 @@ class TestChannelSubscribeErrors:
             "SELECT COUNT(*) FROM events WHERE provider='ftmon.events'"
         ).fetchone()[0]
         assert count == 1  # once per channel per daemon lifetime, not every tick
+
+
+class ConfigurableFixtureSource(FixtureEventSource):
+    """A FixtureEventSource that also implements the duck-typed
+    configure()/subscribe_errors/configured_paths() capabilities real
+    WindowsEventSource has, so DaemonCore's channel-union wiring
+    (_union_event_channels/_start_events/_warn_on_unapplied_event_channels)
+    can be exercised without a live Windows box."""
+
+    def __init__(self, scn):
+        super().__init__(scn)
+        self.subscribe_errors: dict[str, str] = {}
+        self.configure_calls: list = []
+        self._configured: tuple = ()
+
+    def configure(self, channels):
+        self.configure_calls.append(channels)
+        self._configured = channels
+
+    def configured_paths(self):
+        return frozenset(c.path for c in self._configured)
+
+
+def _events_toml(name: str, channels: str = "") -> str:
+    return (
+        f'schema = 1\n[monitor]\nname = "{name}"\ndescription = "d"\n'
+        'version = 1\nenabled = true\nplatforms = ["linux", "windows"]\n'
+        f'source = "events"\n\n{channels}'
+    )
+
+
+class TestEventChannelUnion:
+    """[DM-19] DaemonCore._union_event_channels()/_start_events()/
+    _warn_on_unapplied_event_channels(): channel config is unioned across
+    every loaded event monitor (one shared EvtSubscribe pass for the whole
+    daemon), conflicting queries for the same channel keep the first-seen
+    one and get reported, and a channel requested only after the reader
+    already started needs a restart to actually apply."""
+
+    def test_union_across_monitors_calls_configure_once(self, core_env):
+        paths = core_env
+        (paths.monitors_dir / "leak.toml").unlink()
+        (paths.monitors_dir / "events.toml").write_text(_events_toml(
+            "events", '[[source_options.channels]]\npath = "System"\n'))
+        (paths.monitors_dir / "events_extra.toml").write_text(_events_toml(
+            "events_extra",
+            '[[source_options.channels]]\npath = "Security"\n'
+            'query = "*[System[EventID=4688]]"\n'))
+
+        source = ConfigurableFixtureSource(scenario("oom-event-burst"))
+        DaemonCore(paths=paths, clock=FakeClock(wall=T, mono=1000.0), event_source=source)
+
+        assert len(source.configure_calls) == 1
+        got = {c.path: c.query for c in source.configure_calls[0]}
+        assert got == {"System": None, "Security": "*[System[EventID=4688]]"}
+
+    def test_no_channels_declared_never_calls_configure(self, core_env):
+        """The generic/default events.toml (no [source_options] at all)
+        must not override WindowsEventSource's own default channel list."""
+        paths = core_env
+        (paths.monitors_dir / "leak.toml").unlink()
+        (paths.monitors_dir / "events.toml").write_text(_events_toml("events"))
+
+        source = ConfigurableFixtureSource(scenario("oom-event-burst"))
+        DaemonCore(paths=paths, clock=FakeClock(wall=T, mono=1000.0), event_source=source)
+        assert source.configure_calls == []
+
+    def test_conflicting_queries_keep_first_seen_and_report_once(self, core_env):
+        paths = core_env
+        (paths.monitors_dir / "leak.toml").unlink()
+        # sorted(glob()) load order: events.toml before events_extra.toml
+        (paths.monitors_dir / "events.toml").write_text(_events_toml(
+            "events",
+            '[[source_options.channels]]\npath = "Security"\n'
+            'query = "*[System[EventID=4688]]"\n'))
+        (paths.monitors_dir / "events_extra.toml").write_text(_events_toml(
+            "events_extra",
+            '[[source_options.channels]]\npath = "Security"\n'
+            'query = "*[System[EventID=9999]]"\n'))
+
+        source = ConfigurableFixtureSource(scenario("oom-event-burst"))
+        clock = FakeClock(wall=T, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock, event_source=source)
+
+        got = {c.path: c.query for c in source.configure_calls[0]}
+        assert got["Security"] == "*[System[EventID=4688]]"  # first-seen wins
+        assert "Security" in source.subscribe_errors  # conflict recorded post-start
+
+        core.on_tick(clock.now(), clock.monotonic(), 0.0)
+        conn = connect(paths.db_file, readonly=True)
+        rows = conn.execute(
+            "SELECT message FROM events WHERE provider='ftmon.events'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert "conflicting queries" in rows[0]["message"]
+
+    def test_new_monitor_channel_after_start_needs_restart_self_event(self, core_env):
+        paths = core_env
+        (paths.monitors_dir / "leak.toml").unlink()
+        (paths.monitors_dir / "events.toml").write_text(_events_toml(
+            "events", '[[source_options.channels]]\npath = "System"\n'))
+
+        source = ConfigurableFixtureSource(scenario("oom-event-burst"))
+        clock = FakeClock(wall=T, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock, event_source=source)
+        assert core.events_engine._started is True
+        assert source.configured_paths() == {"System"}
+
+        # a new monitor requesting an unconfigured channel appears after boot
+        (paths.monitors_dir / "events_extra.toml").write_text(_events_toml(
+            "events_extra", '[[source_options.channels]]\npath = "Security"\n'))
+        core.on_tick(clock.now(), clock.monotonic(), 0.0)  # rescan picks it up
+
+        assert "Security" in source.subscribe_errors
+        conn = connect(paths.db_file, readonly=True)
+        rows = conn.execute(
+            "SELECT message FROM events WHERE provider='ftmon.events'"
+        ).fetchall()
+        assert any("restart the daemon" in r["message"] for r in rows)
+        # System was already configured before boot -- not flagged
+        assert not any("System" in r["message"] for r in rows)

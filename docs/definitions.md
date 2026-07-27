@@ -57,7 +57,7 @@ Section reference:
 | --- | --- | --- |
 | `schema` | yes | always `1` |
 | `[monitor]` | yes | `name, description, version, source, platforms` required; `interval` for sampler sources (min 15 s) |
-| `[source_options]` | no | source-specific: `watchlist` (unit/net), `top_n` 5–50 (process), `store_min_severity` (events) |
+| `[source_options]` | no | source-specific: `watchlist` (unit/net), `top_n` 5–50 (process), `channels`/`store_min_severity` (events) |
 | `[parameters]` | no | each entry `{ value = <number>, doc = "..." }`; the doc is mandatory kindness |
 | `[glance]` | no | sampler-only explicit primary metric, unit, entity aggregate and labelled threshold parameters; see below |
 | `[[derived]]` | no | `name`, `expr`; may reference earlier deriveds (evaluation is dependency-ordered) |
@@ -231,6 +231,55 @@ severity = "critical"
 cooldown = "5m"
 clear_after = "30m"
 message = "OOM killer fired: {message}"
+```
+
+### Windows Event Log channels and filtering
+
+Windows only (journald has one fixed stream — no channel concept). By
+default the event reader watches just `System` and `Application`. Add
+`[source_options].channels` to subscribe to more — Security, `Microsoft-
+Windows-PowerShell/Operational`, `Microsoft-Windows-Sysmon/Operational`, and
+so on:
+
+```toml
+[[source_options.channels]]
+path = "Security"
+query = '*[System[(EventID=4688 or EventID=4689)]]'
+
+[[source_options.channels]]
+path = "System"
+```
+
+`query` is optional Windows Event Log XPath (the same query language
+`EvtQuery`/`wevtutil`/`Get-WinEvent -FilterXPath` use — not a Windows Event
+Forwarding/Collector feature, it works on a single local host). It filters
+*at the subscription*, before anything reaches ftmon's own rules or the
+store-filter — omit it to receive everything on that channel, which is
+fine for low-volume channels but will flood a busy one like `Security`.
+Supported operators: `=`, `!=`, `<`, `<=`, `>`, `>=`, `AND`, `OR`, plus
+`Band()` for `Keywords` bitmasks and `timediff()` for relative time
+windows. An invalid channel name or malformed query is isolated to that
+one channel (the rest keep working) and reported once as a self-event —
+check `ftmon events` if a channel you added isn't showing anything.
+
+Channels are unioned across every loaded event monitor — there is one
+shared subscription for the whole daemon, not one per monitor — and are
+read once, when the event reader first starts. **Changing `channels` on an
+already-running daemon needs a restart**, unlike ordinary rule edits: `ftmon
+monitor rescan`/`SIGHUP` picks up new/changed rules within 30 s (PM-04), but
+will not re-subscribe. Subscribing to a channel is also not enough to see
+its events by itself: routine Security-audit-success entries are typically
+low severity and get dropped by the store-filter unless a `[[rule]]`
+explicitly matches them (or you lower `store_min_severity` below) — pair a
+new channel with rules that care about it.
+
+`store_min_severity` overrides the default store-filter threshold
+(`notice`) for events that don't match any rule — a severity name or 0–4
+int:
+
+```toml
+[source_options]
+store_min_severity = "warning"
 ```
 
 ### External checks

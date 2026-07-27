@@ -413,6 +413,8 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
             allowed_so = frozenset({"top_n"})
         elif source == "external":
             allowed_so = schema.EXTERNAL_SOURCE_OPTIONS_KEYS
+        elif source == "events":
+            allowed_so = schema.EVENTS_SOURCE_OPTIONS_KEYS
         else:
             allowed_so = frozenset()
         _check_unknown_keys(source_options_tbl, allowed_so, "source_options", errors)
@@ -554,6 +556,76 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
         dynamic_decl = schema.external_decl(valid_mappings)
         decl_metrics = dynamic_decl.metric_names()
         decl_attrs = dynamic_decl.attr_names()
+    elif source == "events":
+        options = source_options_tbl or {}
+        channels_raw = options.get("channels", [])
+        if not isinstance(channels_raw, list):
+            errors.append(_err(
+                "source_options.channels", "invalid_type", "channels must be an array",
+            ))
+            channels_raw = []
+        elif len(channels_raw) > schema.MAX_EVENT_CHANNELS:
+            errors.append(_err(
+                "source_options.channels", "too_many_items",
+                f"channels has {len(channels_raw)} entries; maximum is "
+                f"{schema.MAX_EVENT_CHANNELS}",
+            ))
+
+        channels: list[dict] = []
+        seen_paths: set[str] = set()
+        for i, entry in enumerate(channels_raw):
+            cpath = f"source_options.channels[{i}]"
+            if not isinstance(entry, dict):
+                errors.append(_err(cpath, "invalid_type", f"{cpath} must be a table"))
+                continue
+            _check_unknown_keys(entry, schema.EVENT_CHANNEL_KEYS, cpath, errors)
+            path = entry.get("path")
+            if (
+                not isinstance(path, str)
+                or not path
+                or len(path) > schema.EVENT_CHANNEL_PATH_MAX_LEN
+            ):
+                errors.append(_err(
+                    f"{cpath}.path", "invalid_value",
+                    f"path must be a non-empty string <= "
+                    f"{schema.EVENT_CHANNEL_PATH_MAX_LEN} chars",
+                ))
+                continue
+            if path in seen_paths:
+                errors.append(_err(
+                    f"{cpath}.path", "duplicate_name", f"duplicate channel path {path!r}",
+                ))
+                continue
+            seen_paths.add(path)
+            query = entry.get("query")
+            if query is not None and (
+                not isinstance(query, str) or len(query) > schema.EVENT_QUERY_MAX_LEN
+            ):
+                errors.append(_err(
+                    f"{cpath}.query", "invalid_value",
+                    f"query must be a string <= {schema.EVENT_QUERY_MAX_LEN} chars",
+                ))
+                continue
+            channels.append({"path": path, "query": query})
+
+        source_options = {"channels": channels}
+        store_min_severity = options.get("store_min_severity")
+        if store_min_severity is not None:
+            valid_str = (
+                isinstance(store_min_severity, str) and store_min_severity in model.SEVERITIES
+            )
+            valid_int = (
+                isinstance(store_min_severity, int)
+                and not isinstance(store_min_severity, bool)
+                and 0 <= store_min_severity <= 4
+            )
+            if valid_str or valid_int:
+                source_options["store_min_severity"] = store_min_severity
+            else:
+                errors.append(_err(
+                    "source_options.store_min_severity", "invalid_value",
+                    "store_min_severity must be a severity name or int 0-4",
+                ))
 
     # --- [promotion] -----------------------------------------------------------
     promotion_tbl = parsed.get("promotion")
