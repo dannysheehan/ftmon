@@ -1,11 +1,40 @@
 # FTMON built-in: per-process memory-leak detector (SPEC 7.7.1)
 # Tune parameters below; run `ftmon check` after editing.
 schema = 1
+# NOTE: exempt is a top-level key, so it must appear BEFORE the first [table]
+# header - TOML binds bare keys to the most recently opened table otherwise.
+#
+# Three Windows system pseudo-/singleton processes exempted here, verified
+# against 2 days of real desktop RSS samples (not guessed): MemCompression
+# swung 3.3-3.8 GB within single-digit-minute windows (it is the kernel's
+# compressed working-set store responding to system-wide memory pressure,
+# not a process that allocates memory the way the leak model assumes -- the
+# same "psutil metric doesn't mean what the rule assumes for this entity"
+# shape as hog.toml's System Idle Process exemption); dwm.exe (Desktop
+# Window Manager) swung 275 MB and MsMpEng.exe (Defender's scan engine)
+# swung 201 MB, both well-documented OS-owned balloon/trim cycles tied to
+# window-buffer allocation and AV scan activity respectively. All three
+# repeatedly crossed warn_mb_per_h/min_net_mb and self-cleared within
+# 5-30 min, every time, across ~15 separate incidents in 48h -- consistent
+# oscillation, not sustained growth. explorer.exe and svchost.exe are
+# deliberately NOT exempted despite showing similar-looking incidents:
+# both host third-party code (shell extensions; arbitrary Windows services)
+# that can genuinely leak, so blinding the monitor to them would risk
+# masking a real leak, not just noise. This is a scoped identity exemption,
+# not a loosened threshold -- a process misnamed to match one of these
+# three would also go quiet, but that is the accepted tradeoff, same as
+# hog.toml's.
+#
+# [.] not \. for the literal dot: the expr parser runs regex string literals
+# through Python's own ast.parse (parse.py), so a backslash escape Python
+# doesn't recognize (\.) raises SyntaxWarning on every load/rescan, not just
+# once. A character class sidesteps that without changing the match.
+exempt = [ 'matches(name, "^(MemCompression|dwm[.]exe|MsMpEng[.]exe)$")' ]
 
 [monitor]
 name = "leak"
 description = "Detects processes whose memory grows steadily (memory leaks)"
-version = 3
+version = 4
 enabled = true
 platforms = ["windows"]
 interval = "60s"
