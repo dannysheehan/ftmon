@@ -71,7 +71,8 @@ Section reference:
 `[glance]` is optional and sampler-only. It tells the dashboard which one
 already-persisted value can honestly summarize a monitor; it never changes
 sampling, rules, incidents, or health color. Nothing is guessed from rule or
-metric names.
+metric names. The dashboard draws a linear threshold meter for percent glances
+(0–100) and for other units that declare thresholds (axis 0…highest limit).
 
 ```toml
 [glance]
