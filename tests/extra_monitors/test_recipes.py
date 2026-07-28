@@ -130,6 +130,10 @@ def test_recipe_registry_and_monitor_agree_without_granting_authority(recipe):
 def test_numeric_recipe_glances_are_explicit_and_status_only_recipe_omits_one():
     """[MD-12][XR-03] Recipe tiles expose only honest primary numeric signals."""
     expected = {
+        "battery": (
+            ("charge_pct", "percent", "min"),
+            [("warn", "warn_charge_pct"), ("critical", "crit_charge_pct")],
+        ),
         "temperature": (
             ("temp_celsius", "celsius", "max"),
             [("warn", "warn_celsius"), ("critical", "crit_celsius")],

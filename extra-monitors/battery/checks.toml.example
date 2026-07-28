@@ -1,0 +1,13 @@
+[check.battery]
+# Charge%,Health% thresholds (lower is worse). Defaults assume an always-plugged
+# laptop: warn when charge falls through a typical 50% conservation floor, and
+# when wear drops below 60% of design capacity. --require-ac catches dock/USB-C
+# mains loss before the pack drains.
+argv = [
+  "/usr/local/lib/ftmon/checks/check_battery",
+  "-w", "40,60",
+  "-c", "15,40",
+  "--require-ac",
+]
+protocol = "ftmon-json"
+timeout = "5s"
