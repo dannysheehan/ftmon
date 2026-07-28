@@ -1,0 +1,41 @@
+schema = 1
+
+[recipe]
+id = "battery"
+title = "Laptop battery charge and health"
+summary = "Alert when charge falls, capacity wears out, or expected mains power drops on an always-plugged laptop."
+kind = "ftmon-json"
+platforms = ["linux"]
+upstream = "https://github.com/dannysheehan/ftmon/tree/main/extra-monitors/battery"
+license = "MIT"
+status = "real-system-verified"
+privilege = "none"
+network = false
+last_verified_version = "check_battery (recipe script) on Ubuntu 24.04 / Linux 7.0 (Dell XPS 15 9560); 2026-07-29"
+category = "hardware"
+tags = ["acpi", "battery", "charge", "hardware", "laptop", "power"]
+min_ftmon_version = "2.0.0a6"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = ["charge", "health", "voltage", "power", "ac_online", "status"]
+
+[[fixtures]]
+path = "fixtures/warning.txt"
+exit_code = 0
+state = 1
+labels = ["charge", "health", "voltage", "power", "ac_online", "status"]
+
+[[fixtures]]
+path = "fixtures/critical.txt"
+exit_code = 0
+state = 2
+labels = ["charge", "health", "voltage", "power", "ac_online", "status"]
+
+[[fixtures]]
+path = "fixtures/unknown.txt"
+exit_code = 0
+state = 3
+labels = []
