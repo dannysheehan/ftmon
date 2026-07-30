@@ -495,3 +495,38 @@ def test_sighup_reload_request_applies_next_tick_pm_11(tmp_path):
     clock.advance(5)
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
     assert core.monitors["leak"].content_hash != old_hash
+
+
+def test_daemon_skips_disabled_monitors_md_05(tmp_path):
+    """[MD-05][PM-04] enabled=false stays on disk but is not scheduled; flipping
+    it off on rescan unloads a previously-enabled monitor."""
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths
+
+    env = {
+        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+        "FTMON_DATA_DIR": str(tmp_path / "data"),
+        "FTMON_STATE_DIR": str(tmp_path / "state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
+    }
+    paths = get_paths(env)
+    paths.ensure()
+    (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
+    disabled = LEAKDEF.replace('name = "leak"', 'name = "parked"').replace(
+        "enabled = true", "enabled = false", 1
+    )
+    (paths.monitors_dir / "parked.toml").write_text(disabled)
+
+    clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+    core = DaemonCore(paths=paths, clock=clock)
+    assert set(core.monitors) == {"leak"}
+    assert "parked" not in core.due.names()
+
+    # Disabling a live monitor must drop it on the next PM-04 rescan.
+    (paths.monitors_dir / "leak.toml").write_text(
+        LEAKDEF.replace("enabled = true", "enabled = false", 1)
+    )
+    clock.advance(31)
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)
+    assert core.monitors == {}
+    assert core.due.names() == []

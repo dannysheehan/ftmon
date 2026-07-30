@@ -313,6 +313,11 @@ class DaemonCore:
             self.stats.count("config_errors")
         seen = set()
         for mdef in defs:
+            # MD-05: enabled=false stays on disk for one-line re-enable / git
+            # history, but must not be scheduled. Omitting it from `seen`
+            # also drops a previously-enabled monitor on the next rescan.
+            if not mdef.enabled:
+                continue
             seen.add(mdef.name)
             if mdef.source == "events":
                 # Event monitors have no sampler/rings/schedule: the event
