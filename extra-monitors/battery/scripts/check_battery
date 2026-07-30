@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 FTMON contributors
+"""check_battery - laptop battery charge/health probe for ftmon (ftmon-json).
+
+Reads Linux sysfs power_supply nodes (BAT*, AC/ADP*) and emits one schema v1
+JSON object on stdout. Always exits 0 — severity lives in JSON ``state`` only.
+
+Why sysfs rather than upower: FTMON checks run with a scrubbed environment and
+no D-Bus session; sysfs is readable without privilege and stays stable across
+desktop/session restarts. Thresholds catch the two failure modes that matter
+on an always-plugged laptop: charge falling through the conservation floor
+(loose USB-C / dock power flap) and long-term capacity wear.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+_STATUS_CODE = {
+    "Unknown": 0,
+    "Charging": 1,
+    "Discharging": 2,
+    "Not charging": 3,
+    "Full": 4,
+}
+
+
+def _emit(state: int, message: str, metrics: dict[str, dict[str, Any]]) -> None:
+    sys.stdout.write(
+        json.dumps(
+            {"schema": 1, "state": state, "message": message, "metrics": metrics},
+            separators=(",", ":"),
+        )
+    )
+    sys.stdout.write("\n")
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _read_int(path: Path) -> int | None:
+    raw = _read_text(path)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _finite(value: float | None) -> float | None:
+    if value is None or not math.isfinite(value):
+        return None
+    return value
+
+
+def _discover_battery(sysfs: Path, name: str | None) -> Path | None:
+    root = sysfs / "class" / "power_supply"
+    if name:
+        path = root / name
+        return path if path.is_dir() else None
+    if not root.is_dir():
+        return None
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        if (_read_text(entry / "type") or "").lower() != "battery":
+            continue
+        if _read_int(entry / "present") == 0:
+            continue
+        return entry
+    return None
+
+
+def _discover_ac(sysfs: Path, name: str | None) -> Path | None:
+    root = sysfs / "class" / "power_supply"
+    if name:
+        path = root / name
+        return path if path.is_dir() else None
+    if not root.is_dir():
+        return None
+    preferred: list[Path] = []
+    others: list[Path] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        kind = (_read_text(entry / "type") or "").lower()
+        if kind not in {"mains", "ups"}:
+            continue
+        # Prefer classic ACPI AC / ADP* names over HID peripheral supplies.
+        if entry.name.upper().startswith(("AC", "ADP")):
+            preferred.append(entry)
+        else:
+            others.append(entry)
+    return (preferred or others or [None])[0]
+
+
+def _health_pct(bat: Path) -> float | None:
+    full = _read_int(bat / "charge_full")
+    design = _read_int(bat / "charge_full_design")
+    if full is not None and design not in (None, 0):
+        return _finite(100.0 * full / design)
+    full_e = _read_int(bat / "energy_full")
+    design_e = _read_int(bat / "energy_full_design")
+    if full_e is not None and design_e not in (None, 0):
+        return _finite(100.0 * full_e / design_e)
+    return None
+
+
+def _power_w(bat: Path) -> float | None:
+    power = _read_int(bat / "power_now")
+    if power is not None:
+        return _finite(abs(power) / 1_000_000.0)
+    voltage = _read_int(bat / "voltage_now")
+    current = _read_int(bat / "current_now")
+    if voltage is None or current is None:
+        return None
+    return _finite(abs(voltage) * abs(current) / 1_000_000_000_000.0)
+
+
+def _parse_pair(raw: str, label: str) -> tuple[float, float]:
+    parts = raw.split(",", 1)
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"{label} must be CHARGE_PCT,HEALTH_PCT (got {raw!r})"
+        )
+    try:
+        charge, health = float(parts[0]), float(parts[1])
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"{label} must be CHARGE_PCT,HEALTH_PCT (got {raw!r})"
+        ) from exc
+    return charge, health
+
+
+def _state(
+    charge: float | None,
+    health: float | None,
+    ac_online: int | None,
+    *,
+    c_warn: float,
+    c_crit: float,
+    h_warn: float,
+    h_crit: float,
+    require_ac: bool,
+) -> int:
+    state = 0
+    if charge is not None:
+        if charge <= c_crit:
+            state = max(state, 2)
+        elif charge <= c_warn:
+            state = max(state, 1)
+    if health is not None:
+        if health <= h_crit:
+            state = max(state, 2)
+        elif health <= h_warn:
+            state = max(state, 1)
+    if require_ac and ac_online == 0:
+        # AC loss alone is warning; low charge/health may already be critical.
+        state = max(state, 1)
+    return state
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="check_battery")
+    parser.add_argument(
+        "--battery",
+        default=None,
+        help="power_supply name (default: first present Battery)",
+    )
+    parser.add_argument(
+        "--ac",
+        default=None,
+        help="mains power_supply name (default: first AC/ADP*/Mains)",
+    )
+    parser.add_argument(
+        "-w",
+        "--warn",
+        default="40,60",
+        help="warn when charge%% or health%% at/below (default 40,60)",
+    )
+    parser.add_argument(
+        "-c",
+        "--crit",
+        default="15,40",
+        help="critical when charge%% or health%% at/below (default 15,40)",
+    )
+    parser.add_argument(
+        "--require-ac",
+        action="store_true",
+        help="warn when mains is offline (always-plugged desktops/docks)",
+    )
+    parser.add_argument(
+        "--sysfs-root",
+        default="/sys",
+        help=argparse.SUPPRESS,  # test hook only
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        c_warn, h_warn = _parse_pair(args.warn, "-w")
+        c_crit, h_crit = _parse_pair(args.crit, "-c")
+    except argparse.ArgumentTypeError as exc:
+        _emit(3, f"Battery check failed: {exc}", {})
+        return 0
+
+    sysfs = Path(args.sysfs_root)
+    bat = _discover_battery(sysfs, args.battery)
+    if bat is None:
+        target = args.battery or "BAT*"
+        _emit(3, f"Battery check failed: no battery at {sysfs}/class/power_supply/{target}", {})
+        return 0
+
+    ac = _discover_ac(sysfs, args.ac)
+    ac_online = _read_int(ac / "online") if ac is not None else None
+
+    capacity = _read_int(bat / "capacity")
+    charge = _finite(float(capacity)) if capacity is not None else None
+    health = _health_pct(bat)
+    status = _read_text(bat / "status") or "Unknown"
+    voltage_uV = _read_int(bat / "voltage_now")
+    voltage_v = _finite(voltage_uV / 1_000_000.0) if voltage_uV is not None else None
+    power_w = _power_w(bat)
+
+    metrics: dict[str, dict[str, Any]] = {}
+    if charge is not None:
+        metrics["charge"] = {"value": charge, "uom": "%"}
+    if health is not None:
+        metrics["health"] = {"value": round(health, 3), "uom": "%"}
+    if voltage_v is not None:
+        metrics["voltage"] = {"value": round(voltage_v, 3), "uom": "V"}
+    if power_w is not None:
+        metrics["power"] = {"value": round(power_w, 3), "uom": "W"}
+    if ac_online is not None:
+        metrics["ac_online"] = {"value": int(ac_online), "uom": "flag"}
+    metrics["status"] = {"value": float(_STATUS_CODE.get(status, 0)), "uom": "flag"}
+
+    state = _state(
+        charge,
+        health,
+        ac_online,
+        c_warn=c_warn,
+        c_crit=c_crit,
+        h_warn=h_warn,
+        h_crit=h_crit,
+        require_ac=args.require_ac,
+    )
+
+    parts = [bat.name, status]
+    if charge is not None:
+        parts.append(f"{charge:.0f}% charge")
+    if health is not None:
+        parts.append(f"{health:.0f}% health")
+    if ac_online is not None:
+        parts.append("AC online" if ac_online else "AC offline")
+    elif args.require_ac:
+        parts.append("AC unknown")
+    if power_w is not None:
+        parts.append(f"{power_w:.1f}W")
+    message = ", ".join(parts)
+
+    _emit(state, message, metrics)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

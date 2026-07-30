@@ -1,0 +1,113 @@
+schema = 1
+
+[monitor]
+name = "package_updates"
+description = "Pending apt package updates: security, total, and cache freshness (check_apt_updates)"
+version = 1
+enabled = false
+platforms = ["linux"]
+interval = "5m"
+source = "external"
+
+[source_options]
+check = "package_updates"
+entity = "apt"
+
+[[source_options.perfdata]]
+label = "updates_total"
+metric = "updates_total"
+plugin_uom = "packages"
+unit = "packages"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "updates_security"
+metric = "updates_security"
+plugin_uom = "packages"
+unit = "packages"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "cache_age"
+metric = "cache_age_s"
+plugin_uom = "s"
+unit = "seconds"
+kind = "gauge"
+
+[parameters]
+updates_warn_count = { value = 20, doc = "Pending non-security updates that warrant a warning — keep checks.toml -w in sync" }
+cache_stale_warn_s = { value = 604800, doc = "Apt cache age (seconds) before warning — default 7 days" }
+updates_growth_per_day = { value = 5, doc = "Pending-updates growth rate (per day) before notice" }
+updates_growth_confidence_min = { value = 0.8, doc = "Required fraction of rising pending-updates samples" }
+
+[glance]
+metric = "updates_total"
+unit = "packages"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "updates_warn_count" },
+]
+
+[[derived]]
+name = "updates_total_rate_pd"
+expr = 'slope(updates_total, "6h") * 86400'
+
+[[derived]]
+name = "updates_total_growth_confidence"
+expr = 'monot(updates_total, "6h")'
+
+[[derived]]
+name = "cache_age_days"
+expr = 'cache_age_s / 86400'
+
+[[rule]]
+id = "security-pending"
+group = "apt-security"
+when = "updates_security > 0"
+severity = "critical"
+confirm_cycles = 2
+message = "{updates_security} security update(s) pending; run apt full-upgrade (or unattended-upgrade)"
+
+[[rule]]
+id = "cache-stale"
+group = "apt-cache"
+when = "cache_age_s > cache_stale_warn_s"
+severity = "warning"
+confirm_cycles = 2
+message = "Apt cache is {cache_age_days:.0f} day(s) old; run apt update to refresh"
+
+[[rule]]
+id = "many-pending"
+group = "apt-pending"
+when = "updates_total > updates_warn_count"
+severity = "warning"
+confirm_cycles = 3
+message = "{updates_total} package updates pending (warn at {updates_warn_count})"
+
+[[rule]]
+id = "updates-rising"
+group = "apt-pending"
+when = 'updates_total_rate_pd > updates_growth_per_day and updates_total_growth_confidence >= updates_growth_confidence_min'
+severity = "notice"
+confirm_cycles = 3
+message = "Pending updates are growing steadily ({updates_total_rate_pd:.1f}/day)"
+
+[[rule]]
+id = "plugin-unknown"
+group = "check-health"
+when = "plugin_state == 3"
+severity = "warning"
+confirm_cycles = 2
+message = "Package-updates check is unknown: {plugin_message}"
+
+[[trend]]
+id = "updates-growth"
+kind = "growth"
+title = "Pending package updates trend"
+value_metric = "updates_total"
+value_unit = "packages"
+rate_metric = "updates_total_rate_pd"
+rate_unit = "packages/day"
+confidence_metric = "updates_total_growth_confidence"
+confidence_threshold_param = "updates_growth_confidence_min"
+rate_threshold_params = ["updates_growth_per_day"]

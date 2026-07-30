@@ -1,0 +1,1 @@
+{"schema":1,"state":2,"message":"BAT0, Discharging, 8% charge, 90% health, AC offline, 12.0W","metrics":{"charge":{"value":8.0,"uom":"%"},"health":{"value":90.0,"uom":"%"},"voltage":{"value":12.0,"uom":"V"},"power":{"value":12.0,"uom":"W"},"ac_online":{"value":0,"uom":"flag"},"status":{"value":2.0,"uom":"flag"}}}

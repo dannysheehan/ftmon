@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 FTMON contributors
+"""check_apt_updates - Pending apt package updates probe for ftmon (ftmon-json).
+
+Counts upgradable packages available to apt on Debian/Ubuntu systems,
+distinguishing the security pocket, and reports how stale the apt cache
+is. Emits one schema v1 JSON object on stdout and exits 0.
+
+State semantics:
+  0 OK       - cache fresh, no security updates pending
+  1 WARNING  - cache stale or many non-security updates pending
+  2 CRITICAL - one or more security updates pending
+  3 UNKNOWN  - apt metadata unavailable
+
+Runs unprivileged; reads /var/lib/apt/lists and /var/cache/apt which are
+world-readable on standard Ubuntu/Debian installations. Does not invoke
+``apt-get update``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CACHE_FILE = Path("/var/cache/apt/pkgcache.bin")
+SUCCESS_STAMP = Path("/var/lib/apt/periodic/update-success-stamp")
+LIST_DIR = Path("/var/lib/apt/lists")
+
+# apt list --upgradable line shape (Ubuntu 24.04 / apt 2.x):
+#   firefox/noble-updates 134.0.1-1~ubuntu0.1 amd64 [upgradable from: 134.0-1ubuntu0.1]
+# Fields before the bracket: name/suite, version, arch. A five-field regex
+# silently matched nothing and reported 0 forever — keep this four-field form.
+_UPGRADE_RE = re.compile(r"^(\S+)/(\S+)\s+\S+\s+\S+\s+\[upgradable from:")
+
+CACHE_STALE_WARN_S = 7 * 86400
+DEFAULT_UPDATES_WARN_COUNT = 20
+
+
+def _emit(
+    state: int,
+    message: str,
+    metrics: dict[str, dict[str, object]],
+) -> None:
+    sys.stdout.write(json.dumps(
+        {"schema": 1, "state": state, "message": message, "metrics": metrics}
+    ))
+    sys.stdout.write("\n")
+
+
+def _parse_upgradable(text: str) -> tuple[int, int]:
+    total = 0
+    security = 0
+    for line in text.splitlines():
+        match = _UPGRADE_RE.match(line)
+        if not match:
+            continue
+        total += 1
+        if "security" in match.group(2):
+            security += 1
+    return total, security
+
+
+def _count_upgradable(apt_list_file: Path | None = None) -> tuple[int | None, int | None]:
+    """Return (total_upgradable, security_upgradable) or (None, None) on failure."""
+    if apt_list_file is not None:
+        try:
+            return _parse_upgradable(apt_list_file.read_text(encoding="utf-8"))
+        except OSError:
+            return None, None
+    try:
+        result = subprocess.run(
+            ["apt", "list", "--upgradable"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None, None
+    if result.returncode != 0:
+        return None, None
+    return _parse_upgradable(result.stdout)
+
+
+def _cache_age_seconds(
+    *,
+    cache_stamp: Path | None = None,
+    now: float | None = None,
+) -> int | None:
+    """Seconds since apt metadata was last refreshed, or None if unknown."""
+    if cache_stamp is not None:
+        candidates = [cache_stamp]
+    else:
+        candidates = [SUCCESS_STAMP, CACHE_FILE]
+    stamp = 0.0
+    for path in candidates:
+        try:
+            stamp = max(stamp, path.stat().st_mtime)
+        except OSError:
+            continue
+    if stamp <= 0.0 and cache_stamp is None and LIST_DIR.is_dir():
+        try:
+            stamp = max(
+                (p.stat().st_mtime for p in LIST_DIR.iterdir()
+                 if p.suffix in {".list", ".Packages", ".xz", ".gz", ".bz2"}),
+                default=0.0,
+            )
+        except OSError:
+            pass
+    if stamp <= 0.0:
+        return None
+    wall = time.time() if now is None else now
+    return max(0, int(wall - stamp))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="check_apt_updates")
+    parser.add_argument(
+        "-w",
+        "--updates-warn",
+        type=int,
+        default=DEFAULT_UPDATES_WARN_COUNT,
+        metavar="N",
+        help=(
+            "plugin_state WARNING when non-security upgradable count exceeds N "
+            f"(default {DEFAULT_UPDATES_WARN_COUNT}; keep aligned with the "
+            "monitor's updates_warn_count parameter)"
+        ),
+    )
+    parser.add_argument(
+        "--cache-stale-s",
+        type=int,
+        default=CACHE_STALE_WARN_S,
+        metavar="SEC",
+        help="plugin_state WARNING when apt cache age exceeds SEC (default 7d)",
+    )
+    # Test hooks only — never document in operator argv.
+    parser.add_argument("--apt-list-file", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--cache-stamp", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--now", type=float, default=None, help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+
+    total, security = _count_upgradable(args.apt_list_file)
+    age = _cache_age_seconds(cache_stamp=args.cache_stamp, now=args.now)
+
+    if total is None and security is None and age is None:
+        _emit(3, "apt metadata unavailable", {})
+        return 0
+
+    metrics: dict[str, dict[str, object]] = {}
+    if total is not None:
+        metrics["updates_total"] = {"value": total, "uom": "packages"}
+    if security is not None:
+        metrics["updates_security"] = {"value": security, "uom": "packages"}
+    if age is not None:
+        metrics["cache_age"] = {"value": age, "uom": "s"}
+
+    parts: list[str] = []
+    if total is not None:
+        parts.append(f"{total} upgradable")
+    if security is not None:
+        parts.append(f"{security} security")
+    if age is not None:
+        parts.append(f"cache {age // 86400}d old")
+    message = "apt: " + ", ".join(parts) if parts else "apt metadata unavailable"
+
+    if security is not None and security > 0:
+        state = 2
+    elif (age is not None and age > args.cache_stale_s) or (
+        total is not None and total > args.updates_warn
+    ):
+        state = 1
+    else:
+        state = 0
+
+    _emit(state, message, metrics)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

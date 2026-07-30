@@ -1,0 +1,1 @@
+{"schema":1,"state":3,"message":"Battery check failed: no battery at /sys/class/power_supply/BAT0","metrics":{}}
