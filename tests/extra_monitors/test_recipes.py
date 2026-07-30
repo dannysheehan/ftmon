@@ -134,6 +134,10 @@ def test_numeric_recipe_glances_are_explicit_and_status_only_recipe_omits_one():
             ("charge_pct", "percent", "min"),
             [("warn", "warn_charge_pct"), ("critical", "crit_charge_pct")],
         ),
+        "package-updates": (
+            ("updates_total", "packages", "max"),
+            [("warn", "updates_warn_count")],
+        ),
         "temperature": (
             ("temp_celsius", "celsius", "max"),
             [("warn", "warn_celsius"), ("critical", "crit_celsius")],

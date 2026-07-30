@@ -1,0 +1,1 @@
+{"schema": 1, "state": 0, "message": "apt: 0 upgradable, 0 security, cache 0d old", "metrics": {"updates_total": {"value": 0, "uom": "packages"}, "updates_security": {"value": 0, "uom": "packages"}, "cache_age": {"value": 3600, "uom": "s"}}}
