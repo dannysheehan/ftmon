@@ -379,6 +379,11 @@ class DaemonCore:
             self.stats.count("config_errors")
         seen = set()
         for mdef in defs:
+            # MD-05: enabled=false stays on disk for one-line re-enable / git
+            # history, but must not be scheduled. Omitting it from `seen`
+            # also drops a previously-enabled monitor on the next rescan.
+            if not mdef.enabled:
+                continue
             seen.add(mdef.name)
             if self.platform not in mdef.platforms:
                 # PL-01/PL-02: declared but unenforced was the actual gap —

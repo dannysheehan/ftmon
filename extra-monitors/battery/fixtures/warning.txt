@@ -1,0 +1,1 @@
+{"schema":1,"state":1,"message":"BAT0, Charging, 35% charge, 88% health, AC online, 12.0W","metrics":{"charge":{"value":35.0,"uom":"%"},"health":{"value":87.5,"uom":"%"},"voltage":{"value":12.0,"uom":"V"},"power":{"value":12.0,"uom":"W"},"ac_online":{"value":1,"uom":"flag"},"status":{"value":1.0,"uom":"flag"}}}

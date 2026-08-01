@@ -1,0 +1,41 @@
+schema = 1
+
+[recipe]
+id = "package-updates"
+title = "Pending apt package updates"
+summary = "Alert when security updates are pending, the non-security backlog grows, or the apt cache goes stale on Debian/Ubuntu hosts."
+kind = "ftmon-json"
+platforms = ["linux"]
+upstream = "https://github.com/dannysheehan/ftmon/tree/main/extra-monitors/package-updates"
+license = "MIT"
+status = "real-system-verified"
+privilege = "none"
+network = false
+last_verified_version = "check_apt_updates (recipe script) on Ubuntu 24.04.4 / apt list --upgradable; 2026-07-30"
+category = "security"
+tags = ["apt", "debian", "packages", "security", "ubuntu", "updates"]
+min_ftmon_version = "2.0.0a6"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = ["updates_total", "updates_security", "cache_age"]
+
+[[fixtures]]
+path = "fixtures/warning.txt"
+exit_code = 0
+state = 1
+labels = ["updates_total", "updates_security", "cache_age"]
+
+[[fixtures]]
+path = "fixtures/critical.txt"
+exit_code = 0
+state = 2
+labels = ["updates_total", "updates_security", "cache_age"]
+
+[[fixtures]]
+path = "fixtures/unknown.txt"
+exit_code = 0
+state = 3
+labels = []

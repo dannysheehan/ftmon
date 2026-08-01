@@ -1,0 +1,11 @@
+[check.package_updates]
+# -w must stay aligned with monitor.toml updates_warn_count (plugin_state is a
+# convenience mirror; monitor rules are authoritative for alerting). Cache
+# staleness defaults to 7 days inside the check (--cache-stale-s).
+argv = [
+  "/usr/local/lib/ftmon/checks/check_apt_updates",
+  "-w", "20",
+]
+protocol = "ftmon-json"
+# Outer FTMON timeout sits above apt list's 8s internal bound.
+timeout = "12s"
