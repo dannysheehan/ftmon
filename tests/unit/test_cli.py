@@ -293,6 +293,63 @@ class TestInit:
         # Should still be modified
         assert self_toml.read_bytes() == modified_text
 
+    def test_windesktop_profile_installs_curated_security_draft_md_05(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """[MD-05] windesktop/winserver init ships the curated Security/
+        PowerShell draft into monitors/drafts/, never monitors/ directly --
+        it must not be loaded until a human approves it."""
+        setup_env(tmp_path, monkeypatch)
+        rc = main(["init", "--profile", "windesktop"])
+        assert rc == 0
+
+        draft = tmp_path / "cfg" / "monitors" / "drafts" / "events_security.toml"
+        assert draft.exists()
+        assert not (tmp_path / "cfg" / "monitors" / "events_security.toml").exists()
+        assert 'name = "events_security"' in draft.read_text()
+
+        captured = capsys.readouterr()
+        assert "draft monitor" in captured.out
+        assert "events_security.toml" in captured.out
+
+    def test_winserver_profile_also_installs_curated_draft(self, tmp_path, monkeypatch):
+        """[MD-05] winserver shares the same Windows-calibrated tree as
+        windesktop (_PROFILE_CALIBRATED_DIRS), so it gets the same draft."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "winserver"]) == 0
+        draft = tmp_path / "cfg" / "monitors" / "drafts" / "events_security.toml"
+        assert draft.exists()
+
+    def test_desktop_profile_has_no_curated_drafts(self, tmp_path, monkeypatch):
+        """Non-Windows profiles have no curated drafts today -- drafts/
+        stays empty, init must not invent or error over their absence."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "desktop"]) == 0
+        drafts_dir = tmp_path / "cfg" / "monitors" / "drafts"
+        assert list(drafts_dir.glob("*.toml")) == []
+
+    def test_init_skips_existing_draft_normally(self, tmp_path, monkeypatch):
+        """[FS-02] init does not overwrite an existing draft without
+        --force -- same skip-unless-force contract as builtins."""
+        setup_env(tmp_path, monkeypatch)
+        main(["init", "--profile", "windesktop"])
+        draft = tmp_path / "cfg" / "monitors" / "drafts" / "events_security.toml"
+        modified = b"# USER MODIFIED\n" + draft.read_bytes()
+        draft.write_bytes(modified)
+
+        main(["init", "--profile", "windesktop"])
+        assert draft.read_bytes() == modified
+
+    def test_init_force_reinstalls_draft(self, tmp_path, monkeypatch):
+        """[FS-02] init --force re-installs the curated draft too."""
+        setup_env(tmp_path, monkeypatch)
+        main(["init", "--profile", "windesktop"])
+        draft = tmp_path / "cfg" / "monitors" / "drafts" / "events_security.toml"
+        draft.write_bytes(b"# MODIFIED\n" + draft.read_bytes())
+
+        main(["init", "--profile", "windesktop", "--force"])
+        assert not draft.read_bytes().startswith(b"# MODIFIED")
+
 
 class TestCheck:
     """[CL-01][CL-02] ftmon check subcommand."""

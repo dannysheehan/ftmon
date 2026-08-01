@@ -1,4 +1,4 @@
-"""Windows Event Log EventSource (SA-03, DM-07/08/15, SA-08, PL-01/02).
+"""Windows Event Log EventSource (SA-03/10, DM-07/08/15/19/20, SA-08, PL-01/02).
 
 win32evtlog.EvtSubscribe is the seam validated by the feature/windows-support
 spike (spikes/windows-support/evtlog_spike.py, NOTES.md SS1): one EvtSubscribe
@@ -28,6 +28,7 @@ import collections
 import json
 import threading
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import datetime
 from typing import ClassVar
 
@@ -35,7 +36,18 @@ from ftmon.model import EventRecord, SourceDecl
 from ftmon.sources.base import SOURCE_DECLS
 from ftmon.sources.repeats import merge_adjacent
 
-__all__ = ["WindowsEventSource", "parse_event_xml", "LEVEL_TO_SEVERITY"]
+__all__ = ["ChannelSpec", "WindowsEventSource", "parse_event_xml", "LEVEL_TO_SEVERITY"]
+
+
+@dataclass(frozen=True)
+class ChannelSpec:
+    """One EvtSubscribe target: a channel path plus an optional XPath filter
+    query (the same query language EvtQuery/wevtutil/Get-WinEvent share --
+    not WEC/WEF-specific). `query=None` subscribes to everything on the
+    channel, same as today's behavior."""
+
+    path: str
+    query: str | None = None
 
 QUEUE_MAX = 10_000  # SA-08, same bound as JournaldEventSource
 _MSG_MAX = 2048  # DM-13: event messages truncate at 2 KB
@@ -125,7 +137,9 @@ class WindowsEventSource:
     cursor_name = "eventlog"
 
     def __init__(self, channels: tuple[str, ...] = _DEFAULT_CHANNELS):
-        self._channels = channels
+        self._channels: tuple[ChannelSpec, ...] = tuple(
+            ChannelSpec(path=c) for c in channels
+        )
         self._subs: list = []
         self._channel_ok: dict[str, bool] = {}
         # deque(maxlen=N) drops from the head on overflow -- SA-08's "oldest
@@ -135,7 +149,7 @@ class WindowsEventSource:
         # (still occupies a slot so drain() passes over it in order instead
         # of replaying it forever), and "bookmarks" carries every channel's
         # position represented by that entry (more than one after a
-        # cross-channel merge, DM-18).
+        # cross-channel merge, DM-20).
         self._queue: collections.deque[dict] = collections.deque(maxlen=QUEUE_MAX)
         self._lock = threading.Lock()
         # DM-15: only drain() may move a channel's entry into _committed --
@@ -146,6 +160,30 @@ class WindowsEventSource:
         self.malformed = 0
         self.received = 0
         self.repeated = 0
+        # channel -> str(exception) for the most recent EvtSubscribe failure;
+        # EventEngine.tick() surfaces each once as a self-event.
+        self.subscribe_errors: dict[str, str] = {}
+
+    def configure(self, channels: tuple[ChannelSpec, ...]) -> None:
+        """Pre-start channel/query *extension* (daemon.py's _start_events(),
+        called once before the first start() -- see win_evtlog.py's module
+        docstring: there is exactly one EvtSubscribe pass per daemon
+        lifetime, not a hot-reconfigure path). Adds to the existing channel
+        set (the constructor default, System/Application in production)
+        rather than replacing it -- a monitor declaring `channels =
+        [{path="Security"}]` must gain Security, not lose System/Application
+        and the built-in rules that depend on them (e.g. events.toml's
+        unexpected-shutdown rule needs System). A path already present is
+        replaced by the incoming spec (so an explicit query can narrow a
+        default channel); a new path is appended. A no-op once subscriptions
+        already exist: changing channels after that needs a restart, same
+        as the rest of this class's one-shot-subscribe design."""
+        if self._subs:
+            return
+        merged = {spec.path: spec for spec in self._channels}
+        for spec in channels:
+            merged[spec.path] = spec
+        self._channels = tuple(merged.values())
 
     def start(self, cursor: str | None) -> None:
         import pywintypes
@@ -160,6 +198,7 @@ class WindowsEventSource:
         with self._lock:
             self._queue.clear()
             self._committed = {}
+        self.subscribe_errors = {}
 
         prior: dict[str, str] = {}
         if cursor:
@@ -171,7 +210,8 @@ class WindowsEventSource:
                 with self._lock:
                     self.malformed += 1  # foreign/corrupt cursor; every channel starts fresh
 
-        for channel in self._channels:
+        for spec in self._channels:
+            channel = spec.path
             bookmark = None
             bookmark_xml = prior.get(channel)
             if bookmark_xml:
@@ -196,9 +236,21 @@ class WindowsEventSource:
                 if bookmark is not None
                 else win32evtlog.EvtSubscribeToFutureEvents
             )
-            sub = win32evtlog.EvtSubscribe(
-                channel, flags, Callback=self._make_callback(channel), Bookmark=bookmark,
-            )
+            # One bad channel (unknown name, or -- once callers pass Query --
+            # a malformed XPath filter) must not abort subscription setup for
+            # the rest: isolate per channel, same swallow-the-whole-exception
+            # convention as the bookmark decode above, no win32 error-code
+            # special-casing.
+            try:
+                sub = win32evtlog.EvtSubscribe(
+                    channel, flags, Callback=self._make_callback(channel),
+                    Bookmark=bookmark, Query=spec.query,
+                )
+            except pywintypes.error as exc:
+                with self._lock:
+                    self._channel_ok[channel] = False
+                    self.subscribe_errors[channel] = str(exc)
+                continue
             self._subs.append(sub)
             self._channel_ok[channel] = True
 
@@ -207,8 +259,16 @@ class WindowsEventSource:
 
         def callback(action, _context, event):
             if action == win32evtlog.EvtSubscribeActionError:
+                # Async, post-subscribe failure (e.g. the channel becomes
+                # unavailable after a successful initial EvtSubscribe) --
+                # `event` is a Win32 error code here, not a real event
+                # handle. Must land in subscribe_errors too, the same as a
+                # synchronous EvtSubscribe() failure: alive() only goes
+                # False when *every* channel is down, so if others stay
+                # healthy this is the only signal this channel ever gets.
                 with self._lock:
                     self._channel_ok[channel] = False
+                    self.subscribe_errors[channel] = f"async subscribe error (code {event})"
                 return 0
             if action != win32evtlog.EvtSubscribeActionDeliver:
                 return 0
@@ -270,6 +330,13 @@ class WindowsEventSource:
 
     def queue_capacity(self) -> int:
         return int(self._queue.maxlen or 0)
+
+    def configured_paths(self) -> frozenset[str]:
+        """Channels this instance is (or, before start(), will be)
+        configured for -- daemon.py uses this on rescan to notice a newly
+        loaded monitor requesting a channel nobody subscribed to yet
+        (start() only ever runs once per daemon lifetime, see configure())."""
+        return frozenset(spec.path for spec in self._channels)
 
     def alive(self) -> bool:
         with self._lock:

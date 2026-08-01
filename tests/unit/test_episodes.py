@@ -73,7 +73,7 @@ class TestLifecycle:
         assert st.last_seen_ts == T + 65
 
     def test_coalesced_match_preserves_raw_occurrence_total(self):
-        """[DM-18][IN-08] Repeat aggregation never understates episode frequency."""
+        """[DM-20][IN-08] Repeat aggregation never understates episode frequency."""
         st, _ = step_episode(CFG, EpisodeState(), ((T, "same failure", 25),), T)
         assert st.core is not None
         assert st.core.occurrences == 25

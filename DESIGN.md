@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.20**. Companion to `SPEC.md` v0.35 — every design element
+Status: **DRAFT v0.21**. Companion to `SPEC.md` v0.36 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -461,10 +461,11 @@ class SmallWrites:
 | `monitor.source` | name of a registered source, or "events" | all |
 | `source_options.watchlist` | array of tables: `{unit=…}` \| `{process=regex}` \| `{listen="tcp:22"}` + optional `during`, `expected=bool` | service, net |
 | `source_options.top_n` | int 5..50 (default 15, SA-05) | process |
-| `source_options.store_min_severity` | canonical severity name (default `notice`) | events |
 | `source_options.check` | registered alias | external |
 | `source_options.entity` | stable non-empty string ≤ 256 | external |
 | `source_options.perfdata[]` | `{label, metric, plugin_uom, unit, kind, scale?}`; ≤32, unique labels/metrics | external |
+| `source_options.channels[]` | `{path, query?}`; path required + unique ≤256, query optional ≤2048 (MD-13, DM-19) | events |
+| `source_options.store_min_severity` | severity name or int 0-4 (default notice, DM-09) | events |
 | `parameters.*` | `{value: num, doc: str}` | all |
 | `promotion.expr` | expression (bool) — SA-05(c) heuristic | process |
 | `derived[].name/expr` | metric name / expression | sampler sources |
@@ -897,7 +898,7 @@ adapters in ignored/personal locations, never separately committed skills.
 
 ---
 
-## 11. Event pipeline (SA-03/08, DM-07..10, DM-15/18)
+## 11. Event pipeline (SA-03/08, DM-07..10, DM-15/20)
 
 `journald.py`: spawns `journalctl -f -o json --output-fields=MESSAGE,PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,__CURSOR [--after-cursor=C]`. Reader thread appends raw lines to deque. `drain()` (main thread): parse JSON (malformed → count, skip), normalize → `EventRecord` (severity map: PRIORITY 0–2→critical, 3→error, 4→warning, 5→notice, 6–7→info; provider = `_SYSTEMD_UNIT` else `SYSLOG_IDENTIFIER`), return last `__CURSOR`. Cursor is persisted in the tick's write txn (DM-15). Storm counter per (source, provider) sliding minute (DM-10); store-filter per amended DM-09; matching against loaded event rules uses the same compiled `when` expressions with the event-field NameEnv. Reader death → `alive()` false → scheduler restarts with backoff (SA-03).
 
@@ -910,7 +911,7 @@ record, then commit a later opaque checkpoint before that intervening record
 was drained. Aggregate attrs preserve count and first/last source timestamps;
 the episode engine consumes the count directly rather than expanding a large
 storm back into memory. Adapter `received` and `repeated` counters feed a
-60-second rolling raw arrival-rate gauge in the event engine (DM-18).
+60-second rolling raw arrival-rate gauge in the event engine (DM-20).
 
 `oslog.py` first replays `/usr/bin/log show --style ndjson` from
 several seconds before its persisted wall-time watermark, then starts

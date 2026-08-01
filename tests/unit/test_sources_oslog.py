@@ -160,8 +160,8 @@ def test_overflow_drops_oldest_without_leaking_identity_state_sa_08():
     assert {identity for _ts, identity in committed} == expected
 
 
-def test_adjacent_duplicate_run_is_coalesced_before_queue_admission_dm_18():
-    """[DM-18] Raw rate/count stay honest while one ordered aggregate is queued."""
+def test_adjacent_duplicate_run_is_coalesced_before_queue_admission_dm_20():
+    """[DM-20] Raw rate/count stay honest while one ordered aggregate is queued."""
     src = MacOSLogEventSource()
     for i in range(3):
         parsed = parse_line(_line(
@@ -200,8 +200,8 @@ def test_adjacent_duplicate_run_is_coalesced_before_queue_admission_dm_18():
     assert replay.queue_depth() == 0
 
 
-def test_only_contiguous_duplicates_merge_to_preserve_cursor_order_dm_18():
-    """[DM-18][DM-15] An intervening event starts a new run."""
+def test_only_contiguous_duplicates_merge_to_preserve_cursor_order_dm_20():
+    """[DM-20][DM-15] An intervening event starts a new run."""
     src = MacOSLogEventSource()
     for i, message in enumerate(("same", "other", "same")):
         parsed = parse_line(_line(
@@ -235,7 +235,7 @@ def test_committed_replay_identity_window_is_explicitly_bounded_dm_15():
 
 
 def test_duplicate_storm_identity_state_is_globally_bounded_dm_15_sa_08():
-    """[DM-15][SA-08][DM-18] One huge run cannot allocate IDs per queue slot."""
+    """[DM-15][SA-08][DM-20] One huge run cannot allocate IDs per queue slot."""
     src = MacOSLogEventSource()
     total = IDENTITY_MAX + 200
     for i in range(total):

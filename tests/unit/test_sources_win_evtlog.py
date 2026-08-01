@@ -1,5 +1,6 @@
-"""[DM-07][DM-08][DM-13][DM-15][PL-01][PL-02][PL-03][PL-05][SA-08] Windows
-Event Log parsing, severity mapping, and EventSource queue/cursor mechanics.
+"""[DM-07][DM-08][DM-13][DM-15][DM-19][DM-20][PL-01][PL-02][PL-03][PL-05]
+[SA-08][SA-10] Windows Event Log parsing, severity mapping, and EventSource
+queue/cursor/channel/query mechanics.
 
 Fixture XML in TestParseEventXml is real EvtRenderEventXml output captured
 from this machine's System and Application channels (SPEC.md's "captured
@@ -18,6 +19,7 @@ from ftmon.sources.base import SOURCE_DECLS
 from ftmon.sources.repeats import occurrence_count
 from ftmon.sources.win_evtlog import (
     LEVEL_TO_SEVERITY,
+    ChannelSpec,
     WindowsEventSource,
     parse_event_xml,
 )
@@ -202,8 +204,8 @@ class TestWindowsEventSourceQueueMechanics:
     def test_not_alive_before_start(self):
         assert WindowsEventSource().alive() is False
 
-    def test_adjacent_run_is_coalesced_before_queue_admission_dm_18(self):
-        """[DM-18] Windows uses the same origin-aware repeat contract."""
+    def test_adjacent_run_is_coalesced_before_queue_admission_dm_20(self):
+        """[DM-20] Windows uses the same origin-aware repeat contract."""
         src = WindowsEventSource()
         with src._lock:
             src._offer_locked("System", "bookmark-1", _fields())
@@ -626,3 +628,119 @@ class TestWindowsEventSourceLive:
             assert observed["Application"] == {"Application": real_bookmark_xml}
         finally:
             src.stop()
+
+    def test_bad_channel_isolated_from_good_channel_sa_10(self):
+        """[SA-10] A nonexistent channel fails EvtSubscribe with a catchable
+        pywintypes.error; it must not abort subscription setup for the rest
+        -- the good channel still comes up, and the bad one is recorded in
+        subscribe_errors rather than raising."""
+        src = WindowsEventSource(
+            channels=("Application", "ThisChannelDoesNotExist12345"))
+        try:
+            src.start(None)
+            assert src.alive() is True  # Application still subscribed
+            assert src._channel_ok["Application"] is True
+            assert src._channel_ok["ThisChannelDoesNotExist12345"] is False
+            assert "ThisChannelDoesNotExist12345" in src.subscribe_errors
+        finally:
+            src.stop()
+
+    def test_configure_before_start_changes_channels(self):
+        """[DM-19] configure() overrides the constructed channel list before
+        the first start() -- the pre-start hook daemon.py's _start_events()
+        uses once source_options.channels are known."""
+        src = WindowsEventSource(channels=("Application",))
+        src.configure((ChannelSpec(path="Application"), ChannelSpec(path="System")))
+        try:
+            src.start(None)
+            assert src._channel_ok == {"Application": True, "System": True}
+        finally:
+            src.stop()
+
+    def test_configure_after_start_is_a_noop(self):
+        """[DM-19] Changing channels after subscriptions exist needs a
+        restart, not a hot reconfigure -- configure() silently ignores the
+        attempt rather than tearing down live subscriptions."""
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(None)
+            src.configure((ChannelSpec(path="System"),))
+            assert set(src._channel_ok) == {"Application"}  # unchanged
+        finally:
+            src.stop()
+
+    def test_query_filter_passthrough_valid_xpath_subscribes_cleanly(self):
+        """[DM-19] A syntactically valid XPath Query narrows the subscription
+        without raising -- delivery semantics aren't asserted here (no
+        live event wait, per this class's docstring), just that
+        EvtSubscribe accepts a Query and still comes up healthy."""
+        src = WindowsEventSource()
+        src.configure((ChannelSpec(
+            path="Application", query="*[System[(Level=1 or Level=2)]]"),))
+        try:
+            src.start(None)
+            assert src._channel_ok["Application"] is True
+            assert "Application" not in src.subscribe_errors
+        finally:
+            src.stop()
+
+    def test_malformed_query_isolated_like_bad_channel(self):
+        """[SA-10] A syntactically invalid XPath Query fails EvtSubscribe for
+        that channel only -- same per-channel isolation as a bad channel
+        name."""
+        src = WindowsEventSource()
+        src.configure((
+            ChannelSpec(path="Application", query="not valid xpath((("),
+            ChannelSpec(path="System"),
+        ))
+        try:
+            src.start(None)
+            assert src._channel_ok["Application"] is False
+            assert "Application" in src.subscribe_errors
+            assert src._channel_ok["System"] is True
+            assert src.alive() is True  # System still came up
+        finally:
+            src.stop()
+
+    def test_configure_extends_defaults_rather_than_replacing_them(self):
+        """A monitor declaring channels = [{path="Windows PowerShell"}] must
+        gain that channel, not lose the constructor's default System/
+        Application (and whatever built-in rules -- e.g. events.toml's
+        unexpected-shutdown rule -- depend on them still being subscribed)."""
+        src = WindowsEventSource()  # constructor default: System, Application
+        src.configure((ChannelSpec(path="Windows PowerShell"),))
+        try:
+            src.start(None)
+            assert set(src._channel_ok) == {"System", "Application", "Windows PowerShell"}
+            assert all(src._channel_ok.values())
+        finally:
+            src.stop()
+
+    def test_configure_replaces_only_the_matching_default_path(self):
+        """An explicit query for a path that's already a default (e.g.
+        System) narrows that one channel in place -- it doesn't duplicate
+        it or drop the other default."""
+        src = WindowsEventSource()
+        src.configure((ChannelSpec(path="System", query="*[System[(Level=1 or Level=2)]]"),))
+        try:
+            src.start(None)
+            assert set(src._channel_ok) == {"System", "Application"}
+            assert all(src._channel_ok.values())
+        finally:
+            src.stop()
+
+    def test_async_subscribe_error_callback_populates_subscribe_errors(self):
+        """[SA-10] Async EvtSubscribeActionError callbacks (a channel that
+        becomes unavailable after a successful initial EvtSubscribe) land
+        in subscribe_errors too, not just synchronous EvtSubscribe()
+        failures -- alive() only goes False when every channel is down, so
+        if another channel stays healthy this is the only signal a
+        post-subscribe failure on this one ever gets."""
+        import win32evtlog
+
+        src = WindowsEventSource(channels=("Application",))
+        callback = src._make_callback("Application")
+        callback(win32evtlog.EvtSubscribeActionError, None, 5)
+        assert src._channel_ok["Application"] is False
+        assert "Application" in src.subscribe_errors
+        assert "5" in src.subscribe_errors["Application"]

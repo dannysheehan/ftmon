@@ -117,6 +117,7 @@ class EventEngine:
     received: int = 0
     repeated: int = 0
     event_rate_per_min: float = 0.0
+    _reported_channel_errors: set[str] = field(default_factory=set)
 
     def start(self, cursor: str | None) -> None:
         self._last_cursor = cursor
@@ -147,6 +148,7 @@ class EventEngine:
         self.dropped = getattr(self.source, "dropped", 0)
         self._observe_rate(records, mono)
         self._observe_overflow(now, writer)
+        self._report_channel_errors(now, writer)
 
         # 1) rules against the live stream; matches keyed by episode identity
         matches: dict[EpisodeKey, list[tuple]] = {}
@@ -194,6 +196,28 @@ class EventEngine:
                 self._states.pop(key, None)
             else:
                 self._states[key] = st
+
+    # -- per-channel subscribe errors --------------------------------------
+
+    def _report_channel_errors(self, now: float, writer) -> None:
+        """A bad channel name or filter query fails that one EvtSubscribe
+        call (win_evtlog.py isolates it per channel) but never recovers on
+        its own -- unlike SA-03's death/restart, there is nothing to retry.
+        Surface each failing channel once per daemon lifetime so "why isn't
+        X showing up" is answered from `ftmon events`, not silently."""
+        errors: Mapping[str, str] = getattr(self.source, "subscribe_errors", {})
+        for channel, reason in errors.items():
+            if channel in self._reported_channel_errors:
+                continue
+            self._reported_channel_errors.add(channel)
+            writer.add_event(EventRecord(
+                ts=now, ingest_ts=now, source="self", provider="ftmon.events",
+                event_id=None, severity=2,
+                message=(
+                    f"channel {channel!r} subscribe failed, looks like a config "
+                    f"problem (not transient, will not retry itself): {reason}"
+                ),
+            ))
 
     # -- supervision (SA-03) ---------------------------------------------
 
@@ -296,13 +320,22 @@ class EventEngine:
 
     @staticmethod
     def _store_min(monitors: list[MonitorDef]) -> int:
+        """The lowest (most permissive) store_min_severity declared by any
+        loaded event monitor -- there is one shared store-filter for the
+        whole daemon, not one per monitor (same reasoning as
+        _union_event_channels), so a stricter setting on one monitor must
+        never silently override a looser one another monitor actually
+        needs; the most-inclusive request always wins."""
+        best: int | None = None
         for mdef in monitors:
             v = mdef.source_options.get("store_min_severity")
             if isinstance(v, str) and v in SEVERITIES:
-                return SEVERITIES.index(v)
-            if isinstance(v, int) and 0 <= v <= 4:
-                return v
-        return 1  # notice
+                v = SEVERITIES.index(v)
+            elif not (isinstance(v, int) and 0 <= v <= 4):
+                continue
+            if best is None or v < best:
+                best = v
+        return 1 if best is None else best  # notice
 
     def _storm_suppressed(self, rec: EventRecord, now: float, writer) -> bool:
         """DM-10 per (source, provider): >100 stored/min collapses into one

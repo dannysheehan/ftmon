@@ -299,8 +299,8 @@ def test_dashboard_glance_is_omitted_for_disabled_tile_ui_17_ts_12(tmp_path):
     assert page.index("<h2>Disabled</h2>") < page.index('data-monitor="disk"')
 
 
-def test_events_tile_shows_raw_ingest_rate_ui_18_dm_18(tmp_path):
-    """[UI-18][DM-18] The Events tile distinguishes quiet from a coalesced storm."""
+def test_events_tile_shows_raw_ingest_rate_ui_18_dm_20(tmp_path):
+    """[UI-18][DM-20] The Events tile distinguishes quiet from a coalesced storm."""
     client, paths = _client(tmp_path)
     profile = (
         Path(__file__).parents[2]

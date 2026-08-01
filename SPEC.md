@@ -1,6 +1,15 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.35** — v0.35 adds cursor-safe adjacent event coalescing
+Status: **DRAFT v0.36** — v0.36 integrates Windows Event Log channel
+selection and per-channel subscribe-time filtering configurability (MD-13,
+DM-19, SA-10) from feature/windows-support into this lineage: a
+`source = "events"` monitor's `[source_options]` can now declare `channels`
+(path + optional XPath query, unioned across every loaded event monitor)
+instead of the hardcoded System/Application default, and a bad channel name
+or malformed query is isolated to that one channel instead of aborting the
+whole subscription pass. Also closes a real doc/code gap: DM-09's
+`store_min_severity` override was documented but had no schema branch to
+actually accept it. v0.35 adds cursor-safe adjacent event coalescing
 and raw event-rate telemetry/presentation across platform adapters. v0.34 replaces ambient macOS unified-log ingestion
 with an enabled, source-filtered operational allowlist after a live event storm
 proved that downstream rules and storage filtering cannot protect the reader queue.
@@ -315,7 +324,21 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
   carry both source timestamp (stored as `ts`) and ingest timestamp; ordering
   for rules is ingest order, so late-arriving source timestamps cannot
   re-trigger past windows.
-- **DM-18** Before bounded-queue admission, every platform event adapter MUST
+- **DM-19** `channels` (MD-13) selects which platform-specific event channels
+  an `EventSource` subscribes to and, where the platform's query language
+  supports filtering at the subscription itself (e.g. Windows Event Log's
+  XPath-subset query engine — shared by `EvtQuery`/`EvtSubscribe`/`wevtutil`/
+  `Get-WinEvent`, not WEC/WEF-specific), narrows which events on that channel
+  are delivered at all, before DM-09's store-filter ever runs. There is one
+  shared subscription for the whole daemon, not one per monitor: channels are
+  unioned across every loaded event monitor. The same channel path requested
+  with conflicting non-empty queries keeps the first-seen query and reports
+  the conflict as a self-event (SA-10) rather than silently choosing one.
+  Channel/query configuration is read once, at the event reader's first
+  start; changing an already-running reader's channels requires a daemon
+  restart to take effect — PM-04's hot-reload guarantee covers rule changes,
+  not this.
+- **DM-20** Before bounded-queue admission, every platform event adapter MUST
   coalesce a contiguous run of canonically identical events. Identity is the
   exact `(source, provider, event_id, severity, message)` tuple; origin is
   mandatory so one producer cannot conceal another. The aggregate retains the
@@ -382,6 +405,13 @@ sources due? → each needed source runs ONCE → immutable snapshot (single ts)
 - **SA-03** `EventSource`s run as supervised subprocess readers (e.g. `journalctl -f -o json --after-cursor=…`) feeding an in-daemon queue, drained each tick. A dead reader is restarted with exponential backoff (1 s → 60 s cap) and a self-event on first death.
 - **SA-08** The event queue is bounded at 10 000 entries; on overflow the oldest are dropped and an `event_overflow` self-event records the count. Malformed lines are skipped and counted (self-metric), never fatal. Reader stall detection: `event_source_last_activity_age` is a self-metric; the `self` monitor warns when it exceeds 10 m while the reader process is alive. The macOS adapter MUST apply the same fixed operational predicate to replay and streaming before records enter this queue; ambient debug-level unified-log ingestion is forbidden.
 - **SA-09** Process display identity (v0.19, issue #20). Interpreter-hosted processes often expose a generic runtime thread name (`MainThread`, `node`, `python3`) as the kernel process name, defeating both operator recognition and name-based exemptions. The process sampler MUST additionally collect, where readable: `exe` (executable path, already collected), `exe_base` (its basename), and `cmd_hint` (executable basename plus the basename of the first path-like argument, ≤ 64 chars total — derived basenames only, never raw arguments; SE-04's posture is unchanged). It MUST publish a `display` attr: `"{exe_base} ({name})"` when `exe_base` is present and differs from `name`, else `name`. `{entity}` in rule/notification templates resolves to `display` when present (falling back to `name`, then `entity_id`). All of these are declared attrs (PL-05) so exemptions (CA-07) and rules can target executable identity. Raw `cmdline` remains governed by SE-04 and MUST NOT appear in notifications; loopback surfaces (web incident detail, MCP) SHOULD expose the sampled attrs. Stable identity (DM-02) is unchanged.
+- **SA-10** A per-channel subscribe failure in a multi-channel `EventSource`
+  (an unknown channel name, or a malformed filter query, DM-19) MUST be
+  isolated to that channel: the reader keeps every other channel alive
+  rather than aborting the whole subscription pass. Each distinct failing
+  channel is reported once per daemon lifetime as a self-event — not a
+  spam-guarded renotify, since nothing about a permanently invalid
+  channel/query self-heals the way SA-03's death/restart does.
 - **SA-04** Built-in samplers v1: `process` (per-process cpu%, rss, and — where available without elevated rights — open fds, threads, io counters), `disk` (per-mount total/used/free bytes, inodes where supported), `system` (load1/5/15, cpu% total, mem available/used, swap, PSI where present), `net` (per-listen-socket presence, per-proto/state connection counts; **no per-process attribution in v1**, NG-06), `unit` (systemd unit active-state + NRestarts via `systemctl show`).
 - **SA-05** The `process` source implements **track-all + promote**: every process is sampled into a bounded in-memory window (last 15 of its samples) each tick it's due; long-term persistence happens only for entities that are (a) on a monitor's watchlist, (b) in the top-N (default 15) by cpu or rss that cycle, or (c) **promoted** by a trend heuristic (§7.6.1). Promotion/demotion transitions are recorded as self-events. This keeps DM-05/DM-16 achievable with hundreds of processes.
 
@@ -828,6 +858,13 @@ message = "Disk {entity} at {used_pct:.0f}% used"
   units, aggregation and threshold meaning are definition metadata; the loader
   and presentation layer MUST NOT infer them from rules, metric names,
   parameter names or trend profiles. Event monitors cannot declare a glance.
+- **MD-13** A `source = "events"` monitor's `[source_options]` MAY declare
+  `channels` (§5.3 DM-19): an array of `{path, query}` tables, `path` required
+  and unique within the array (≤16 entries, ≤256 chars), `query` optional
+  (≤2048 chars) — and `store_min_severity` (an override of DM-09's default
+  threshold, as a severity name or 0–4 int). Unknown keys in either are
+  validation errors, same as every other source's `[source_options]` shape
+  (MD-11).
 
 ## 9. Incident lifecycle and notifications
 
@@ -1273,11 +1310,45 @@ Implementation lands in stages; each stage is independently usable, ships the §
 
 ## 21. Changelog & review disposition
 
+**v0.36 (2026-08-01)** — integrates Windows Event Log channel selection and
+per-channel subscribe-time filtering (MD-13, DM-19, SA-10) from
+feature/windows-support into this lineage. Grew out of analyzing two days
+of real desktop incident data: the only channels available (hardcoded
+System/Application) miss the events people actually want for
+security-relevant monitoring, and Windows' Event Log query engine (the
+XPath-subset language shared by `EvtQuery`/`EvtSubscribe`/`wevtutil`/
+`Get-WinEvent` — confirmed *not* WEC/WEF-specific, so it works standalone
+on a single local host) already supports the filtering needed to make a
+high-volume channel like Security usable without flooding the bounded
+event queue. `events.toml`'s `[source_options]` can now declare `channels`
+(`{path, query}` tables); channels are unioned across every loaded event
+monitor since there is one shared `EvtSubscribe` pass for the whole daemon,
+not one per monitor, and a conflicting query for the same channel path
+keeps the first-seen one and reports the conflict rather than silently
+picking one. Channel/query configuration is read once at the event
+reader's first start — an explicit, documented exception to PM-04's
+hot-reload guarantee, not an oversight; a monitor loaded after the reader
+already started that requests a not-yet-subscribed channel gets a clear
+self-event saying a restart is needed, rather than sitting there silently
+never receiving anything. Landed alongside a correctness fix this work
+would otherwise have inherited and amplified: `EvtSubscribe` failures
+(unknown channel, malformed query) previously aborted subscription setup
+for *every* channel, not just the bad one — SA-10 isolates them per
+channel and reports each once per daemon lifetime. Also closes a real
+doc/code gap unrelated to Windows specifically: DM-09's `store_min_severity`
+override has been documented since it was written but `schema.py` had no
+`[source_options]` branch for `source = "events"` to actually accept it —
+MD-13 fixes that for both platforms. Landed alongside a renumbering this
+integration found necessary: v0.35's event-coalescing requirement had been
+filed as DM-18, colliding with the pre-existing DM-18 (notification-delivery
+fan-out); it is DM-20 as of this merge, since DM-19 was independently taken
+by this same integration's channel-selection requirement above.
+
 **v0.35 (2026-08-01)** — coalesces contiguous, origin-aware duplicate event
 runs before queue admission without weakening cursor order, while preserving
 raw episode occurrence totals in aggregate attrs. New self metrics expose raw
 received/repeated counts and rolling events/min, and the Events dashboard tile
-shows the fresh ingest rate without changing health policy (DM-18, UI-18;
+shows the fresh ingest rate without changing health policy (DM-20, UI-18;
 issue #78).
 
 **v0.34 (2026-08-01)** — hardens the standard macOS events monitor after a

@@ -71,6 +71,46 @@ def test_desktop_profile_monitors_mirror_package_md_07():
         ), f"{design_path.name} diverges from package desktop profile"
 
 
+DESIGN_WINDOWS_DIR = Path(__file__).resolve().parents[2] / "design" / "profile" / "windows"
+PACKAGE_WINDOWS_DIR = (
+    Path(__file__).resolve().parents[2] / "src" / "ftmon" / "definitions" / "profile" / "windows"
+)
+
+
+def test_windows_profile_monitors_mirror_package_md_07():
+    """[MD-07] Windows profile monitors -- including the curated
+    drafts/ subdirectory -- must match the shipped package data tree."""
+    design_files = sorted(
+        p.relative_to(DESIGN_WINDOWS_DIR) for p in DESIGN_WINDOWS_DIR.rglob("*.toml")
+    )
+    package_files = sorted(
+        p.relative_to(PACKAGE_WINDOWS_DIR) for p in PACKAGE_WINDOWS_DIR.rglob("*.toml")
+    )
+    assert design_files, "windows profile directory is missing"
+    assert design_files == package_files
+    for rel in design_files:
+        design_text = (DESIGN_WINDOWS_DIR / rel).read_text(encoding="utf-8")
+        package_text = (PACKAGE_WINDOWS_DIR / rel).read_text(encoding="utf-8")
+        assert design_text == package_text, f"{rel} diverges from package windows profile"
+
+
+def test_curated_security_draft_loads_and_declares_its_channels_md_13():
+    """[MD-13] The curated Windows Security/PowerShell draft (PR3) validates
+    the same as any builtin, and declares the channels its rules depend on
+    -- a rule referencing an event_id from a channel nobody subscribed to
+    would be silently dead."""
+    md = load_file(PACKAGE_WINDOWS_DIR / "drafts" / "events_security.toml")
+    assert md.name == "events_security"
+    assert md.source == "events"
+    paths = {c["path"] for c in md.source_options["channels"]}
+    assert paths == {"Security", "Microsoft-Windows-PowerShell/Operational"}
+    rule_ids = {r.id for r in md.rules}
+    assert rule_ids == {
+        "log-cleared", "explicit-creds-or-priv-logon",
+        "account-or-group-change", "powershell-script-block",
+    }
+
+
 @pytest.mark.parametrize("name", BUILTIN_NAMES)
 def test_builtin_definitions_load_successfully(name):
     """[MD-07] every shipped built-in must pass the same validator as `ftmon check`."""
@@ -450,7 +490,7 @@ def test_event_store_min_severity_is_validated_dm_09():
             'source = "events"\n\n[source_options]\nstore_min_severity = "critical"',
         )
     )
-    assert definition.source_options == {"store_min_severity": "critical"}
+    assert definition.source_options == {"channels": [], "store_min_severity": "critical"}
 
     errors = _errors_of(
         VALID_EVENTS.replace(
@@ -750,3 +790,107 @@ def test_normalized_toml_is_deterministic_and_hash_matches():
     import hashlib
 
     assert md1.content_hash == hashlib.sha256(md1.normalized_toml.encode("utf-8")).hexdigest()
+
+
+# --------------------------------------------------------------------------
+# [MD-13] events source_options: channels[]/query + store_min_severity
+# --------------------------------------------------------------------------
+
+
+def test_events_source_options_channels_and_store_min_severity_parse():
+    """[MD-13] channels[] (path + optional query) and store_min_severity
+    parse into MonitorDef.source_options exactly as declared."""
+    definition = load_text(VALID_EVENTS + '''
+[source_options]
+store_min_severity = "warning"
+
+[[source_options.channels]]
+path = "Security"
+query = "*[System[(EventID=4688 or EventID=4689)]]"
+
+[[source_options.channels]]
+path = "System"
+''')
+    assert definition.source_options["channels"] == [
+        {"path": "Security", "query": "*[System[(EventID=4688 or EventID=4689)]]"},
+        {"path": "System", "query": None},
+    ]
+    assert definition.source_options["store_min_severity"] == "warning"
+
+
+def test_events_source_options_defaults_to_empty_channels():
+    """No [source_options] at all -> channels defaults to [], same shape
+    _union_event_channels()/configure() expect, not a missing key."""
+    definition = load_text(VALID_EVENTS)
+    assert definition.source_options == {"channels": []}
+
+
+def test_events_channels_must_be_an_array():
+    errors = _errors_of(VALID_EVENTS + '\n[source_options]\nchannels = "Security"\n')
+    _assert_error(errors, code="invalid_type", path_prefix="source_options.channels")
+
+
+def test_events_channels_count_is_capped():
+    channels = "".join(
+        f'[[source_options.channels]]\npath = "Chan{i}"\n' for i in range(17)
+    )
+    errors = _errors_of(VALID_EVENTS + "\n[source_options]\n\n" + channels)
+    _assert_error(errors, code="too_many_items", path_prefix="source_options.channels")
+
+
+def test_events_channel_missing_path_is_rejected():
+    errors = _errors_of(VALID_EVENTS + '''
+[[source_options.channels]]
+query = "*"
+''')
+    _assert_error(errors, code="invalid_value", path_prefix="source_options.channels[0].path")
+
+
+def test_events_channel_duplicate_path_is_rejected():
+    errors = _errors_of(VALID_EVENTS + '''
+[[source_options.channels]]
+path = "Security"
+
+[[source_options.channels]]
+path = "Security"
+''')
+    _assert_error(
+        errors, code="duplicate_name", path_prefix="source_options.channels[1].path",
+    )
+
+
+def test_events_channel_query_too_long_is_rejected():
+    errors = _errors_of(VALID_EVENTS + f'''
+[[source_options.channels]]
+path = "Security"
+query = "{"x" * 2049}"
+''')
+    _assert_error(errors, code="invalid_value", path_prefix="source_options.channels[0].query")
+
+
+def test_events_channel_unknown_key_is_rejected():
+    errors = _errors_of(VALID_EVENTS + '''
+[[source_options.channels]]
+path = "Security"
+bogus = "x"
+''')
+    _assert_error(errors, code="unknown_key", path_prefix="source_options.channels[0].bogus")
+
+
+def test_events_store_min_severity_accepts_int_or_name():
+    definition = load_text(VALID_EVENTS + "\n[source_options]\nstore_min_severity = 2\n")
+    assert definition.source_options["store_min_severity"] == 2
+
+
+def test_events_store_min_severity_rejects_bad_value():
+    errors = _errors_of(VALID_EVENTS + '\n[source_options]\nstore_min_severity = "bogus"\n')
+    _assert_error(
+        errors, code="invalid_value", path_prefix="source_options.store_min_severity",
+    )
+
+
+def test_events_source_options_rejects_keys_from_other_sources():
+    """watchlist is valid source_options for unit/net, not events -- the new
+    events branch must not accidentally inherit other sources' keys."""
+    errors = _errors_of(VALID_EVENTS + "\n[source_options]\nwatchlist = []\n")
+    _assert_error(errors, code="unknown_key", path_prefix="source_options.watchlist")

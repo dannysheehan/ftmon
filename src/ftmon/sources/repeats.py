@@ -1,4 +1,4 @@
-"""Bounded adjacent-event coalescing shared by platform adapters (DM-18).
+"""Bounded adjacent-event coalescing shared by platform adapters (DM-20).
 
 Only contiguous equal records are merged.  That deliberately narrow rule
 keeps opaque journal cursors and bookmarks in ingest order: coalescing an
