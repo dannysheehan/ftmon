@@ -16,6 +16,8 @@ Windows failures." A test suite run that produces a *different* 68 (or a
 different total) than this baseline, on the same commit, is the signal
 worth investigating — not the raw failure count by itself.
 
+Tracking issue: [#79](https://github.com/dannysheehan/ftmon/issues/79).
+
 This is an audit, not a fix plan. None of the 68 failures block the
 DM-15/DM-19/DM-20 Windows work already merged; they are pre-existing gaps
 in how the test suite itself was authored (POSIX-only fixtures, hardcoded
