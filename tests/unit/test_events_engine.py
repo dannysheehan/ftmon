@@ -408,7 +408,10 @@ class TestEventChannelUnion:
             'query = "*[System[EventID=4688]]"\n'))
 
         source = ConfigurableFixtureSource(scenario("oom-event-burst"))
-        DaemonCore(paths=paths, clock=FakeClock(wall=T, mono=1000.0), event_source=source)
+        DaemonCore(
+            paths=paths, clock=FakeClock(wall=T, mono=1000.0),
+            event_source=source, platform="windows",
+        )
 
         assert len(source.configure_calls) == 1
         got = {c.path: c.query for c in source.configure_calls[0]}
@@ -422,7 +425,10 @@ class TestEventChannelUnion:
         (paths.monitors_dir / "events.toml").write_text(_events_toml("events"))
 
         source = ConfigurableFixtureSource(scenario("oom-event-burst"))
-        DaemonCore(paths=paths, clock=FakeClock(wall=T, mono=1000.0), event_source=source)
+        DaemonCore(
+            paths=paths, clock=FakeClock(wall=T, mono=1000.0),
+            event_source=source, platform="windows",
+        )
         assert source.configure_calls == []
 
     def test_conflicting_queries_keep_first_seen_and_report_once(self, core_env):  # noqa: F811
@@ -440,7 +446,9 @@ class TestEventChannelUnion:
 
         source = ConfigurableFixtureSource(scenario("oom-event-burst"))
         clock = FakeClock(wall=T, mono=1000.0)
-        core = DaemonCore(paths=paths, clock=clock, event_source=source)
+        core = DaemonCore(
+            paths=paths, clock=clock, event_source=source, platform="windows",
+        )
 
         got = {c.path: c.query for c in source.configure_calls[0]}
         assert got["Security"] == "*[System[EventID=4688]]"  # first-seen wins
@@ -477,7 +485,10 @@ class TestEventChannelUnion:
             _events_toml("events_extra", second_body))
 
         source = ConfigurableFixtureSource(scenario("oom-event-burst"))
-        DaemonCore(paths=paths, clock=FakeClock(wall=T, mono=1000.0), event_source=source)
+        DaemonCore(
+            paths=paths, clock=FakeClock(wall=T, mono=1000.0),
+            event_source=source, platform="windows",
+        )
 
         got = {c.path: c.query for c in source.configure_calls[0]}
         assert got["Security"] is None  # unfiltered wins either way
@@ -491,7 +502,9 @@ class TestEventChannelUnion:
 
         source = ConfigurableFixtureSource(scenario("oom-event-burst"))
         clock = FakeClock(wall=T, mono=1000.0)
-        core = DaemonCore(paths=paths, clock=clock, event_source=source)
+        core = DaemonCore(
+            paths=paths, clock=clock, event_source=source, platform="windows",
+        )
         assert core.events_engine._started is True
         assert source.configured_paths() == {"System"}
 
