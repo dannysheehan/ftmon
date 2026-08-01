@@ -283,6 +283,26 @@ int:
 store_min_severity = "warning"
 ```
 
+#### Curated starting point: Security-Auditing and PowerShell visibility
+
+Hand-writing good `channels`/`query`/rule combinations is real work, so
+`ftmon init --profile windesktop|winserver` ships one curated example —
+`events_security.toml` — as a **draft** (`monitors/drafts/`, never loaded
+until you run `ftmon monitor approve events_security` or approve it in the
+web UI). It's a draft rather than an enabled monitor for two reasons:
+subscribing to the Security log is sensitive (it can surface logon,
+privilege, and account-management activity for every user of the machine),
+and every event it watches for depends on Windows audit policy that is
+**off by default** — approving the draft alone does nothing until you also
+turn on the relevant audit subcategories (and, for PowerShell script-block
+content, a separate Group Policy setting). The file's own header comment
+has the exact `auditpol` commands and GPO path, plus the reasoning behind
+which events it does and deliberately doesn't include (event 4688/process
+creation is left out of the default set — it needs a second policy on top
+of the base one to be useful, and is materially higher-volume than
+everything else there). Read the file before approving it; that's the
+point of it being a draft.
+
 ### External checks
 
 `source = "external"` references an administrator-approved alias rather than

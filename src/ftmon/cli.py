@@ -68,6 +68,65 @@ def _builtin_monitors_source(profile: str):
     return fallback if fallback.is_dir() else None
 
 
+def _draft_monitors_source(profile: str):
+    """Curated monitors that ship as drafts, not enabled builtins (MD-05) --
+    e.g. Windows Security-Auditing/PowerShell visibility, which is sensitive
+    and depends on audit policy that's off by default, so a human must
+    review and approve it rather than it silently starting to run. Returns
+    None for profiles with no curated drafts (most of them, today)."""
+    subdir = _PROFILE_CALIBRATED_DIRS.get(profile)
+    if not subdir:
+        return None
+    try:
+        import importlib.resources
+
+        resources = importlib.resources.files("ftmon.definitions") / "profile" / subdir / "drafts"
+        try:
+            for item in resources.iterdir():
+                if item.is_file() and item.name.endswith(".toml"):
+                    return resources
+        except (FileNotFoundError, AttributeError, TypeError):
+            pass
+    except ImportError:
+        pass
+    fallback = Path(__file__).resolve().parents[2] / "design" / "profile" / subdir / "drafts"
+    return fallback if fallback.is_dir() else None
+
+
+def _copy_toml_files(src_dir, dst_dir: Path, force: bool) -> tuple[list[str], list[str]]:
+    """Copy every *.toml from src_dir (a Path or importlib.resources
+    Traversable, or None) into dst_dir; skip a name that already exists
+    unless force. Shared by cmd_init's builtins and curated-drafts install
+    (FS-02: never touch user config, so skip-unless-force applies to both)."""
+    from ftmon.paths import atomic_write
+
+    installed: list[str] = []
+    skipped: list[str] = []
+    if not src_dir:
+        return installed, skipped
+    if isinstance(src_dir, Path):
+        src_files = sorted(src_dir.glob("*.toml"))
+    else:
+        try:
+            src_files = sorted(item for item in src_dir.iterdir() if item.name.endswith(".toml"))
+        except (AttributeError, TypeError):
+            src_files = []
+
+    for src in src_files:
+        dst = dst_dir / src.name
+        if dst.exists() and not force:
+            skipped.append(src.name)
+            continue
+        try:
+            content = src.read_bytes()
+        except (AttributeError, TypeError):
+            skipped.append(src.name)
+            continue
+        atomic_write(dst, content)
+        installed.append(src.name)
+    return installed, skipped
+
+
 def _default_config_toml(profile: str = "desktop") -> str:
     """Explicit profile scaffold (PM-08); no runtime profile switch remains."""
     desktop_enabled = "true" if profile in ("desktop", "windesktop") else "false"
@@ -142,6 +201,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     - Writes config.toml only if absent (unless --force)
     - Installs 8 builtin *.toml files (desktop/windesktop/winserver profiles
       use calibrated monitors)
+    - Installs any curated drafts for the profile into monitors/drafts/
+      (MD-05 -- never loaded until a human approves them)
     - Prints summary of what was installed
     """
     from ftmon.paths import atomic_write
@@ -170,40 +231,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"wrote: {paths.check_registry_file}")
 
     # Install builtin monitors for the selected profile.
-    installed = []
-    skipped = []
-
     builtins_dir = _builtin_monitors_source(args.profile)
-
-    if builtins_dir:
-        # Iterate builtins and copy
-        if isinstance(builtins_dir, Path):
-            # Path object: use iterdir
-            builtin_files = sorted(builtins_dir.glob("*.toml"))
-        else:
-            # Traversable object: use iterdir then filter
-            try:
-                builtin_files = sorted(
-                    [item for item in builtins_dir.iterdir()
-                     if item.name.endswith(".toml")]
-                )
-            except (AttributeError, TypeError):
-                builtin_files = []
-
-        for src in builtin_files:
-            dst = paths.monitors_dir / src.name
-            if dst.exists() and not args.force:
-                skipped.append(src.name)
-            else:
-                # Read source and write atomically
-                try:
-                    content = src.read_bytes() if isinstance(src, Path) else src.read_bytes()
-                except (AttributeError, TypeError):
-                    # If src is a Traversable without read_bytes, skip
-                    skipped.append(src.name)
-                    continue
-                atomic_write(dst, content)
-                installed.append(src.name)
+    installed, skipped = _copy_toml_files(builtins_dir, paths.monitors_dir, args.force)
 
     # Print summary
     if installed:
@@ -213,6 +242,17 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"skipped {len(skipped)} existing file(s): {', '.join(skipped)}")
     if not installed and not skipped:
         print("no builtin definitions found")
+
+    # Curated drafts (MD-05): never loaded until a human approves them --
+    # e.g. Windows Security-Auditing visibility, sensitive and dependent on
+    # audit policy this tool does not configure on your behalf.
+    drafts_dir = _draft_monitors_source(args.profile)
+    d_installed, d_skipped = _copy_toml_files(drafts_dir, paths.drafts_dir, args.force)
+    if d_installed:
+        print(f"installed {len(d_installed)} draft monitor(s) pending approval "
+              f"(`ftmon monitor approve <name>`): {', '.join(d_installed)}")
+    if d_skipped:
+        print(f"skipped {len(d_skipped)} existing draft file(s): {', '.join(d_skipped)}")
 
     return 0
 

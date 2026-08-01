@@ -71,6 +71,46 @@ def test_desktop_profile_monitors_mirror_package_md_07():
         ), f"{design_path.name} diverges from package desktop profile"
 
 
+DESIGN_WINDOWS_DIR = Path(__file__).resolve().parents[2] / "design" / "profile" / "windows"
+PACKAGE_WINDOWS_DIR = (
+    Path(__file__).resolve().parents[2] / "src" / "ftmon" / "definitions" / "profile" / "windows"
+)
+
+
+def test_windows_profile_monitors_mirror_package_md_07():
+    """[MD-07] Windows profile monitors -- including the curated
+    drafts/ subdirectory -- must match the shipped package data tree."""
+    design_files = sorted(
+        p.relative_to(DESIGN_WINDOWS_DIR) for p in DESIGN_WINDOWS_DIR.rglob("*.toml")
+    )
+    package_files = sorted(
+        p.relative_to(PACKAGE_WINDOWS_DIR) for p in PACKAGE_WINDOWS_DIR.rglob("*.toml")
+    )
+    assert design_files, "windows profile directory is missing"
+    assert design_files == package_files
+    for rel in design_files:
+        design_text = (DESIGN_WINDOWS_DIR / rel).read_text(encoding="utf-8")
+        package_text = (PACKAGE_WINDOWS_DIR / rel).read_text(encoding="utf-8")
+        assert design_text == package_text, f"{rel} diverges from package windows profile"
+
+
+def test_curated_security_draft_loads_and_declares_its_channels_md_13():
+    """[MD-13] The curated Windows Security/PowerShell draft (PR3) validates
+    the same as any builtin, and declares the channels its rules depend on
+    -- a rule referencing an event_id from a channel nobody subscribed to
+    would be silently dead."""
+    md = load_file(PACKAGE_WINDOWS_DIR / "drafts" / "events_security.toml")
+    assert md.name == "events_security"
+    assert md.source == "events"
+    paths = {c["path"] for c in md.source_options["channels"]}
+    assert paths == {"Security", "Microsoft-Windows-PowerShell/Operational"}
+    rule_ids = {r.id for r in md.rules}
+    assert rule_ids == {
+        "log-cleared", "explicit-creds-or-priv-logon",
+        "account-or-group-change", "powershell-script-block",
+    }
+
+
 @pytest.mark.parametrize("name", BUILTIN_NAMES)
 def test_builtin_definitions_load_successfully(name):
     """[MD-07] every shipped built-in must pass the same validator as `ftmon check`."""
