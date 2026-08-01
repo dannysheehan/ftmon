@@ -222,7 +222,7 @@ class TestEpisodeEndToEnd:
 
 
 class TestChannelSubscribeErrors:
-    def test_subscribe_error_surfaces_once_as_self_event_sa_10(self, core_env):
+    def test_subscribe_error_surfaces_once_as_self_event_sa_10(self, core_env):  # noqa: F811
         """[SA-10] A channel that failed to subscribe (bad name/query,
         win_evtlog.py isolates it per channel) is surfaced as a self-event
         once, not silently -- and not repeated on later ticks since nothing
@@ -310,7 +310,7 @@ class TestEventChannelUnion:
     one and get reported, and a channel requested only after the reader
     already started needs a restart to actually apply."""
 
-    def test_union_across_monitors_calls_configure_once(self, core_env):
+    def test_union_across_monitors_calls_configure_once(self, core_env):  # noqa: F811
         paths = core_env
         (paths.monitors_dir / "leak.toml").unlink()
         (paths.monitors_dir / "events.toml").write_text(_events_toml(
@@ -327,7 +327,7 @@ class TestEventChannelUnion:
         got = {c.path: c.query for c in source.configure_calls[0]}
         assert got == {"System": None, "Security": "*[System[EventID=4688]]"}
 
-    def test_no_channels_declared_never_calls_configure(self, core_env):
+    def test_no_channels_declared_never_calls_configure(self, core_env):  # noqa: F811
         """The generic/default events.toml (no [source_options] at all)
         must not override WindowsEventSource's own default channel list."""
         paths = core_env
@@ -338,7 +338,7 @@ class TestEventChannelUnion:
         DaemonCore(paths=paths, clock=FakeClock(wall=T, mono=1000.0), event_source=source)
         assert source.configure_calls == []
 
-    def test_conflicting_queries_keep_first_seen_and_report_once(self, core_env):
+    def test_conflicting_queries_keep_first_seen_and_report_once(self, core_env):  # noqa: F811
         paths = core_env
         (paths.monitors_dir / "leak.toml").unlink()
         # sorted(glob()) load order: events.toml before events_extra.toml
@@ -367,7 +367,36 @@ class TestEventChannelUnion:
         assert len(rows) == 1
         assert "conflicting queries" in rows[0]["message"]
 
-    def test_new_monitor_channel_after_start_needs_restart_self_event(self, core_env):
+    @pytest.mark.parametrize("filtered_loads_first", [True, False])
+    def test_unfiltered_query_wins_regardless_of_monitor_load_order(
+        self, core_env, filtered_loads_first,  # noqa: F811
+    ):
+        """An unfiltered (query=None) request is a superset of any filtered
+        one, so it must win no matter which monitor loads first -- and this
+        is not a reportable conflict, just resolving "everything" and "a
+        subset of it" to "everything"."""
+        paths = core_env
+        (paths.monitors_dir / "leak.toml").unlink()
+        filtered = (
+            '[[source_options.channels]]\npath = "Security"\n'
+            'query = "*[System[EventID=4688]]"\n'
+        )
+        unfiltered = '[[source_options.channels]]\npath = "Security"\n'
+        first_body, second_body = (
+            (filtered, unfiltered) if filtered_loads_first else (unfiltered, filtered)
+        )
+        (paths.monitors_dir / "events.toml").write_text(_events_toml("events", first_body))
+        (paths.monitors_dir / "events_extra.toml").write_text(
+            _events_toml("events_extra", second_body))
+
+        source = ConfigurableFixtureSource(scenario("oom-event-burst"))
+        DaemonCore(paths=paths, clock=FakeClock(wall=T, mono=1000.0), event_source=source)
+
+        got = {c.path: c.query for c in source.configure_calls[0]}
+        assert got["Security"] is None  # unfiltered wins either way
+        assert "Security" not in source.subscribe_errors  # not a conflict
+
+    def test_new_monitor_channel_after_start_needs_restart_self_event(self, core_env):  # noqa: F811
         paths = core_env
         (paths.monitors_dir / "leak.toml").unlink()
         (paths.monitors_dir / "events.toml").write_text(_events_toml(
@@ -392,3 +421,37 @@ class TestEventChannelUnion:
         assert any("restart the daemon" in r["message"] for r in rows)
         # System was already configured before boot -- not flagged
         assert not any("System" in r["message"] for r in rows)
+
+
+class TestStoreMinSeverityAcrossMonitors:
+    """[DM-09] The store-filter is shared by the whole daemon -- one
+    EventEngine, not one per monitor (same reasoning as
+    _union_event_channels) -- so _store_min must combine every loaded event
+    monitor's declared threshold rather than using whichever happened to
+    load first."""
+
+    def test_takes_minimum_across_all_monitors_not_first_found(self):
+        from types import SimpleNamespace
+
+        from ftmon.engine.events import EventEngine
+
+        strict = SimpleNamespace(source_options={"store_min_severity": "error"})
+        loose = SimpleNamespace(source_options={"store_min_severity": "info"})
+        assert EventEngine._store_min([strict, loose]) == 0  # info, the looser one
+        assert EventEngine._store_min([loose, strict]) == 0  # order-independent
+
+    def test_mixed_int_and_name_forms(self):
+        from types import SimpleNamespace
+
+        from ftmon.engine.events import EventEngine
+
+        as_int = SimpleNamespace(source_options={"store_min_severity": 3})
+        as_name = SimpleNamespace(source_options={"store_min_severity": "notice"})
+        assert EventEngine._store_min([as_int, as_name]) == 1  # notice(1) < error(3)
+
+    def test_defaults_to_notice_when_nothing_declared(self):
+        from types import SimpleNamespace
+
+        from ftmon.engine.events import EventEngine
+
+        assert EventEngine._store_min([SimpleNamespace(source_options={})]) == 1

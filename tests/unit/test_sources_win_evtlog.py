@@ -353,3 +353,46 @@ class TestWindowsEventSourceLive:
             assert src.alive() is True  # System still came up
         finally:
             src.stop()
+
+    def test_configure_extends_defaults_rather_than_replacing_them(self):
+        """A monitor declaring channels = [{path="Windows PowerShell"}] must
+        gain that channel, not lose the constructor's default System/
+        Application (and whatever built-in rules -- e.g. events.toml's
+        unexpected-shutdown rule -- depend on them still being subscribed)."""
+        src = WindowsEventSource()  # constructor default: System, Application
+        src.configure((ChannelSpec(path="Windows PowerShell"),))
+        try:
+            src.start(None)
+            assert set(src._channel_ok) == {"System", "Application", "Windows PowerShell"}
+            assert all(src._channel_ok.values())
+        finally:
+            src.stop()
+
+    def test_configure_replaces_only_the_matching_default_path(self):
+        """An explicit query for a path that's already a default (e.g.
+        System) narrows that one channel in place -- it doesn't duplicate
+        it or drop the other default."""
+        src = WindowsEventSource()
+        src.configure((ChannelSpec(path="System", query="*[System[(Level=1 or Level=2)]]"),))
+        try:
+            src.start(None)
+            assert set(src._channel_ok) == {"System", "Application"}
+            assert all(src._channel_ok.values())
+        finally:
+            src.stop()
+
+    def test_async_subscribe_error_callback_populates_subscribe_errors(self):
+        """[SA-10] Async EvtSubscribeActionError callbacks (a channel that
+        becomes unavailable after a successful initial EvtSubscribe) land
+        in subscribe_errors too, not just synchronous EvtSubscribe()
+        failures -- alive() only goes False when every channel is down, so
+        if another channel stays healthy this is the only signal a
+        post-subscribe failure on this one ever gets."""
+        import win32evtlog
+
+        src = WindowsEventSource(channels=("Application",))
+        callback = src._make_callback("Application")
+        callback(win32evtlog.EvtSubscribeActionError, None, 5)
+        assert src._channel_ok["Application"] is False
+        assert "Application" in src.subscribe_errors
+        assert "5" in src.subscribe_errors["Application"]

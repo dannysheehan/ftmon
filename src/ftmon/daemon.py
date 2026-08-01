@@ -289,10 +289,14 @@ class DaemonCore:
     def _union_event_channels(self) -> tuple[dict[str, dict], dict[str, str]]:
         """Union channels across every loaded event-sourced monitor -- there
         is one shared EvtSubscribe pass for the whole daemon, not one per
-        monitor (win_evtlog.py). Same channel path requested with
-        conflicting non-empty queries keeps the first-seen query and reports
-        the conflict (via the caller merging into subscribe_errors) rather
-        than silently picking one. A no-op on Linux/macOS: JournaldEventSource
+        monitor (win_evtlog.py). A `query=None` request (everything on that
+        channel) is a superset of any filtered request, so it always wins
+        regardless of which monitor loads first or last -- that is not a
+        conflict, just the union of "everything" and "a subset of it". Only
+        two differing *non-empty* queries for the same path are a genuine,
+        unresolvable conflict; that keeps the first-seen query and reports
+        it (via the caller merging into subscribe_errors) rather than
+        silently picking one. A no-op on Linux/macOS: JournaldEventSource
         monitors never populate source_options.channels."""
         by_path: dict[str, dict] = {}
         conflicts: dict[str, str] = {}
@@ -302,12 +306,17 @@ class DaemonCore:
                 existing = by_path.get(path)
                 if existing is None:
                     by_path[path] = {"path": path, "query": query}
-                elif existing["query"] != query and query:
-                    conflicts[path] = (
-                        f"channel {path!r} requested with conflicting queries "
-                        f"across monitors; kept {existing['query']!r}, ignored "
-                        f"{query!r} from monitor {mdef.name!r}"
-                    )
+                    continue
+                if existing["query"] == query:
+                    continue
+                if existing["query"] is None or query is None:
+                    by_path[path] = {"path": path, "query": None}  # unfiltered wins
+                    continue
+                conflicts[path] = (
+                    f"channel {path!r} requested with conflicting queries "
+                    f"across monitors; kept {existing['query']!r}, ignored "
+                    f"{query!r} from monitor {mdef.name!r}"
+                )
         return by_path, conflicts
 
     def _start_events(self) -> None:

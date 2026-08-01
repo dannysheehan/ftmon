@@ -152,15 +152,25 @@ class WindowsEventSource:
         self.subscribe_errors: dict[str, str] = {}
 
     def configure(self, channels: tuple[ChannelSpec, ...]) -> None:
-        """Pre-start channel/query override (daemon.py's _start_events(),
+        """Pre-start channel/query *extension* (daemon.py's _start_events(),
         called once before the first start() -- see win_evtlog.py's module
         docstring: there is exactly one EvtSubscribe pass per daemon
-        lifetime, not a hot-reconfigure path). A no-op once subscriptions
+        lifetime, not a hot-reconfigure path). Adds to the existing channel
+        set (the constructor default, System/Application in production)
+        rather than replacing it -- a monitor declaring `channels =
+        [{path="Security"}]` must gain Security, not lose System/Application
+        and the built-in rules that depend on them (e.g. events.toml's
+        unexpected-shutdown rule needs System). A path already present is
+        replaced by the incoming spec (so an explicit query can narrow a
+        default channel); a new path is appended. A no-op once subscriptions
         already exist: changing channels after that needs a restart, same
         as the rest of this class's one-shot-subscribe design."""
         if self._subs:
             return
-        self._channels = channels
+        merged = {spec.path: spec for spec in self._channels}
+        for spec in channels:
+            merged[spec.path] = spec
+        self._channels = tuple(merged.values())
 
     def start(self, cursor: str | None) -> None:
         import pywintypes
@@ -219,8 +229,16 @@ class WindowsEventSource:
 
         def callback(action, _context, event):
             if action == win32evtlog.EvtSubscribeActionError:
+                # Async, post-subscribe failure (e.g. the channel becomes
+                # unavailable after a successful initial EvtSubscribe) --
+                # `event` is a Win32 error code here, not a real event
+                # handle. Must land in subscribe_errors too, the same as a
+                # synchronous EvtSubscribe() failure: alive() only goes
+                # False when *every* channel is down, so if others stay
+                # healthy this is the only signal this channel ever gets.
                 with self._lock:
                     self._channel_ok[channel] = False
+                    self.subscribe_errors[channel] = f"async subscribe error (code {event})"
                 return 0
             if action != win32evtlog.EvtSubscribeActionDeliver:
                 return 0

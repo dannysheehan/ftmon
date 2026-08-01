@@ -239,13 +239,22 @@ class EventEngine:
 
     @staticmethod
     def _store_min(monitors: list[MonitorDef]) -> int:
+        """The lowest (most permissive) store_min_severity declared by any
+        loaded event monitor -- there is one shared store-filter for the
+        whole daemon, not one per monitor (same reasoning as
+        _union_event_channels), so a stricter setting on one monitor must
+        never silently override a looser one another monitor actually
+        needs; the most-inclusive request always wins."""
+        best: int | None = None
         for mdef in monitors:
             v = mdef.source_options.get("store_min_severity")
             if isinstance(v, str) and v in SEVERITIES:
-                return SEVERITIES.index(v)
-            if isinstance(v, int) and 0 <= v <= 4:
-                return v
-        return 1  # notice
+                v = SEVERITIES.index(v)
+            elif not (isinstance(v, int) and 0 <= v <= 4):
+                continue
+            if best is None or v < best:
+                best = v
+        return 1 if best is None else best  # notice
 
     def _storm_suppressed(self, rec: EventRecord, now: float, writer) -> bool:
         """DM-10 per (source, provider): >100 stored/min collapses into one
