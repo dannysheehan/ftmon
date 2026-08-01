@@ -1,0 +1,105 @@
+schema = 1
+
+[monitor]
+name = "battery"
+description = "Laptop battery charge, health and AC presence via check_battery"
+version = 1
+enabled = false
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "battery"
+entity = "battery:0"
+
+[[source_options.perfdata]]
+label = "charge"
+metric = "charge_pct"
+plugin_uom = "%"
+unit = "percent"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "health"
+metric = "health_pct"
+plugin_uom = "%"
+unit = "percent"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "voltage"
+metric = "voltage_v"
+plugin_uom = "V"
+unit = "volts"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "power"
+metric = "power_w"
+plugin_uom = "W"
+unit = "watts"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "ac_online"
+metric = "ac_online"
+plugin_uom = "flag"
+unit = "flag"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "status"
+metric = "status_code"
+plugin_uom = "flag"
+unit = "flag"
+kind = "gauge"
+
+[parameters]
+warn_charge_pct = { value = 40, doc = "Warning when charge% at/below — also configured as -w in checks.toml" }
+crit_charge_pct = { value = 15, doc = "Critical when charge% at/below — also configured as -c in checks.toml" }
+warn_health_pct = { value = 60, doc = "Warning when health% at/below — also configured as -w in checks.toml" }
+crit_health_pct = { value = 40, doc = "Critical when health% at/below — also configured as -c in checks.toml" }
+
+# Charge is the operator-facing "will this survive a power flap?" signal.
+# Health wear is slower and secondary on the same plugin state line.
+[glance]
+metric = "charge_pct"
+unit = "percent"
+aggregate = "min"
+thresholds = [
+  { label = "warn", parameter = "warn_charge_pct" },
+  { label = "critical", parameter = "crit_charge_pct" },
+]
+
+[[rule]]
+id = "plugin-warning"
+group = "battery"
+when = "plugin_state == 1"
+severity = "warning"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-critical"
+group = "battery"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-unknown"
+group = "check-health"
+when = "plugin_state == 3"
+severity = "warning"
+confirm_cycles = 2
+message = "Battery check is unknown: {plugin_message}"
+
+[[rule]]
+id = "ac-lost"
+group = "mains"
+when = "ac_online == 0"
+severity = "warning"
+confirm_cycles = 2
+message = "Mains power is offline while battery monitoring expects AC ({plugin_message})"

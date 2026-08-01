@@ -59,6 +59,19 @@ class MonitorTile:
 class TileGlanceThreshold:
     label: str
     value: str
+    raw: float
+    mark_pct: float | None  # 0..100 along the meter; None when no meter
+
+
+@dataclass(frozen=True)
+class TileGlanceMeter:
+    """SVG meter geometry (SE-02: no inline CSS). Percent = 0..100; else 0..limit."""
+
+    value: float
+    scale_max: float  # 100 for percent; otherwise max declared threshold
+    fill_pct: float  # 0..100 along the SVG axis (clamped)
+    show_full_mark: bool  # percent meters mark 100%; limit meters use threshold ticks
+    fill_tone: str  # ok|warn|error from value vs thresholds (not UI-14 tile state)
 
 
 @dataclass(frozen=True)
@@ -66,6 +79,7 @@ class TileGlance:
     entity_id: str
     value: str
     thresholds: tuple[TileGlanceThreshold, ...]
+    meter: TileGlanceMeter | None
 
 
 # Attention-first scan order; UI-14 state itself stays computed above (DESIGN §15.3).
@@ -383,6 +397,65 @@ def _format_glance_value(value: float, unit: str) -> str:
     return f"{number}%" if unit == "percent" else f"{number} {unit}"
 
 
+_WARN_LABELS = frozenset({"warn", "warning", "sustained"})
+_ERROR_LABELS = frozenset({"error", "crit", "critical"})
+
+
+def _meter_fill_tone(
+    value: float, thresholds: tuple[tuple[str, float], ...]
+) -> str:
+    """Color the fill from the reading vs declared limits (higher-is-worse)."""
+    if not math.isfinite(value):
+        return "ok"
+    warn_at = None
+    error_at = None
+    for label, raw in thresholds:
+        if not math.isfinite(raw):
+            continue
+        key = label.lower()
+        if key in _WARN_LABELS:
+            warn_at = raw if warn_at is None else min(warn_at, raw)
+        elif key in _ERROR_LABELS:
+            error_at = raw if error_at is None else min(error_at, raw)
+    if error_at is not None and value >= error_at:
+        return "error"
+    if warn_at is not None and value >= warn_at:
+        return "warn"
+    return "ok"
+
+
+def _glance_meter(
+    value: float,
+    unit: str,
+    thresholds: tuple[tuple[str, float], ...],
+) -> TileGlanceMeter | None:
+    """Build meter geometry: percent → 0..100; other units → 0..highest threshold."""
+    if not math.isfinite(value):
+        return None
+    # CSP (SE-02) blocks inline style=; fill/marks are drawn via SVG attributes.
+    threshold_raws = tuple(raw for _, raw in thresholds)
+    tone = _meter_fill_tone(value, thresholds)
+    if unit == "percent":
+        return TileGlanceMeter(
+            value=value,
+            scale_max=100.0,
+            fill_pct=min(100.0, max(0.0, value)),
+            show_full_mark=True,
+            fill_tone=tone,
+        )
+    finite = tuple(raw for raw in threshold_raws if math.isfinite(raw) and raw > 0)
+    if not finite:
+        return None
+    scale_max = max(finite)
+    return TileGlanceMeter(
+        value=value,
+        scale_max=scale_max,
+        fill_pct=min(100.0, max(0.0, (value / scale_max) * 100.0)),
+        show_full_mark=False,
+        fill_tone=tone,
+    )
+
+
 def _compose_glance(mdef, q: Query | None, state: str, now: float) -> TileGlance | None:
     """Add context only after UI-14 has established a trustworthy state."""
     if q is None or mdef.glance is None or state not in {"clear", "warning", "error"}:
@@ -413,19 +486,34 @@ def _compose_glance(mdef, q: Query | None, state: str, now: float) -> TileGlance
         sample = min(eligible, key=lambda item: (-item.value, -item.ts, item.entity_id))
     else:
         sample = min(eligible, key=lambda item: (item.value, -item.ts, item.entity_id))
+    threshold_pairs = tuple(
+        (threshold.label, float(mdef.parameters[threshold.parameter]))
+        for threshold in mdef.glance.thresholds
+    )
+    threshold_raws = tuple(raw for _, raw in threshold_pairs)
+    meter = _glance_meter(sample.value, mdef.glance.unit, threshold_pairs)
     thresholds = tuple(
         TileGlanceThreshold(
             label=threshold.label,
-            value=_format_glance_value(
-                mdef.parameters[threshold.parameter], mdef.glance.unit
+            value=_format_glance_value(raw, mdef.glance.unit),
+            raw=raw,
+            mark_pct=(
+                None
+                if (
+                    meter is None
+                    or not math.isfinite(raw)
+                    or meter.scale_max <= 0
+                )
+                else min(100.0, max(0.0, (raw / meter.scale_max) * 100.0))
             ),
         )
-        for threshold in mdef.glance.thresholds
+        for threshold, raw in zip(mdef.glance.thresholds, threshold_raws, strict=True)
     )
     return TileGlance(
         entity_id=sample.entity_id,
         value=_format_glance_value(sample.value, mdef.glance.unit),
         thresholds=thresholds,
+        meter=meter,
     )
 
 

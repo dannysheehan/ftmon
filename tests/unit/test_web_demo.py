@@ -96,8 +96,11 @@ def test_demo_factory_accepts_the_real_seeded_builder_contract_ui_15_ui_16_ui_17
     assert '<span class="stat-label">Worst severity</span>' in response.text
     assert "Daemon data is stale" in response.text
     assert "3600 seconds old" not in response.text
-    assert '<p class="tile-glance"><strong>mount:/srv/demo</strong>' in response.text
-    assert "· warn 92% · error 97%" in response.text
+    assert '<p class="tile-glance-value"><strong>mount:/srv/demo</strong>' in response.text
+    assert 'tile-threshold-warn">warn 92%</span>' in response.text
+    assert 'tile-threshold-error">error 97%</span>' in response.text
+    assert 'role="meter"' in response.text
+    assert 'aria-valuenow=' in response.text
     baselines = TestClient(create_demo_app(db, "demo.ftmon.org")).get(
         "/baselines", headers={"host": "demo.ftmon.org"}
     )

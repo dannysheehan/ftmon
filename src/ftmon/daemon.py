@@ -333,10 +333,10 @@ class DaemonCore:
                         file=sys.stderr,
                     )
                 continue
-            # Disabled definitions remain installed and editable, but must
-            # contribute no sampling, event ingestion, or rule evaluation.
-            # Leaving them out of `seen` also drives the normal removal path
-            # when an active monitor is disabled during a rescan.
+            # MD-05: enabled=false stays on disk for one-line re-enable / git
+            # history, but contributes no sampling, event ingestion, or rule
+            # evaluation. Omitting it from `seen` also drops a previously
+            # enabled monitor on the next rescan.
             if not mdef.enabled:
                 continue
             seen.add(mdef.name)

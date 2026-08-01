@@ -10,7 +10,7 @@ from ftmon import __version__
 from ftmon.clock import FakeClock
 from ftmon.paths import get_paths
 from ftmon.store.db import connect, migrate
-from ftmon.web.app import create_app
+from ftmon.web.app import _glance_meter, create_app
 
 
 def _client(tmp_path: Path):
@@ -170,6 +170,40 @@ def test_dashboard_stale_precedence_never_claims_clear_ui_14_ts_12(tmp_path):
     assert 'data-monitor="disk" data-state="clear"' not in page
 
 
+def test_glance_meter_percent_and_limit_scales_ui_17():
+    """[UI-17] Percent meters use 0..100; other units scale to the highest threshold."""
+    assert _glance_meter(48.0, "MiB/hour", ()) is None
+    leak = _glance_meter(48.0, "MiB/hour", (("warn", 32.0), ("error", 128.0)))
+    assert leak is not None
+    assert leak.scale_max == 128.0
+    assert leak.fill_pct == pytest.approx(48 / 128 * 100)
+    assert leak.show_full_mark is False
+    assert leak.fill_tone == "warn"  # past warn 32, below error 128
+    past = _glance_meter(200.0, "MiB/hour", (("warn", 32.0), ("error", 128.0)))
+    assert past is not None
+    assert past.fill_pct == 100.0  # overshoot clamps; axis stays at error
+    assert past.fill_tone == "error"
+    quiet = _glance_meter(10.0, "MiB/hour", (("warn", 32.0), ("error", 128.0)))
+    assert quiet is not None
+    assert quiet.fill_tone == "ok"
+    meter = _glance_meter(94.0, "percent", (("warn", 92.0), ("error", 97.0)))
+    assert meter is not None
+    assert meter.scale_max == 100.0
+    assert meter.fill_pct == 94.0
+    assert meter.show_full_mark is True
+    assert meter.fill_tone == "warn"
+    hog = _glance_meter(140.0, "percent", (("warn", 80.0),))
+    assert hog is not None
+    assert hog.scale_max == 100.0
+    assert hog.fill_pct == 100.0
+    assert hog.fill_tone == "warn"
+    frac = _glance_meter(0.00015, "fraction", (("warn", 0.85), ("error", 0.95)))
+    assert frac is not None
+    assert frac.scale_max == 0.95
+    assert frac.fill_pct == pytest.approx(0.00015 / 0.95 * 100)
+    assert frac.fill_tone == "ok"
+
+
 def test_dashboard_glance_renders_fresh_active_value_without_changing_state_ui_17_ts_12(
     tmp_path,
 ):
@@ -212,8 +246,23 @@ def test_dashboard_glance_renders_fresh_active_value_without_changing_state_ui_1
 
     page = client.get("/", headers={"host": "localhost:8420"}).text
     assert 'data-monitor="disk" data-state="warning"' in page
-    assert '<p class="tile-glance"><strong>/home&lt;script&gt;</strong> 94%' in page
-    assert "· warn 92% · error 97%" in page
+    assert (
+        '<p class="tile-glance-value"><strong>/home&lt;script&gt;</strong> 94%'
+        in page
+    )
+    assert 'tile-threshold-warn">warn 92%</span>' in page
+    assert 'tile-threshold-error">error 97%</span>' in page
+    assert "· warn 92% · error 97%" not in page
+    assert 'role="meter"' in page
+    assert 'aria-valuenow="94"' in page
+    assert 'aria-valuemax="100"' in page
+    assert 'tile-meter-svg' in page
+    assert 'class="tile-meter-fill tile-meter-fill-warn"' in page and 'width="94"' in page
+    assert 'tile-meter-mark-warn' in page
+    assert 'tile-meter-mark-error' in page
+    assert 'tile-meter-mark-full' in page
+    assert "<title>100%</title>" in page
+    assert 'style="width:' not in page.split("tile-meter", 1)[1].split("</div>", 1)[0]
     assert "/home<script>" not in page
     assert "/snap/read-only" not in page
 

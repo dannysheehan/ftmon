@@ -36,7 +36,43 @@
 <article class="monitor-tile tile-{{ tile.state }} tile-{{ mode }}" data-monitor="{{ tile.name }}" data-state="{{ tile.state }}">
   <p class="tile-status"><span aria-hidden="true">{{ tile.icon }}</span> <strong>{{ tile.label }}</strong></p>
   <div class="tile-head"><h3>{{ tile.name }}</h3></div>
-  {% if tile.glance %}<p class="tile-glance"><strong>{{ tile.glance.entity_id }}</strong> {{ tile.glance.value }}{% for threshold in tile.glance.thresholds %} · {{ threshold.label }} {{ threshold.value }}{% endfor %}</p>{% endif %}
+  {% if tile.glance %}
+  <div class="tile-glance">
+    <p class="tile-glance-value"><strong>{{ tile.glance.entity_id }}</strong> {{ tile.glance.value }}</p>
+    {% if tile.glance.thresholds %}
+    <p class="tile-glance-thresholds">{% for threshold in tile.glance.thresholds %}<span class="tile-threshold tile-threshold-{{ threshold.label }}">{{ threshold.label }} {{ threshold.value }}</span>{% if not loop.last %} <span class="tile-threshold-sep" aria-hidden="true">·</span> {% endif %}{% endfor %}</p>
+    {% endif %}
+    {% if tile.glance.meter %}
+    <div class="tile-meter"
+         role="meter"
+         aria-valuemin="0"
+         aria-valuemax="{{ '%.6g'|format(tile.glance.meter.scale_max) }}"
+         aria-valuenow="{{ '%.6g'|format(tile.glance.meter.value) }}"
+         aria-label="{{ tile.glance.entity_id }} {{ tile.glance.value }}">
+      {# SVG geometry attributes — not CSS — so SE-02 CSP style-src 'self' still works. #}
+      <svg class="tile-meter-svg" viewBox="-0.75 0 101.5 10" preserveAspectRatio="none"
+           aria-hidden="true" focusable="false">
+        <rect class="tile-meter-track" x="0" y="2.5" width="100" height="5" rx="1.5"></rect>
+        <rect class="tile-meter-fill tile-meter-fill-{{ tile.glance.meter.fill_tone }}" x="0" y="2.5"
+              width="{{ '%.4g'|format(tile.glance.meter.fill_pct) }}" height="5" rx="1.5"></rect>
+        {% for threshold in tile.glance.thresholds if threshold.mark_pct is not none %}
+        <line class="tile-meter-mark tile-meter-mark-{{ threshold.label }}"
+              x1="{{ '%.4g'|format(threshold.mark_pct) }}"
+              x2="{{ '%.4g'|format(threshold.mark_pct) }}"
+              y1="0" y2="10">
+          <title>{{ threshold.label }} {{ threshold.value }}</title>
+        </line>
+        {% endfor %}
+        {% if tile.glance.meter.show_full_mark %}
+        <line class="tile-meter-mark tile-meter-mark-full" x1="100" x2="100" y1="0" y2="10">
+          <title>100%</title>
+        </line>
+        {% endif %}
+      </svg>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
   <p class="tile-desc">{{ tile.description }}</p>
   {% if tile.incident_count %}<p class="tile-meta"><a href="/incidents?monitor={{ tile.name|urlencode }}">{{ tile.incident_count }} live incident{{ '' if tile.incident_count == 1 else 's' }}</a>{% if tile.max_severity is not none %}; highest {{ severity_name(tile.max_severity) }}{% endif %}</p>{% endif %}
   {% if tile.trends %}<p class="tile-trends">{% for profile in tile.trends %}<a href="/trends/{{ tile.name }}/{{ profile.id }}">View {{ profile.title }}</a>{% endfor %}</p>{% endif %}

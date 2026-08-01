@@ -157,9 +157,12 @@ clear because old data cannot prove present health. Click a warning/error tile
 to open incidents already filtered to that monitor.
 
 Some monitor definitions declare a primary glance readout below the state,
-such as `/home 94% · warn 92% · error 97%`. The definition explicitly chooses
-the metric, unit, `max|min` entity summary and labelled thresholds; FTMON does
-not guess them from alert rules. Only a fresh raw value from an active entity is
+such as entity and current value on one line with quieter warn/error
+thresholds beneath, plus a linear meter. Percent glances use a fixed 0–100
+scale with a 100% tick; other units with thresholds scale the bar to the
+highest limit and mark each threshold. The definition explicitly chooses the
+metric, unit, `max|min` entity summary and labelled thresholds; FTMON does not
+guess them from alert rules. Only a fresh raw value from an active entity is
 shown, and entities matching the monitor's `exempt` expressions are excluded.
 Missing or old data, disappeared entities, disabled monitors and stale
 dashboard state omit the readout rather than presenting history as current.
