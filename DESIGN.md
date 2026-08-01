@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.18**. Companion to `SPEC.md` v0.33 — every design element
+Status: **DRAFT v0.20**. Companion to `SPEC.md` v0.35 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -461,6 +461,7 @@ class SmallWrites:
 | `monitor.source` | name of a registered source, or "events" | all |
 | `source_options.watchlist` | array of tables: `{unit=…}` \| `{process=regex}` \| `{listen="tcp:22"}` + optional `during`, `expected=bool` | service, net |
 | `source_options.top_n` | int 5..50 (default 15, SA-05) | process |
+| `source_options.store_min_severity` | canonical severity name (default `notice`) | events |
 | `source_options.check` | registered alias | external |
 | `source_options.entity` | stable non-empty string ≤ 256 | external |
 | `source_options.perfdata[]` | `{label, metric, plugin_uom, unit, kind, scale?}`; ≤32, unique labels/metrics | external |
@@ -896,20 +897,39 @@ adapters in ignored/personal locations, never separately committed skills.
 
 ---
 
-## 11. Event pipeline (SA-03/08, DM-07..10, DM-15)
+## 11. Event pipeline (SA-03/08, DM-07..10, DM-15/18)
 
 `journald.py`: spawns `journalctl -f -o json --output-fields=MESSAGE,PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,__CURSOR [--after-cursor=C]`. Reader thread appends raw lines to deque. `drain()` (main thread): parse JSON (malformed → count, skip), normalize → `EventRecord` (severity map: PRIORITY 0–2→critical, 3→error, 4→warning, 5→notice, 6–7→info; provider = `_SYSTEMD_UNIT` else `SYSLOG_IDENTIFIER`), return last `__CURSOR`. Cursor is persisted in the tick's write txn (DM-15). Storm counter per (source, provider) sliding minute (DM-10); store-filter per amended DM-09; matching against loaded event rules uses the same compiled `when` expressions with the event-field NameEnv. Reader death → `alive()` false → scheduler restarts with backoff (SA-03).
 
+All three platform adapters call the same adjacent-repeat reducer before queue
+admission. It compares the complete canonical origin/message signature and
+mutates only the current tail run, replacing its opaque cursor/bookmark or
+macOS identity with the newest one. Restricting the reducer to contiguous runs
+is a durability decision: a per-key LRU could merge across an intervening
+record, then commit a later opaque checkpoint before that intervening record
+was drained. Aggregate attrs preserve count and first/last source timestamps;
+the episode engine consumes the count directly rather than expanding a large
+storm back into memory. Adapter `received` and `repeated` counters feed a
+60-second rolling raw arrival-rate gauge in the event engine (DM-18).
+
 `oslog.py` first replays `/usr/bin/log show --style ndjson` from
 several seconds before its persisted wall-time watermark, then starts
-`/usr/bin/log stream --style ndjson` with the same predicate. Both outputs are
+`/usr/bin/log stream --style ndjson` with the same fixed operational predicate.
+That source-side allowlist accepts fault-level events from third-party
+executable roots and explicit kernel storage-integrity text;
+ambient debug ingestion is forbidden because downstream rules cannot protect
+the reader queue. Both outputs are
 line-framed but not pure event NDJSON: the reader ignores human filter text,
 blank lines, and terminal `{"count": ..., "finished": 1}` objects, accepting
 only `eventType == "logEvent"`. Records are sparse; normalization uses
 `timestamp`, `eventMessage`, `subsystem`, `category`, `processImagePath`,
 `processID`, and `messageType` when present.
 
-The replay overlap is deduplicated against a bounded durable identity set.
+The replay overlap is deduplicated against bounded pending and durable identity
+windows. A coalesced run shares the one global pending window rather than
+allocating an identity list per queue entry; draining transfers only identities
+from represented runs into the durable checkpoint, while overflow-dropped runs
+cannot advance it. Both windows are capped at `IDENTITY_MAX`.
 The preferred identity is `(bootUUID, machTimestamp, traceID, processID,
 senderProgramCounter)` plus a normalized-payload hash fallback. The set covers
 at least the replay/handoff overlap and is committed with the watermark only
@@ -920,13 +940,16 @@ on real hardware. If the requested boundary predates retained unified-log
 data, the source records a retention-gap self-event before tailing current
 events.
 
-The macOS profile does not turn unified-log severity into actionability:
-routine Apple components emit `error` during normal operation, and an
-`osascript` notification itself can produce TCC/RunningBoard errors. Events
-therefore ship disabled with only an opt-in, non-Apple `fault` example. Disk
-rules exclude read-only and `nobrowse` mounts (including mounted application
-images), omit APFS inode thresholds, and retain capacity rules only for
-writable visible volumes. Network rules are watchlist-only.
+The macOS profile does not turn unified-log severity alone into actionability:
+routine Apple components emit `error` and even `fault` during normal operation,
+and an `osascript` notification itself can produce TCC/RunningBoard errors.
+Events therefore ship enabled only because admission is restricted before the
+queue. The adapter assigns stable event classes (`third-party-fault` and
+`storage-integrity`) and the profile rules match those classes;
+its store threshold is canonical `critical`. Disk rules exclude read-only and
+`nobrowse` mounts (including mounted application images), omit APFS inode
+thresholds, and retain capacity rules only for writable visible volumes.
+Network rules are watchlist-only.
 
 ---
 
@@ -1097,7 +1120,7 @@ Their semantics remain deliberately separate. `/metrics` selects one persisted `
 
 `GET /api/series?monitor=…&entity=…&metric=…&range=…&statistic=…` returns `{monitor, entity, metric, unit, statistic, resolution, points, lower, upper, incidents, summary, matching_trends}`. Raw metric units come from `SourceDecl`; derived units come from explicit trend-profile use when available, otherwise the neutral label `value`. Server-side Query remains authoritative for tier selection, envelopes, incident filtering, and the 2 000-point cap.
 
-### 15.3 Dashboard health tiles (M7.3, UI-14/UI-17)
+### 15.3 Dashboard health tiles (M7.3, UI-14/UI-17/UI-18)
 
 The dashboard composition root builds a `MonitorTile` view model rather than embedding policy in Jinja: `{name, description, state, icon, label, incident_count, max_severity, trend_profiles, glance?}`. State precedence is evaluated once in Python as `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`; templates only render it. Centralizing precedence prevents a CSS class or loop ordering change from silently turning a broken monitor green.
 
@@ -1129,6 +1152,11 @@ optional tile value; Jinja never aggregates, checks freshness or guesses a
 unit. Unknown, disabled, config-error and globally stale tiles omit glance, so
 UI-14 remains the sole health-state contract (UI-17). This adds no database
 migration, daemon write, tick-path computation or incident-state transition.
+
+The Events source has no sampled entity of its own, so its fixed operational
+glance reads the fresh `self/ftmon/event_rate_per_min` series and labels it
+`ingest … events/min`. It has no threshold meter and cannot change tile state;
+the same freshness and trustworthy-state gates apply (UI-18).
 
 Reference definitions deliberately choose like-for-like signals: disk maximum
 used percent; load five-minute CPU PSI; hog maximum five-minute CPU; leak

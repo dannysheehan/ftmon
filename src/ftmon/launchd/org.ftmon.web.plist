@@ -23,6 +23,8 @@
   <true/>
   <key>ProcessType</key>
   <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
   <key>StandardOutPath</key>
   <string>/Users/REPLACE_ME/Library/Logs/ftmon-web.log</string>
   <key>StandardErrorPath</key>

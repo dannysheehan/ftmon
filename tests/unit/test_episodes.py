@@ -72,6 +72,15 @@ class TestLifecycle:
         assert st.core.occurrences == 3
         assert st.last_seen_ts == T + 65
 
+    def test_coalesced_match_preserves_raw_occurrence_total(self):
+        """[DM-18][IN-08] Repeat aggregation never understates episode frequency."""
+        st, _ = step_episode(CFG, EpisodeState(), ((T, "same failure", 25),), T)
+        assert st.core is not None
+        assert st.core.occurrences == 25
+        st, effects = step_episode(CFG, st, ((T + 60, "same failure", 10),), T + 60)
+        assert kinds(effects) == ["refresh"]
+        assert st.core.occurrences == 35
+
     def test_cooldown_renotify_carries_count(self):
         """[IN-08] renotify after cooldown; body says how many, which is the
         whole point of episodes (one popup for a 12x burst, not 12)."""

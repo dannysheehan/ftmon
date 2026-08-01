@@ -31,7 +31,7 @@ def populated(core_env):  # noqa: F811 - pytest fixture injection
     an open incident with history and delivered outbox rows."""
     paths = core_env
     clock = FakeClock(wall=WALL0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     sampler = ScriptedSampler()
     for i in range(30):
         # calm is tiny so top_consumers must rank leaky first

@@ -80,7 +80,7 @@ def test_registered_json_metric_reaches_history_derived_rule_and_trend(tmp_path)
     (paths.monitors_dir / "custom_growth.toml").write_text(EXTERNAL_DEF)
 
     clock = FakeClock(wall=1_700_000_000, mono=1000)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     try:
         assert "custom_growth" in core.monitors
         for _ in range(8):

@@ -62,7 +62,7 @@ message = "{entity} is down"
 
 def _core(paths, name=None):
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     if name is not None:
         core.samplers.update(fixture_samplers(scenario(name)))
     return core, clock

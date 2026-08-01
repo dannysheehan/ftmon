@@ -92,6 +92,7 @@ TOP_N_MIN = 5
 TOP_N_MAX = 50
 TOP_N_DEFAULT = 15
 EXTERNAL_SOURCE_OPTIONS_KEYS = frozenset({"check", "entity", "perfdata"})
+EVENT_SOURCE_OPTIONS_KEYS = frozenset({"store_min_severity"})
 PERFDATA_KEYS = frozenset({"label", "metric", "plugin_uom", "unit", "kind", "scale"})
 MAX_PERFDATA_MAPPINGS = 32  # EC-08 bounds definition-controlled schema growth.
 EXTERNAL_ENTITY_MAX_LEN = 256

@@ -243,6 +243,11 @@ processes are identical.
 Dashboard, incident, and Events pages reload every five seconds. Monitors and
 Self reload every fifteen seconds; Metrics, Trends, and Baselines stay fixed
 while you inspect them. Refreshing preserves the current URL and its filters.
+The Events monitor tile shows the latest raw ingest rate in events/minute.
+That rate includes repeated messages coalesced before the reader queue, so a
+duplicate storm remains visible even when it produces only compact stored
+records. The Self metrics `events_received`, `events_repeated`, and
+`event_rate_per_min` provide the cumulative and historical detail.
 The server rejects unexpected Host and POST Origin values, cannot be embedded
 in another page, restricts forms and resources to itself, and emits no CORS
 permission. These defenses still matter on loopback because a hostile website

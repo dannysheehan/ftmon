@@ -188,6 +188,21 @@ class TestWindowsEventSourceQueueMechanics:
     def test_not_alive_before_start(self):
         assert WindowsEventSource().alive() is False
 
+    def test_adjacent_run_is_coalesced_before_queue_admission_dm_18(self):
+        """[DM-18] Windows uses the same origin-aware repeat contract."""
+        src = WindowsEventSource()
+        fields = {
+            "ts": 1.0, "source": "eventlog", "provider": "p",
+            "event_id": "42", "severity": 2, "message": "same",
+        }
+        with src._lock:
+            src._offer_locked(dict(fields))
+            src._offer_locked(dict(fields, ts=2.0))
+        records, _cursor = src.drain(now=42.0, max_items=10)
+        assert len(records) == 1
+        assert records[0].attrs["repeat_count"] == "2"
+        assert src.received == 2 and src.repeated == 1
+
     def test_drain_stamps_ingest_ts_and_serializes_composite_cursor(self):
         """[DM-15] cursor is a per-channel bookmark map, not a single string."""
         src = WindowsEventSource()

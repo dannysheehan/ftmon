@@ -1,6 +1,10 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.33** — v0.33 ships the validated macOS event, notification,
+Status: **DRAFT v0.35** — v0.35 adds cursor-safe adjacent event coalescing
+and raw event-rate telemetry/presentation across platform adapters. v0.34 replaces ambient macOS unified-log ingestion
+with an enabled, source-filtered operational allowlist after a live event storm
+proved that downstream rules and storage filtering cannot protect the reader queue.
+v0.33 ships the validated macOS event, notification,
 LaunchAgent, and builtin-profile seams. v0.32 replaces the `windowsdesktop` placeholder
 profile with `windesktop`/`winserver` (PM-08), sharing one Windows-adapted
 monitor tree that drops rules dead on Windows by construction (an
@@ -160,7 +164,7 @@ These were decided during specification and are not open for re-litigation by im
 | Config/data paths | XDG dirs | `%APPDATA%` / `%LOCALAPPDATA%` | `~/Library/Application Support` |
 
 - **PL-01** All platform-specific behavior MUST live behind exactly four seams: `Sampler` implementations, `EventSource` implementations, the notification adapter, and the service wrapper/paths module (use `platformdirs`). No platform conditionals anywhere else.
-- **PL-02** The canonical schemas (§5) MUST NOT assume any platform's shape. In particular `event_id` is an **optional string** (Windows has numeric IDs, journald has identifiers, macOS has none).
+- **PL-02** The canonical schemas (§5) MUST NOT assume any platform's shape. In particular `event_id` is an **optional string** (Windows has numeric IDs, journald has identifiers, and macOS has no native ID but MAY assign a stable FTMON event class during normalization).
 - **PL-03** Permission failures during sampling (e.g. psutil `AccessDenied`) MUST degrade gracefully: skip the entity, count it in self-metrics (§13), never crash or spam the log (log once per entity per daemon lifetime at DEBUG).
 - **PL-04** v1 ships and is tested on Linux only, but the fake/fixture implementations of `Sampler` and `EventSource` (§16) count as second implementations, keeping the seams honest.
 - **PL-05** Every `Sampler` and `EventSource` declares its schema: entity kind,
@@ -207,8 +211,10 @@ support policy and packaging must be resolved before macOS is advertised.
   channel only, like `server`. Existing configuration is never rewritten;
   `--force` continues to reinstall built-in monitor definitions only
   (FS-02), not user settings. `macdesktop` and `macserver` share a Darwin
-  tree: PSI and foreign event rules are removed; unified-log fault alerting is
-  opt-in; read-only/nobrowse mounts and inode rules are excluded; connection
+  tree: PSI and foreign event rules are removed; unified-log ingestion is
+  enabled only behind a source-side allowlist for third-party faults and
+  explicit kernel storage-integrity messages; read-only/nobrowse mounts
+  and inode rules are excluded; connection
   alerts require an explicit listener watchlist; service examples are
   process-based; and only the desktop variant enables best-effort Script
   Editor notifications.
@@ -292,7 +298,7 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 
 - **DM-07** `source` ∈ {`journald`, `eventlog`, `oslog`, `file`, `self`}. `provider` is the platform's producer field (journald `SYSLOG_IDENTIFIER`/`_SYSTEMD_UNIT`, Event Log Provider, os_log subsystem). `self` is FTMON's own operational events (config errors, budget breaches, prune runs, clock gaps, event overflows).
 - **DM-08** `severity` is normalized to the 5-level scale: `info(0) notice(1) warning(2) error(3) critical(4)`. Each `EventSource` documents and tests its mapping (journald PRIORITY 0–7 → this scale; Event Log Level; os_log messageType).
-- **DM-09** Stored events are kept 30 d (subject to DM-05 degradation). A **store-filter** (v0.3 amendment, capacity-driven) decides what is stored: events with severity ≥ `notice` (configurable `store_min_severity`) plus any event matching a loaded event rule; info-level non-matching events are counted in a self-metric but not stored — a desktop journal's full volume (50–200 k lines/day) cannot fit the DM-05 budget. Event *rules* (§7.7.3) evaluate against the live stream before the store-filter (a rule can match info-level events; matching forces storage) and match on canonical fields only — a rule written against journald fields MUST be expressible identically against Event Log fields.
+- **DM-09** Stored events are kept 30 d (subject to DM-05 degradation). A **store-filter** (v0.3 amendment, capacity-driven) decides what is stored: events with severity ≥ `notice` (configurable `store_min_severity`) plus any event matching a loaded event rule; info-level non-matching events are counted in a self-metric but not stored — a desktop journal's full volume (50–200 k lines/day) cannot fit the DM-05 budget. Event *rules* (§7.7.3) evaluate against the live stream before the store-filter (a rule can match info-level events; matching forces storage) and match on canonical fields only — a rule written against journald fields MUST be expressible identically against Event Log fields. This storage policy is not source admission control: platform adapters MAY apply a stricter upstream predicate to protect SA-08's queue and process budget.
 - **DM-10** Event ingestion MUST be rate-defended: per (source, provider), more than 100 stored events/min collapses into a single `event_storm` self-event with a count, until the rate drops. (A log-spamming app must not fill the DB.)
 - **DM-15** Each `EventSource` persists a source-specific **checkpoint** in the
   DB after every drained batch. Journald stores its cursor string and Windows
@@ -309,6 +315,18 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
   carry both source timestamp (stored as `ts`) and ingest timestamp; ordering
   for rules is ingest order, so late-arriving source timestamps cannot
   re-trigger past windows.
+- **DM-18** Before bounded-queue admission, every platform event adapter MUST
+  coalesce a contiguous run of canonically identical events. Identity is the
+  exact `(source, provider, event_id, severity, message)` tuple; origin is
+  mandatory so one producer cannot conceal another. The aggregate retains the
+  first event record, advances its source checkpoint to the last represented
+  event, and records string attrs `repeat_count`, `repeat_first_ts`, and
+  `repeat_last_ts`. Coalescing MUST NOT cross an intervening event because an
+  opaque journal cursor or bookmark could then advance past undrained evidence.
+  Event-rule confirmation and episode occurrence totals count represented raw
+  occurrences, not aggregate rows. The `self` source exposes cumulative raw
+  `events_received`, cumulative `events_repeated`, and a rolling
+  `event_rate_per_min` gauge that includes coalesced repeats.
 
 ### 5.4 Incident
 
@@ -362,7 +380,7 @@ sources due? → each needed source runs ONCE → immutable snapshot (single ts)
 ### 6.3 Sources
 
 - **SA-03** `EventSource`s run as supervised subprocess readers (e.g. `journalctl -f -o json --after-cursor=…`) feeding an in-daemon queue, drained each tick. A dead reader is restarted with exponential backoff (1 s → 60 s cap) and a self-event on first death.
-- **SA-08** The event queue is bounded at 10 000 entries; on overflow the oldest are dropped and an `event_overflow` self-event records the count. Malformed lines are skipped and counted (self-metric), never fatal. Reader stall detection: `event_source_last_activity_age` is a self-metric; the `self` monitor warns when it exceeds 10 m while the reader process is alive.
+- **SA-08** The event queue is bounded at 10 000 entries; on overflow the oldest are dropped and an `event_overflow` self-event records the count. Malformed lines are skipped and counted (self-metric), never fatal. Reader stall detection: `event_source_last_activity_age` is a self-metric; the `self` monitor warns when it exceeds 10 m while the reader process is alive. The macOS adapter MUST apply the same fixed operational predicate to replay and streaming before records enter this queue; ambient debug-level unified-log ingestion is forbidden.
 - **SA-09** Process display identity (v0.19, issue #20). Interpreter-hosted processes often expose a generic runtime thread name (`MainThread`, `node`, `python3`) as the kernel process name, defeating both operator recognition and name-based exemptions. The process sampler MUST additionally collect, where readable: `exe` (executable path, already collected), `exe_base` (its basename), and `cmd_hint` (executable basename plus the basename of the first path-like argument, ≤ 64 chars total — derived basenames only, never raw arguments; SE-04's posture is unchanged). It MUST publish a `display` attr: `"{exe_base} ({name})"` when `exe_base` is present and differs from `name`, else `name`. `{entity}` in rule/notification templates resolves to `display` when present (falling back to `name`, then `entity_id`). All of these are declared attrs (PL-05) so exemptions (CA-07) and rules can target executable identity. Raw `cmdline` remains governed by SE-04 and MUST NOT appear in notifications; loopback surfaces (web incident detail, MCP) SHOULD expose the sampled attrs. Stable identity (DM-02) is unchanged.
 - **SA-04** Built-in samplers v1: `process` (per-process cpu%, rss, and — where available without elevated rights — open fds, threads, io counters), `disk` (per-mount total/used/free bytes, inodes where supported), `system` (load1/5/15, cpu% total, mem available/used, swap, PSI where present), `net` (per-listen-socket presence, per-proto/state connection counts; **no per-process attribution in v1**, NG-06), `unit` (systemd unit active-state + NRestarts via `systemctl show`).
 - **SA-05** The `process` source implements **track-all + promote**: every process is sampled into a bounded in-memory window (last 15 of its samples) each tick it's due; long-term persistence happens only for entities that are (a) on a monitor's watchlist, (b) in the top-N (default 15) by cpu or rss that cycle, or (c) **promoted** by a trend heuristic (§7.6.1). Promotion/demotion transitions are recorded as self-events. This keeps DM-05/DM-16 achievable with hundreds of processes.
@@ -986,6 +1004,11 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   or configuration-error tiles, and when no active sample is newer than twice
   the monitor interval. Retained rollups and disappeared entities MUST NOT be
   used as current evidence.
+- **UI-18** A healthy Events dashboard tile MUST show the latest fresh
+  `event_rate_per_min` self metric as `ingest … events/min`. This operational
+  readout does not define thresholds and MUST NOT alter UI-14 health state; it
+  follows the same stale, unknown, disabled, and configuration-error omission
+  rules as other glance values.
 
 ## 13. Resource budget (self-enforced)
 
@@ -1249,6 +1272,21 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.35 (2026-08-01)** — coalesces contiguous, origin-aware duplicate event
+runs before queue admission without weakening cursor order, while preserving
+raw episode occurrence totals in aggregate attrs. New self metrics expose raw
+received/repeated counts and rolling events/min, and the Events dashboard tile
+shows the fresh ingest rate without changing health policy (DM-18, UI-18;
+issue #78).
+
+**v0.34 (2026-08-01)** — hardens the standard macOS events monitor after a
+live unrestricted reader dropped more than 27,000 records within minutes.
+Replay and streaming now share a source-side operational allowlist for
+third-party executable faults and explicit kernel storage-integrity
+messages; the monitor is enabled by default with a canonical `critical` store
+threshold. Downstream rules remain a semantic boundary, not queue protection
+(SA-08, DM-09, PM-08).
 
 **v0.33 (2026-07-26)** — ships the macOS implementation validated by the
 v0.30 spike: unified-log replay/stream dedup checkpoints with observable

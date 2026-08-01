@@ -24,6 +24,7 @@ from typing import ClassVar
 
 from ftmon.model import EventRecord, SourceDecl
 from ftmon.sources.base import SOURCE_DECLS
+from ftmon.sources.repeats import merge_adjacent
 
 __all__ = ["JournaldEventSource", "parse_line", "PRIORITY_TO_SEVERITY"]
 
@@ -102,6 +103,8 @@ class JournaldEventSource:
         self._lock = threading.Lock()
         self.dropped = 0  # cumulative, read by the event engine for self-metrics
         self.malformed = 0
+        self.received = 0
+        self.repeated = 0
 
     def start(self, cursor: str | None) -> None:
         args = [self._journalctl, "-f", "-o", "json", "--no-pager"]
@@ -126,9 +129,24 @@ class JournaldEventSource:
                 if parsed is None:
                     self.malformed += 1
                     continue
-                if len(self._queue) == self._queue.maxlen:
-                    self.dropped += 1  # deque is about to evict the oldest
-                self._queue.append(parsed)
+                self._offer_locked(parsed)
+
+    def _offer_locked(self, parsed: tuple[dict, str]) -> None:
+        self.received += 1
+        fields, cursor = parsed
+        if self._queue and merge_adjacent(self._queue[-1][0], fields):
+            # Replace the opaque checkpoint with the last event in the
+            # represented run; order remains exact because the run is
+            # contiguous.
+            self._queue[-1] = (self._queue[-1][0], cursor)
+            self.repeated += 1
+            return
+        if len(self._queue) == self._queue.maxlen:
+            self.dropped += 1  # deque is about to evict the oldest
+        self._queue.append(parsed)
+
+    def queue_capacity(self) -> int:
+        return int(self._queue.maxlen or 0)
 
     def drain(self, now: float, max_items: int) -> tuple[list[EventRecord], str | None]:
         out: list[EventRecord] = []

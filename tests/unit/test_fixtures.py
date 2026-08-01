@@ -90,7 +90,7 @@ def test_leak_scenario_through_daemon_core(core_env):  # noqa: F811
     subprocess run, so a harness failure can be bisected against this."""
     paths = core_env
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     core.samplers.update(fixture_samplers(scenario("firefox-leak-2mb-min")))
 
     tick_n(core, clock, 71)  # scenario: 30m growth, then flat
@@ -104,7 +104,7 @@ def test_entity_vanish_scenario_closes_incident(core_env):  # noqa: F811
     recovery, exercising the gone-grace path from a scenario."""
     paths = core_env
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     core.samplers.update(fixture_samplers(scenario("entity-vanishes-mid-incident")))
 
     tick_n(core, clock, 30)  # 20m leak, vanish at 21m, +grace 5m

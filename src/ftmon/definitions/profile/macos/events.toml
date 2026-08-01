@@ -6,15 +6,28 @@ schema = 1
 [monitor]
 name = "events"
 description = "Raises incidents for macOS unified-log entries of interest"
-version = 2
-enabled = false
+version = 4
+enabled = true
 platforms = ["darwin"]
 source = "events"
 
+[source_options]
+# The macOS adapter applies its fixed operational predicate before ingestion.
+# Retain only fault records unless one of the explicit rules below matches.
+store_min_severity = "critical"
+
 [[rule]]
 id = "third-party-fault"
-when = 'severity >= critical and not matches(provider, "^(com\\.apple\\.|unknown$)")'
+when = 'event_id == "third-party-fault"'
 severity = "critical"
 cooldown = "10m"
 clear_after = "30m"
 message = "Third-party macOS fault from {provider}: {message}"
+
+[[rule]]
+id = "storage-integrity"
+when = 'event_id == "storage-integrity"'
+severity = "critical"
+cooldown = "10m"
+clear_after = "30m"
+message = "macOS storage integrity warning: {message}"

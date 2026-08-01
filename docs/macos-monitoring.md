@@ -16,6 +16,22 @@ Apple background:
 - [APFS snapshots](https://support.apple.com/en-euro/guide/disk-utility/dskuf82354dc/mac)
 - [launchd jobs](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)
 
+Unified-log collection uses a bounded 10,000-record queue. During a source
+storm FTMON drops the oldest queued records, increments `events_dropped`, and
+records one `event_overflow` episode plus its final dropped count when the
+queue recovers. Replay identities are bounded separately, so a storm cannot
+grow deduplication memory for the daemon's lifetime. Coalesced raw identities
+share one bounded pending window; only a drained run transfers those identities
+to the durable replay checkpoint, so an overflow-dropped run cannot claim it
+was accepted.
+
+Before queue admission, consecutive records with the same source, provider,
+event class, severity, and message are stored as one aggregate with occurrence
+count and first/last source timestamps. The checkpoint still advances through
+the final represented record. Aggregation never crosses an intervening event,
+which preserves unified-log replay order. The Events dashboard rate counts all
+raw arrivals, including these repeats, so a compacted storm does not look idle.
+
 ## Shipped profile
 
 ### Process CPU (`hog`)
@@ -89,16 +105,39 @@ brief startup cost.
 
 ### Unified log (`events`)
 
-The monitor is installed but disabled. A live macOS run showed normal TCC,
-RunningBoard, analytics, preferences, networking and UI activity logged at
-`error`; `osascript` notification delivery itself produced more such records,
-forming a feedback loop. Unified-log severity is therefore not treated as a
-system-wide actionability contract.
+The monitor is enabled behind a fixed source predicate. A live unrestricted
+run dropped more than 27,000 records within minutes; the stored sample was
+dominated by normal TCC, DiagnosticsReporter, analyticsd, iCloud, preferences,
+networking and sandbox activity. A downstream rule cannot protect the reader
+queue, so both `log show` replay and `log stream` apply the allowlist before
+Python reads a record and use the normal `default` level instead of `debug`.
 
-The included opt-in example matches only non-Apple `fault` records. Operators
-should narrow it further to subsystems they own. Crash, spin and diagnostic
-report creation is a better future default than ambient error text because
-Console exposes those as explicit report categories.
+The standard allowlist admits only:
+
+- `fault` records whose originating executable is under `/Applications`,
+  `/Library` (excluding `/Library/Apple`), `/opt`, `/usr/local`, or `/Users`;
+- kernel messages containing an explicit I/O, media, disk, filesystem, or
+  APFS corruption phrase.
+
+Those records are normalized to `third-party-fault` or `storage-integrity`
+event IDs before the declarative rules run. The storage
+threshold is `critical` (the canonical FTMON mapping of Apple `fault`), while a
+matched storage-integrity `error` is still retained as rule evidence.
+
+This follows Apple's model: subsystem/category and predicates are the intended
+filtering boundary, `error` represents process-level failure, and `fault` is
+reserved for system or multiprocess failure. Severity is still producer intent,
+not proof of operator actionability. Crash and hang monitoring should use the
+structured DiagnosticReports files, while authentication, Gatekeeper, and
+XProtect monitoring belongs to an entitled Endpoint Security adapter—not
+ambient unified-log text.
+
+References:
+
+- [Apple unified logging](https://developer.apple.com/documentation/os/logging)
+- [Apple fault-level semantics](https://developer.apple.com/documentation/os/oslogtype/fault)
+- [Apple crash-report guidance](https://developer.apple.com/documentation/xcode/diagnosing-issues-using-crash-reports-and-device-logs)
+- [Apple Endpoint Security](https://developer.apple.com/documentation/endpointsecurity)
 
 ## Deliberately deferred
 

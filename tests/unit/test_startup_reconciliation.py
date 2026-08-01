@@ -48,7 +48,7 @@ def _tick_n(core, clock, n, step=60.0):
 
 
 def _open_leak_incident(paths, clock):
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     sampler = ScriptedSampler()
     for i in range(200):
         sampler.push(grower(i))
@@ -68,7 +68,7 @@ def test_restart_clears_incident_for_entity_gone_during_downtime_in_09(core_env)
     _open_leak_incident(paths, clock)
 
     clock.advance(600)  # downtime > gone_grace (300 s default)
-    core2 = DaemonCore(paths=paths, clock=clock)
+    core2 = DaemonCore(paths=paths, clock=clock, platform="linux")
     empty = ScriptedSampler()
     empty.push()  # the process never reappears
     core2.samplers["process"] = empty
@@ -90,7 +90,7 @@ def test_restart_does_not_clear_incident_when_entity_still_alive_in_09(core_env)
     _open_leak_incident(paths, clock)
 
     clock.advance(600)  # long downtime, but the process is still running
-    core2 = DaemonCore(paths=paths, clock=clock)
+    core2 = DaemonCore(paths=paths, clock=clock, platform="linux")
     sampler = ScriptedSampler()
     for i in range(200, 210):
         sampler.push(grower(i))
@@ -112,7 +112,7 @@ def test_restart_within_grace_defers_clear_until_grace_elapses_in_09(core_env):
     _open_leak_incident(paths, clock)
 
     clock.advance(120)  # restart well inside the 300 s grace
-    core2 = DaemonCore(paths=paths, clock=clock)
+    core2 = DaemonCore(paths=paths, clock=clock, platform="linux")
     empty = ScriptedSampler()
     empty.push()
     core2.samplers["process"] = empty

@@ -94,7 +94,7 @@ class EpisodeState:
 def step_episode(
     cfg: EpisodeConfig,
     st: EpisodeState,
-    matches: tuple[tuple[float, str], ...],  # (event ingest ts, rendered message)
+    matches: tuple[tuple, ...],  # (ingest ts, rendered message[, occurrences])
     now: float,
 ) -> tuple[EpisodeState, tuple[Effect, ...]]:
     """One tick for one episode. `matches` are this tick's matching events
@@ -125,10 +125,17 @@ def _maybe_open(
     matches: tuple[tuple[float, str], ...],
     now: float,
 ) -> tuple[EpisodeState, tuple[Effect, ...]]:
-    pending = (*st.pending_ts, *(t for t, _ in matches))
+    old_pending = st.pending_ts
     if cfg.confirm_window_s is not None:
-        pending = tuple(t for t in pending if now - t <= cfg.confirm_window_s)
-    if len(pending) < cfg.confirm_count:
+        old_pending = tuple(t for t in old_pending if now - t <= cfg.confirm_window_s)
+    new_count = sum(_match_count(match) for match in matches)
+    pending_count = len(old_pending) + new_count
+    pending = (*old_pending, *(
+        _match_ts(match)
+        for match in matches
+        for _ in range(min(_match_count(match), cfg.confirm_count))
+    ))
+    if pending_count < cfg.confirm_count:
         return replace(st, pending_ts=pending), ()
 
     flap_clears = tuple(t for t in st.flap_clears if now - t <= FLAP_WINDOW_S)
@@ -143,9 +150,9 @@ def _maybe_open(
         notify_count=1,
         backoff_tier=0,  # unused by episodes; cooldown governs (IN-08)
         flap_clears=flap_clears,
-        occurrences=len(pending),
+        occurrences=pending_count,
     )
-    body = matches[-1][1]  # newest event's rendered message speaks for the episode
+    body = _match_message(matches[-1])
     if flapping:
         body = f"(flapping) {body}"
     st2 = EpisodeState(
@@ -157,7 +164,7 @@ def _maybe_open(
     )
     effects: tuple[Effect, ...] = (
         RecordEffect("open", {"rule": cfg.rule_id, "severity": cfg.severity,
-                              "flapping": flapping, "occurrences": len(pending)}),
+                              "flapping": flapping, "occurrences": pending_count}),
         _notify(cfg, core, "open", body, now),
     )
     return st2, effects
@@ -171,7 +178,8 @@ def _refresh(
 ) -> tuple[EpisodeState, tuple[Effect, ...]]:
     core = st.core
     assert core is not None
-    core = replace(core, occurrences=core.occurrences + len(matches))
+    count = sum(_match_count(match) for match in matches)
+    core = replace(core, occurrences=core.occurrences + count)
     effects: list[Effect] = []
     cooldown = st.cooldown_s if st.cooldown_s is not None else cfg.cooldown_s
     if (
@@ -180,11 +188,11 @@ def _refresh(
         and now - core.last_notify_ts >= cooldown
     ):
         core = replace(core, last_notify_ts=now, notify_count=core.notify_count + 1)
-        body = f"{matches[-1][1]} ({core.occurrences}x since open)"
+        body = f"{_match_message(matches[-1])} ({core.occurrences}x since open)"
         effects.append(_notify(cfg, core, "renotify", body, now))
     # occurrences changed even without a notification; a record keeps the
     # DB row honest for `ftmon incident <id>` without spamming history
-    effects.append(RecordEffect("refresh", {"count": len(matches),
+    effects.append(RecordEffect("refresh", {"count": count,
                                             "occurrences": core.occurrences}))
     return replace(st, core=core, last_seen_ts=now), tuple(effects)
 
@@ -237,3 +245,20 @@ def as_group_state(st: EpisodeState) -> GroupState:
     """Adapter for EffectExecutor.apply, which persists GroupState.core and
     ignores rungs — episodes have none."""
     return GroupState(rungs={}, core=st.core)
+
+
+def _match_ts(match: tuple) -> float:
+    return float(match[0])
+
+
+def _match_message(match: tuple) -> str:
+    return str(match[1])
+
+
+def _match_count(match: tuple) -> int:
+    if len(match) < 3:
+        return 1
+    try:
+        return max(1, int(match[2]))
+    except (TypeError, ValueError):
+        return 1

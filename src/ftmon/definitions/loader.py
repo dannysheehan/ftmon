@@ -413,6 +413,8 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
             allowed_so = frozenset({"top_n"})
         elif source == "external":
             allowed_so = schema.EXTERNAL_SOURCE_OPTIONS_KEYS
+        elif source == "events":
+            allowed_so = schema.EVENT_SOURCE_OPTIONS_KEYS
         else:
             allowed_so = frozenset()
         _check_unknown_keys(source_options_tbl, allowed_so, "source_options", errors)
@@ -554,6 +556,16 @@ def _build(parsed: dict, filename: str) -> tuple[MonitorDef | None, list[dict]]:
         dynamic_decl = schema.external_decl(valid_mappings)
         decl_metrics = dynamic_decl.metric_names()
         decl_attrs = dynamic_decl.attr_names()
+    elif source == "events":
+        store_min = (source_options_tbl or {}).get("store_min_severity", "notice")
+        if not isinstance(store_min, str) or store_min not in model.SEVERITIES:
+            errors.append(_err(
+                "source_options.store_min_severity",
+                "invalid_value",
+                f"store_min_severity must be one of {model.SEVERITIES}",
+            ))
+            store_min = "notice"
+        source_options = {"store_min_severity": store_min}
 
     # --- [promotion] -----------------------------------------------------------
     promotion_tbl = parsed.get("promotion")

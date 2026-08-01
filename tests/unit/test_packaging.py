@@ -14,12 +14,16 @@ def test_systemd_user_unit_is_packaged_do_02():
 
 
 def test_launchagent_is_packaged_and_preserves_sighup_pm_11():
-    """[PM-11] launchd owns lifecycle but does not substitute restart for reload."""
+    """[PM-11][SE-04] launchd supervises the daemon and preserves crash output."""
     plist = files("ftmon").joinpath("launchd/org.ftmon.daemon.plist").read_text()
     assert "<string>org.ftmon.daemon</string>" in plist
     assert "<key>ProgramArguments</key>" in plist
     assert "<key>RunAtLoad</key>" in plist
     assert "<key>KeepAlive</key>" in plist
+    assert "<key>StandardOutPath</key>" in plist
+    assert "<key>StandardErrorPath</key>" in plist
+    assert "ftmon-daemon-launchd.log" in plist
+    assert "<key>Umask</key>\n  <integer>63</integer>" in plist
     assert "kickstart" not in plist
 
 
@@ -31,6 +35,7 @@ def test_web_launchagent_is_packaged_and_supervises_process_do_02():
     assert "<key>RunAtLoad</key>" in plist
     assert "<key>KeepAlive</key>" in plist
     assert "<key>StandardErrorPath</key>" in plist
+    assert "<key>Umask</key>\n  <integer>63</integer>" in plist
     assert "0.0.0.0" not in plist
 
 

@@ -13,9 +13,13 @@ milestone plan, not oversight.
 
 from __future__ import annotations
 
+import logging
+import os
 import sqlite3
 import sys
 from dataclasses import dataclass, field
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from queue import SimpleQueue
 
 from ftmon import definitions
@@ -51,8 +55,39 @@ from ftmon.store.writer import TickWriter
 
 _RESCAN_EVERY_S = 30.0  # PM-04
 _RETENTION_EVERY_S = 60.0  # DM-04: incremental; a minute cadence keeps passes tiny
+_LOG_MAX_BYTES = 10 * 1024 * 1024
+_LOG_BACKUPS = 3
+_DAEMON_LOG = logging.getLogger("ftmon.daemon.file")
+_DAEMON_LOG.propagate = False
 
 IncidentKey = tuple[str, str, str]  # (monitor, entity_id, group)
+
+
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    def _open(self):
+        stream = super()._open()
+        os.chmod(self.baseFilename, 0o600)
+        return stream
+
+
+def _configure_daemon_log(path: Path) -> RotatingFileHandler:
+    """Write the PM-06 daemon log independently of a service wrapper's stderr."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for existing in tuple(_DAEMON_LOG.handlers):
+        _DAEMON_LOG.removeHandler(existing)
+        existing.close()
+    handler = _PrivateRotatingFileHandler(
+        path, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUPS, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    _DAEMON_LOG.addHandler(handler)
+    _DAEMON_LOG.setLevel(logging.INFO)
+    return handler
+
+
+def _daemon_message(message: str) -> None:
+    print(message, file=sys.stderr)
+    _DAEMON_LOG.info(message)
 
 
 @dataclass
@@ -86,7 +121,7 @@ class DaemonCore:
         if self._reload_global_config:
             self.config, config_warnings = load_config(self.paths.config_file)
             for w in config_warnings:
-                print(f"config warning: {w}", file=sys.stderr)
+                _daemon_message(f"config warning: {w}")
         self._config_stamp = self._config_file_stamp()
         self._notifier_override = tuple(self.notifiers) if self.notifiers is not None else None
         self.conn = store_db.connect(self.paths.db_file)
@@ -184,8 +219,9 @@ class DaemonCore:
             if desktop_notifier is not None and desktop_notifier.available:
                 notifiers.append(desktop_notifier)
             else:
-                print("config warning: [notify.desktop] desktop_unavailable; "
-                      "channel disabled", file=sys.stderr)
+                _daemon_message(
+                    "config warning: [notify.desktop] desktop_unavailable; channel disabled"
+                )
                 self.stats.count("config_errors")
         remote_types = {
             "ntfy": NtfyNotifier,
@@ -201,8 +237,9 @@ class DaemonCore:
             except DeliveryError as exc:
                 # Loading normally catches readiness first. Constructor failure
                 # remains isolated if a secret rotates between validation/use.
-                print(f"config warning: [notify.{name}] {exc}; channel disabled",
-                      file=sys.stderr)
+                _daemon_message(
+                    f"config warning: [notify.{name}] {exc}; channel disabled"
+                )
                 self.stats.count("config_errors")
         return notifiers
 
@@ -245,7 +282,7 @@ class DaemonCore:
         try:
             registry = load_check_registry(self.paths.check_registry_file, paths=self.paths)
         except RegistryError as exc:
-            print(f"config_error: checks.toml: {exc.category}", file=sys.stderr)
+            _daemon_message(f"config_error: checks.toml: {exc.category}")
             self.stats.count("config_errors")
             if not initial:
                 self.writer.add_event(EventRecord(
@@ -267,12 +304,11 @@ class DaemonCore:
             return
         self._config_stamp = stamp
         if stamp is None:
-            print("config warning: config.toml removed; keeping loaded channels",
-                  file=sys.stderr)
+            _daemon_message("config warning: config.toml removed; keeping loaded channels")
             return
         config, warnings = load_config(self.paths.config_file)
         for warning in warnings:
-            print(f"config warning: {warning}", file=sys.stderr)
+            _daemon_message(f"config warning: {warning}")
         if any(warning.startswith("config.toml unreadable") for warning in warnings):
             # A half-written/manual syntax error must not replace working remote
             # delivery with desktop defaults. Atomic writers avoid this, but
@@ -318,7 +354,7 @@ class DaemonCore:
         for path, err in errors:
             # Surfaced as a self-event so status/CLI can report it; the
             # daemon itself must keep running (PM-04).
-            print(f"config_error: {path}: {err}", file=sys.stderr)
+            _daemon_message(f"config_error: {path}: {err}")
             self.stats.count("config_errors")
         seen = set()
         for mdef in defs:
@@ -327,10 +363,9 @@ class DaemonCore:
                 # a monitor's platforms list must gate loading, not just
                 # validate as a well-formed subset of schema.PLATFORMS.
                 if initial:
-                    print(
+                    _daemon_message(
                         f"monitor {mdef.name}: not applicable on platform "
-                        f"{self.platform!r} (declares {sorted(mdef.platforms)}); skipped",
-                        file=sys.stderr,
+                        f"{self.platform!r} (declares {sorted(mdef.platforms)}); skipped"
                     )
                 continue
             # MD-05: enabled=false stays on disk for one-line re-enable / git
@@ -354,10 +389,9 @@ class DaemonCore:
                 continue
             if mdef.source not in self.samplers:
                 if initial:
-                    print(
+                    _daemon_message(
                         f"monitor {mdef.name}: source {mdef.source!r} not available "
-                        "in this milestone; skipped",
-                        file=sys.stderr,
+                        "in this milestone; skipped"
                     )
                 continue
             current = self.monitors.get(mdef.name)
@@ -561,6 +595,9 @@ class DaemonCore:
                                     mono, self.writer)
             self.stats.event_queue_depth = self.events_engine.queue_depth
             self.stats.events_dropped = self.events_engine.dropped
+            self.stats.events_received = self.events_engine.received
+            self.stats.events_repeated = self.events_engine.repeated
+            self.stats.event_rate_per_min = self.events_engine.event_rate_per_min
             self.stats.source_activity_age_s = self.events_engine.last_activity_age_s
         for monitor, entity_id in self.pipeline.drain_gone():
             self._clear_gone(monitor, entity_id, wall)
@@ -671,12 +708,13 @@ def run(args) -> int:
 
     paths = get_paths()
     paths.ensure()
+    _configure_daemon_log(paths.log_file)
 
     from ftmon.paths import try_lock_exclusive
 
     lock_file = open(paths.lock_file, "w")  # noqa: SIM115 - held for process lifetime
     if not try_lock_exclusive(lock_file):
-        print("ftmon daemon already running (lock held); exiting", file=sys.stderr)
+        _daemon_message("ftmon daemon already running (lock held); exiting")
         return 1
     # CL-07: `ftmon monitor rescan` signals this pid. The flock, not the pid
     # text, remains the single-instance authority (PM-02).
@@ -710,6 +748,10 @@ def run(args) -> int:
         clock=clock,
         event_source=event_source,
         background_dispatch=not isinstance(clock, ControlledClock),
+        # The checked-in deterministic scenarios model the Linux fixture
+        # definitions (including systemd units).  Keep TS-04/TS-05 replay
+        # host-independent when the harness itself runs on macOS or Windows.
+        platform="linux" if scn is not None else None,
     )
 
     if scn is not None:
@@ -718,8 +760,7 @@ def run(args) -> int:
         from ftmon.sources import fixtures
 
         core.samplers.update(fixtures.fixture_samplers(scn))
-        print(f"fixtures: {args.fixtures} ({', '.join(sorted(scn.sources()))})",
-              file=sys.stderr)
+        _daemon_message(f"fixtures: {args.fixtures} ({', '.join(sorted(scn.sources()))})")
 
     def _stop(_sig, _frame):
         core.stop = True
@@ -740,9 +781,12 @@ def run(args) -> int:
 
     tick_s = core.config.tick_seconds if core.config else 5.0
     total = len(core.monitors) + len(core.event_monitors)
-    print(f"ftmon daemon started ({total} monitors)", file=sys.stderr)
+    _daemon_message(f"ftmon daemon started ({total} monitors)")
     try:
         core.run_loop(tick_s)
+    except BaseException:
+        _DAEMON_LOG.exception("ftmon daemon crashed")
+        raise
     finally:
         # Network and journal readers own OS resources; an unexpected sampler
         # error must not leave either background boundary alive during teardown.
@@ -750,5 +794,5 @@ def run(args) -> int:
             core.dispatch_worker.stop()
         if core.events_engine is not None:
             core.events_engine.stop()  # reap the journalctl reader
-    print("ftmon daemon stopped", file=sys.stderr)
+    _daemon_message("ftmon daemon stopped")
     return 0

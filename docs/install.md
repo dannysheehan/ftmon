@@ -75,10 +75,10 @@ delivery) or `macserver` (file audit only). Desktop notifications appear under
 `/usr/bin/osascript`; exit zero means accepted, not proof that Focus displayed
 a banner.
 
-The macOS profile keeps unified-log incidents disabled initially. Enable and
-customize `events.toml` only for subsystems you operate; a blanket
-`severity >= error` rule is intentionally not supplied because routine Apple
-services emit error-level diagnostics. Writable visible volumes are monitored,
+The macOS profile enables a source-filtered unified-log monitor for third-party
+executable faults and explicit kernel storage-integrity messages. It
+does not ingest the ambient debug stream or apply a blanket `severity >= error`
+rule because routine Apple services emit error-level diagnostics. Writable visible volumes are monitored,
 while read-only/nobrowse disk images are excluded.
 See [macOS monitoring rationale](macos-monitoring.md) for the rule-by-rule
 selection and deliberately deferred Apple-native signals.
@@ -86,8 +86,8 @@ selection and deliberately deferred Apple-native signals.
 For persistent per-user services, copy the packaged daemon and web
 LaunchAgents to `~/Library/LaunchAgents/`. Replace
 `/Users/REPLACE_ME/.local/bin/ftmon` in both files with the absolute result of
-`command -v ftmon`, and replace `REPLACE_ME` in the web log paths with the
-account name:
+`command -v ftmon`, and replace `REPLACE_ME` in both services' log paths with
+the account name:
 
 ```sh
 cp /path/to/ftmon/launchd/org.ftmon.{daemon,web}.plist ~/Library/LaunchAgents/
@@ -99,8 +99,11 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/org.ftmon.web.plist
 
 Send SIGHUP to the managed PID to reload in place. `launchctl kickstart -k`
 is an explicit restart with a new PID, not a reload substitute. The web
-LaunchAgent binds to the CLI's loopback-only default and writes startup or
-crash diagnostics to `~/Library/Logs/ftmon-web.log`.
+LaunchAgent binds to the CLI's loopback-only default. The daemon writes its
+rotating operational log to the `ftmon paths` `log_file`; launchd also captures
+failures before that logger starts in
+`~/Library/Logs/ftmon-daemon-launchd.log`. Web process output goes to
+`~/Library/Logs/ftmon-web.log`.
 
 ## Upgrade
 

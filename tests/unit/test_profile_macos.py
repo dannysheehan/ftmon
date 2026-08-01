@@ -48,13 +48,16 @@ def test_profile_trees_match_and_every_monitor_is_darwin_only():
         assert parsed["monitor"]["platforms"] == ["darwin"]
 
 
-def test_platform_noise_rules_are_removed_and_events_are_opt_in():
+def test_platform_noise_rules_are_removed_and_events_use_safe_admission():
     events = tomllib.loads((PROFILE / "events.toml").read_text())
     load = tomllib.loads((PROFILE / "load.toml").read_text())
     disk = tomllib.loads((PROFILE / "disk.toml").read_text())
-    assert events["monitor"]["enabled"] is False
-    assert {r["id"] for r in events["rule"]} == {"third-party-fault"}
-    assert "severity >= critical" in events["rule"][0]["when"]
+    assert events["monitor"]["enabled"] is True
+    assert events["source_options"]["store_min_severity"] == "critical"
+    assert {r["id"] for r in events["rule"]} == {
+        "third-party-fault", "storage-integrity"
+    }
+    assert all("event_id ==" in rule["when"] for rule in events["rule"])
     assert {r["id"] for r in load["rule"]} == {"pressure-warn"}
     assert "psi" not in " ".join(r["when"] for r in load["rule"])
     assert not any(r["id"].startswith("inodes-") for r in disk["rule"])
@@ -85,8 +88,8 @@ def test_leak_profile_requires_persistent_growth_and_exempts_gui_helpers():
     assert "node" not in exemptions
 
 
-def test_disabled_events_profile_does_not_start_unified_log(tmp_path):
-    """[PM-08][DM-15] Installed opt-in events must incur no reader work."""
+def test_safe_events_profile_starts_unified_log(tmp_path):
+    """[PM-08][DM-15][SA-08] The standard profile starts its filtered reader."""
     env = {f"FTMON_{kind}_DIR": str(tmp_path / kind.lower())
            for kind in ("CONFIG", "DATA", "STATE", "RUNTIME")}
     paths = get_paths(env)
@@ -100,8 +103,8 @@ def test_disabled_events_profile_does_not_start_unified_log(tmp_path):
         platform="darwin",
         event_source=source,
     )
-    assert core.event_monitors == {}
-    assert source.starts == 0
+    assert set(core.event_monitors) == {"events"}
+    assert source.starts == 1
 
 
 class MemorySampler:

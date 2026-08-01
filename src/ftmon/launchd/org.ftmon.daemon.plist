@@ -21,5 +21,14 @@
   <true/>
   <key>ProcessType</key>
   <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <!-- FTMON writes its rotating operational log to the resolved state dir.
+       This wrapper log preserves import/startup failures that happen before
+       the Python entry point can configure that file. -->
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/ftmon-daemon-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/ftmon-daemon-launchd.log</string>
 </dict>
 </plist>

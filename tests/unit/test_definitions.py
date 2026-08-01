@@ -442,6 +442,25 @@ def test_valid_fixtures_actually_load():
     load_text(VALID_EVENTS)
 
 
+def test_event_store_min_severity_is_validated_dm_09():
+    """[DM-09] The documented event store threshold is real validated schema."""
+    definition = load_text(
+        VALID_EVENTS.replace(
+            'source = "events"',
+            'source = "events"\n\n[source_options]\nstore_min_severity = "critical"',
+        )
+    )
+    assert definition.source_options == {"store_min_severity": "critical"}
+
+    errors = _errors_of(
+        VALID_EVENTS.replace(
+            'source = "events"',
+            'source = "events"\n\n[source_options]\nstore_min_severity = "loud"',
+        )
+    )
+    _assert_error(errors, code="invalid_value", path_prefix="source_options.store_min_severity")
+
+
 def _errors_of(text: str) -> list[dict]:
     with pytest.raises(ValidationError) as ei:
         load_text(text)

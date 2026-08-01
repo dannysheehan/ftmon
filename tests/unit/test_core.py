@@ -7,6 +7,13 @@ import sys
 from pathlib import Path
 
 from ftmon.clock import FakeClock
+from ftmon.daemon import (
+    _DAEMON_LOG,
+    _LOG_BACKUPS,
+    _LOG_MAX_BYTES,
+    _configure_daemon_log,
+    _daemon_message,
+)
 from ftmon.paths import atomic_write, get_paths
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "ftmon"
@@ -51,6 +58,26 @@ def test_atomic_write_modes_and_content(tmp_path):
     assert target.read_bytes() == b"replaced"
     leftovers = [f for f in target.parent.iterdir() if f.name.startswith(".x.toml.")]
     assert leftovers == []
+
+
+def test_daemon_log_is_private_rotating_and_captures_process_messages(tmp_path, capsys):
+    """[PM-06][SE-04] Daemon diagnostics survive outside the service wrapper."""
+    path = tmp_path / "state" / "daemon.log"
+    handler = _configure_daemon_log(path)
+    try:
+        _daemon_message("diagnostic marker")
+        handler.flush()
+        assert path.read_text().endswith("INFO diagnostic marker\n")
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert handler.maxBytes == _LOG_MAX_BYTES
+        assert handler.backupCount == _LOG_BACKUPS
+        assert "diagnostic marker" in capsys.readouterr().err
+        handler.doRollover()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.with_name("daemon.log.1").stat().st_mode) == 0o600
+    finally:
+        _DAEMON_LOG.removeHandler(handler)
+        handler.close()
 
 
 def test_fake_clock_divergence():

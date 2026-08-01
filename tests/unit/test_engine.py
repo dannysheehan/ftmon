@@ -342,7 +342,7 @@ def test_daemon_core_ticks_persist_and_hot_reload(tmp_path):
     (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
 
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     assert set(core.monitors) == {"leak"}
 
     scripted = ScriptedSampler()
@@ -391,7 +391,7 @@ def test_daemon_survives_database_locked_pm_10(tmp_path):
     (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
 
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     core.samplers["process"] = ScriptedSampler()
     core.samplers["process"].push(grower(0))
     core.conn.execute("PRAGMA busy_timeout = 50")
@@ -442,7 +442,9 @@ def test_daemon_rethrows_non_lock_operational_errors_pm_10(tmp_path, monkeypatch
     paths = get_paths(env)
     paths.ensure()
     (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
-    core = DaemonCore(paths=paths, clock=FakeClock(wall=1.0, mono=1.0))
+    core = DaemonCore(
+        paths=paths, clock=FakeClock(wall=1.0, mono=1.0), platform="linux"
+    )
     core.samplers["process"] = ScriptedSampler()
     core.samplers["process"].push(grower(0))
 
@@ -475,7 +477,7 @@ def test_sighup_reload_request_applies_next_tick_pm_11(tmp_path):
     (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
 
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     scripted = ScriptedSampler()
     for i in range(3):
         scripted.push(grower(i))
@@ -518,7 +520,7 @@ def test_daemon_skips_disabled_monitors_md_05(tmp_path):
     (paths.monitors_dir / "parked.toml").write_text(disabled)
 
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     assert set(core.monitors) == {"leak"}
     assert "parked" not in core.due.names()
 

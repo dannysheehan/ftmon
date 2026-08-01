@@ -53,7 +53,7 @@ def test_leak_to_notification_to_recovery(core_env):
     every step is in the DB (incident row, history, delivered outbox)."""
     paths = core_env
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
 
     sampler = ScriptedSampler()
     for i in range(8):
@@ -99,7 +99,7 @@ def test_ack_suppresses_renotify_and_restart_resumes_backoff(core_env):
     a restarted daemon rebuilds the open incident instead of re-firing."""
     paths = core_env
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     sampler = ScriptedSampler()
     for i in range(200):
         sampler.push(grower(i))
@@ -119,7 +119,7 @@ def test_ack_suppresses_renotify_and_restart_resumes_backoff(core_env):
     assert [n["kind"] for n in notifications(paths)] == ["open"]  # silence
 
     # restart: rebuilt core must not re-send the open notification (NO-04)
-    core2 = DaemonCore(paths=paths, clock=clock)
+    core2 = DaemonCore(paths=paths, clock=clock, platform="linux")
     core2.samplers["process"] = sampler
     tick_n(core2, clock, 3)
     assert [n["kind"] for n in notifications(paths)] == ["open"]

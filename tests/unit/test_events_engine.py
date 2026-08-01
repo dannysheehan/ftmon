@@ -23,6 +23,38 @@ from tests.unit.test_m2_integration import core_env, notifications, tick_n  # no
 T = 1_700_000_000.0
 
 
+class _OverflowSource:
+    decl = JournaldEventSource.decl
+    dropped = 0
+    depth = 0
+
+    def start(self, cursor):
+        self.started_with = cursor
+
+    def drain(self, now, max_items):
+        return [], None
+
+    def queue_depth(self):
+        return self.depth
+
+    def queue_capacity(self):
+        return 10_000
+
+    def alive(self):
+        return True
+
+    def stop(self):
+        pass
+
+
+class _EventWriter:
+    def __init__(self):
+        self.events = []
+
+    def add_event(self, event):
+        self.events.append(event)
+
+
 def jline(**kw) -> bytes:
     d = {"__CURSOR": "c1", "__REALTIME_TIMESTAMP": str(int(T * 1e6)),
          "PRIORITY": "3", "SYSLOG_IDENTIFIER": "kernel",
@@ -70,6 +102,18 @@ class TestParseLine:
 
 
 class TestQueueOverflow:
+    def test_journald_adjacent_run_uses_last_cursor_dm_18_dm_15(self):
+        """[DM-18][DM-15] Linux coalescing retains the run's final cursor."""
+        src = JournaldEventSource()
+        with src._lock:
+            src._offer_locked(parse_line(jline(__CURSOR="c1")))
+            src._offer_locked(parse_line(jline(__CURSOR="c2")))
+        records, cursor = src.drain(now=T, max_items=10)
+        assert cursor == "c2"
+        assert len(records) == 1
+        assert records[0].attrs["repeat_count"] == "2"
+        assert src.received == 2 and src.repeated == 1
+
     def test_oldest_dropped_and_counted(self):
         """[SA-08] bounded queue drops oldest; drops are counted."""
         src = JournaldEventSource()
@@ -84,6 +128,49 @@ class TestQueueOverflow:
         records, cursor = src.drain(now=T, max_items=10)
         assert [r.message for r in records] == ["m2", "m3", "m4"]
         assert cursor == "c4"
+
+    def test_overflow_episode_is_summarized_and_records_recovery(self):
+        """[SA-08] A sustained source overflow emits one start and one final
+        count rather than one self-event for every dropped record or tick."""
+        from ftmon.engine.events import EventEngine
+
+        source = _OverflowSource()
+        writer = _EventWriter()
+        engine = EventEngine(source, executor=object(), counter=lambda _name: None)
+        engine.start(None)
+
+        source.depth = source.queue_capacity()
+        source.dropped = 7
+        engine.tick([], T, 1.0, writer)
+        source.dropped = 19
+        engine.tick([], T + 5, 6.0, writer)
+        assert len(writer.events) == 1
+        assert writer.events[0].event_id == "event-overflow"
+        assert "dropped 7" in writer.events[0].message
+
+        source.depth = 0
+        engine.tick([], T + 10, 11.0, writer)
+        assert len(writer.events) == 2
+        assert writer.events[1].event_id == "event-overflow-clear"
+        assert "19 events dropped" in writer.events[1].message
+
+    def test_raw_event_rate_includes_coalesced_repeats(self):
+        """[DM-18] The rolling rate reports arrivals, not aggregate rows."""
+        from ftmon.engine.events import EventEngine
+
+        source = _OverflowSource()
+        source.received = 10
+        source.repeated = 8
+        writer = _EventWriter()
+        engine = EventEngine(source, executor=object(), counter=lambda _name: None)
+        engine.start(None)
+        engine.tick([], T, 10.0, writer)
+        source.received = 40
+        source.repeated = 35
+        engine.tick([], T + 30, 40.0, writer)
+        assert engine.received == 40
+        assert engine.repeated == 35
+        assert engine.event_rate_per_min == pytest.approx(60.0)
 
 
 @pytest.fixture
@@ -105,7 +192,7 @@ def events_env(core_env):  # noqa: F811 - core_env is the imported fixture
 
 def make_core(paths, source):
     clock = FakeClock(wall=T, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock, event_source=source)
+    core = DaemonCore(paths=paths, clock=clock, event_source=source, platform="linux")
     return core, clock
 
 

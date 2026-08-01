@@ -33,6 +33,7 @@ from typing import ClassVar
 
 from ftmon.model import EventRecord, SourceDecl
 from ftmon.sources.base import SOURCE_DECLS
+from ftmon.sources.repeats import merge_adjacent
 
 __all__ = ["WindowsEventSource", "parse_event_xml", "LEVEL_TO_SEVERITY"]
 
@@ -134,6 +135,8 @@ class WindowsEventSource:
         self._bookmarks: dict[str, str] = {}
         self.dropped = 0
         self.malformed = 0
+        self.received = 0
+        self.repeated = 0
 
     def start(self, cursor: str | None) -> None:
         import pywintypes
@@ -197,12 +200,19 @@ class WindowsEventSource:
                 if fields is None:
                     self.malformed += 1
                 else:
-                    if len(self._queue) == self._queue.maxlen:
-                        self.dropped += 1
-                    self._queue.append(fields)
+                    self._offer_locked(fields)
             return 0
 
         return callback
+
+    def _offer_locked(self, fields: dict) -> None:
+        self.received += 1
+        if self._queue and merge_adjacent(self._queue[-1], fields):
+            self.repeated += 1
+            return
+        if len(self._queue) == self._queue.maxlen:
+            self.dropped += 1
+        self._queue.append(fields)
 
     def drain(self, now: float, max_items: int) -> tuple[list[EventRecord], str | None]:
         out: list[EventRecord] = []
@@ -215,6 +225,9 @@ class WindowsEventSource:
     def queue_depth(self) -> int:
         with self._lock:
             return len(self._queue)
+
+    def queue_capacity(self) -> int:
+        return int(self._queue.maxlen or 0)
 
     def alive(self) -> bool:
         with self._lock:
