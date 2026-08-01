@@ -15,11 +15,21 @@ import pytest
 
 from ftmon.model import EventRecord
 from ftmon.sources.base import SOURCE_DECLS
+from ftmon.sources.repeats import occurrence_count
 from ftmon.sources.win_evtlog import (
     LEVEL_TO_SEVERITY,
     WindowsEventSource,
     parse_event_xml,
 )
+
+
+def _fields(**overrides) -> dict:
+    base = {
+        "ts": 1.0, "source": "eventlog", "provider": "p",
+        "event_id": "42", "severity": 2, "message": "same",
+    }
+    base.update(overrides)
+    return base
 
 # --- real captured samples (spikes/windows-support/NOTES.md-adjacent capture) ---
 
@@ -180,7 +190,11 @@ class TestParseEventXml:
 class TestWindowsEventSourceQueueMechanics:
     """Pure queue/cursor logic -- exercised without any live EvtSubscribe
     call, by driving the same lock-protected internals the real callback
-    uses (test_notify_desktop.py asserts on adapter internals the same way)."""
+    uses (test_notify_desktop.py asserts on adapter internals the same way).
+
+    DM-15's contract: a channel's bookmark evidence may commit into the
+    returned cursor only when drain() actually removes the queue entry
+    carrying it -- never on arrival in the callback."""
 
     def test_source_decl_matches_events_schema_pl_05(self):
         assert WindowsEventSource.decl is SOURCE_DECLS["events"]
@@ -191,30 +205,29 @@ class TestWindowsEventSourceQueueMechanics:
     def test_adjacent_run_is_coalesced_before_queue_admission_dm_18(self):
         """[DM-18] Windows uses the same origin-aware repeat contract."""
         src = WindowsEventSource()
-        fields = {
-            "ts": 1.0, "source": "eventlog", "provider": "p",
-            "event_id": "42", "severity": 2, "message": "same",
-        }
         with src._lock:
-            src._offer_locked(dict(fields))
-            src._offer_locked(dict(fields, ts=2.0))
-        records, _cursor = src.drain(now=42.0, max_items=10)
+            src._offer_locked("System", "bookmark-1", _fields())
+            src._offer_locked("System", "bookmark-2", _fields(ts=2.0))
+        records, cursor = src.drain(now=42.0, max_items=10)
         assert len(records) == 1
         assert records[0].attrs["repeat_count"] == "2"
         assert src.received == 2 and src.repeated == 1
+        assert json.loads(cursor) == {"System": "bookmark-2"}
 
     def test_drain_stamps_ingest_ts_and_serializes_composite_cursor(self):
-        """[DM-15] cursor is a per-channel bookmark map, not a single string."""
+        """[DM-15] cursor is a per-channel bookmark map, committed by drain."""
         src = WindowsEventSource()
         with src._lock:
             src._queue.append({
-                "ts": 1.0, "source": "eventlog", "provider": "p",
-                "event_id": None, "severity": 0, "message": "m",
+                "fields": _fields(event_id=None, message="m"),
+                "bookmarks": {"System": "<BookmarkList/>"},
             })
-            src._bookmarks["System"] = "<BookmarkList/>"
-            src._bookmarks["Application"] = "<BookmarkList/>"
+            src._queue.append({
+                "fields": _fields(event_id=None, message="n"),
+                "bookmarks": {"Application": "<BookmarkList/>"},
+            })
         records, cursor = src.drain(now=42.0, max_items=10)
-        assert len(records) == 1
+        assert len(records) == 2
         assert isinstance(records[0], EventRecord)
         assert records[0].ingest_ts == 42.0
         assert json.loads(cursor) == {
@@ -225,10 +238,10 @@ class TestWindowsEventSourceQueueMechanics:
         src = WindowsEventSource()
         with src._lock:
             for i in range(5):
-                src._queue.append({
-                    "ts": float(i), "source": "eventlog", "provider": "p",
-                    "event_id": None, "severity": 0, "message": str(i),
-                })
+                src._offer_locked(
+                    "System", f"bookmark-{i}",
+                    _fields(ts=float(i), event_id=None, message=str(i)),
+                )
         records, _ = src.drain(now=0.0, max_items=2)
         assert len(records) == 2
         assert src.queue_depth() == 3
@@ -246,19 +259,166 @@ class TestWindowsEventSourceQueueMechanics:
 
         with src._lock:
             for i in range(QUEUE_MAX):
-                src._queue.append({
-                    "ts": float(i), "source": "eventlog", "provider": "p",
-                    "event_id": None, "severity": 0, "message": "m",
-                })
-            # Mirrors the callback's overflow check: about to evict the oldest.
-            if len(src._queue) == src._queue.maxlen:
-                src.dropped += 1
-            src._queue.append({
-                "ts": 99.0, "source": "eventlog", "provider": "p",
-                "event_id": None, "severity": 0, "message": "overflow",
-            })
+                src._offer_locked(
+                    "System", f"bookmark-{i}",
+                    _fields(ts=float(i), event_id=None, message=f"m{i}"),
+                )
+            src._offer_locked(
+                "System", "overflow",
+                _fields(ts=99.0, event_id=None, message="overflow"),
+            )
         assert src.dropped == 1
         assert src.queue_depth() == QUEUE_MAX
+
+    # --- DM-15 checkpoint-correctness ---
+
+    def test_partial_drain_commits_only_the_drained_bookmark_dm_15(self):
+        """Three queued events in one channel, drain one: the cursor must
+        contain bookmark 1's evidence, not bookmark 3's -- the two
+        undrained events exist only in memory and must be replayable."""
+        src = WindowsEventSource()
+        with src._lock:
+            for i in (1, 2, 3):
+                src._offer_locked(
+                    "System", f"bookmark-{i}",
+                    _fields(ts=float(i), event_id=str(i), message=f"m{i}"),
+                )
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "bookmark-1"}
+        assert src.queue_depth() == 2
+
+    def test_drain_zero_does_not_advance_checkpoint_dm_15(self):
+        """drain(max_items=0) must not commit anything or fabricate a
+        cursor, and must not disturb an already-committed one."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "bookmark-1", _fields(event_id="1", message="m"))
+        records, cursor = src.drain(now=0.0, max_items=0)
+        assert records == []
+        assert cursor is None  # nothing has ever been drained/committed
+        assert src.queue_depth() == 1
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "bookmark-1"}
+
+        records, cursor2 = src.drain(now=0.0, max_items=0)
+        assert records == []
+        assert cursor2 == cursor  # unchanged, not re-derived or advanced
+
+    def test_partial_drains_across_multiple_channels_dm_15(self):
+        """Committing one channel's bookmark must not disturb another
+        channel's still-undrained position."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "sys-1", _fields(event_id="1", message="s1"))
+            src._offer_locked("Application", "app-1", _fields(event_id="2", message="a1"))
+            src._offer_locked("System", "sys-2", _fields(event_id="3", message="s2"))
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "sys-1"}  # Application untouched
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "sys-1", "Application": "app-1"}
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "sys-2", "Application": "app-1"}
+
+    def test_adjacent_duplicates_one_channel_latest_bookmark_dm_15(self):
+        """One EventRecord, correct repeat_count, and the bookmark committed
+        on drain is the *latest* of the coalesced run, not the first."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "bookmark-1", _fields())
+            src._offer_locked("System", "bookmark-2", _fields(ts=2.0))
+            src._offer_locked("System", "bookmark-3", _fields(ts=3.0))
+        assert src.queue_depth() == 1
+
+        records, cursor = src.drain(now=0.0, max_items=10)
+        assert len(records) == 1
+        assert records[0].attrs["repeat_count"] == "3"
+        assert json.loads(cursor) == {"System": "bookmark-3"}
+
+    def test_identical_events_two_channels_one_aggregate_both_bookmarks_dm_15(self):
+        """Identical canonical events arriving from different channels
+        coalesce into one aggregate that retains each represented channel's
+        own latest bookmark."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "sys-1", _fields())
+            src._offer_locked("Application", "app-1", _fields(ts=2.0))
+        assert src.queue_depth() == 1
+
+        records, cursor = src.drain(now=0.0, max_items=10)
+        assert len(records) == 1
+        assert records[0].attrs["repeat_count"] == "2"
+        assert json.loads(cursor) == {"System": "sys-1", "Application": "app-1"}
+
+    def test_malformed_entry_consumed_without_replay_loop_dm_15_sa_08(self):
+        """A malformed-but-consumed entry still occupies its queue slot so
+        drain() advances past it in order once it's actually drained -- it
+        must neither block nor be skipped ahead of an earlier, still
+        undrained, valid event."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "sys-1", _fields(event_id="1", message="valid-1"))
+            src._offer_locked("System", "sys-2", None)  # malformed: no fields
+            src._offer_locked("System", "sys-3", _fields(event_id="3", message="valid-3"))
+        assert src.queue_depth() == 3
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert [r.message for r in records] == ["valid-1"]
+        assert json.loads(cursor) == {"System": "sys-1"}  # not sys-2 or sys-3
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert records == []  # the malformed entry produces no EventRecord
+        assert json.loads(cursor) == {"System": "sys-2"}  # but its slot commits
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert [r.message for r in records] == ["valid-3"]
+        assert json.loads(cursor) == {"System": "sys-3"}
+
+    def test_overflow_dropped_entry_does_not_commit_its_bookmark_dm_15_sa_08(self):
+        """An overflow-evicted entry's bookmark is discarded, not committed
+        -- only a later accepted event for that channel may pass it, per
+        the intentional SA-08 loss policy."""
+        src = WindowsEventSource()
+        from ftmon.sources.win_evtlog import QUEUE_MAX
+
+        with src._lock:
+            for i in range(QUEUE_MAX):
+                src._offer_locked(
+                    "System", f"bookmark-{i}",
+                    _fields(ts=float(i), event_id=str(i), message="m"),
+                )
+            # bookmark-0's entry is about to be evicted by this append.
+            src._offer_locked(
+                "System", "bookmark-overflow",
+                _fields(ts=99.0, event_id="over", message="overflow"),
+            )
+        assert src.dropped == 1
+        assert src.queue_depth() == QUEUE_MAX
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert records[0].event_id == "1"  # bookmark-0 was dropped, never queued
+        assert json.loads(cursor) == {"System": "bookmark-1"}
+
+    def test_episode_occurrence_count_reflects_all_coalesced_events_dm_15(self):
+        """A merged aggregate's repeat_count is what engine occurrence
+        accounting (ftmon.engine.events._occurrence_count) reads, so an
+        episode counts every raw event coalesced into the one EventRecord,
+        not just one."""
+        src = WindowsEventSource()
+        with src._lock:
+            for i, bookmark in enumerate(("b1", "b2", "b3", "b4")):
+                src._offer_locked("System", bookmark, _fields(ts=float(i)))
+        records, _cursor = src.drain(now=0.0, max_items=10)
+        assert len(records) == 1
+        assert occurrence_count({"attrs": records[0].attrs}) == 4
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="win32evtlog is Windows-only")
@@ -294,3 +454,40 @@ class TestWindowsEventSourceLive:
             assert src.alive() is True  # still subscribed, just from now
         finally:
             src.stop()
+
+    def test_restart_resumes_from_partial_drain_cursor_dm_15(self):
+        """[DM-15] Crash/restart: the cursor produced by a *partial* drain
+        must be exactly what a fresh instance resumes from -- real
+        EvtCreateBookmark/EvtSubscribe accept it and the channel comes back
+        alive from that committed point, not from whatever the callback
+        last saw arrive."""
+        import win32evtlog
+
+        # EvtCreateBookmark(None) + EvtRender is the same round trip the
+        # callback performs per event; it's synchronous and needs no live
+        # event to produce valid bookmark XML.
+        real_bookmark_xml = win32evtlog.EvtRender(
+            win32evtlog.EvtCreateBookmark(None), win32evtlog.EvtRenderBookmark
+        )
+
+        src = WindowsEventSource(channels=("Application",))
+        with src._lock:
+            src._offer_locked(
+                "Application", real_bookmark_xml,
+                _fields(event_id="1", message="drained"),
+            )
+            src._offer_locked(
+                "Application", "still in flight, never drained",
+                _fields(ts=2.0, event_id="2", message="undrained"),
+            )
+        records, cursor = src.drain(now=0.0, max_items=1)  # partial: 1 of 2
+        assert len(records) == 1
+        assert json.loads(cursor) == {"Application": real_bookmark_xml}
+
+        resumed = WindowsEventSource(channels=("Application",))
+        try:
+            resumed.start(cursor)  # simulates the post-crash restart
+            assert resumed.malformed == 0  # the committed bookmark is well-formed
+            assert resumed.alive() is True
+        finally:
+            resumed.stop()

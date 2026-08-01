@@ -129,10 +129,19 @@ class WindowsEventSource:
         self._subs: list = []
         self._channel_ok: dict[str, bool] = {}
         # deque(maxlen=N) drops from the head on overflow -- SA-08's "oldest
-        # are dropped"; the lock also guards the bookmark dict and counters.
+        # are dropped"; the lock also guards the committed-bookmark dict and
+        # counters. Each queue entry is {"fields": dict | None, "bookmarks":
+        # {channel: bookmark_xml}} -- fields is None for a malformed record
+        # (still occupies a slot so drain() passes over it in order instead
+        # of replaying it forever), and "bookmarks" carries every channel's
+        # position represented by that entry (more than one after a
+        # cross-channel merge, DM-18).
         self._queue: collections.deque[dict] = collections.deque(maxlen=QUEUE_MAX)
         self._lock = threading.Lock()
-        self._bookmarks: dict[str, str] = {}
+        # DM-15: only drain() may move a channel's entry into _committed --
+        # never the callback -- so a crash never checkpoints past an event
+        # still sitting undrained in the queue.
+        self._committed: dict[str, str] = {}
         self.dropped = 0
         self.malformed = 0
         self.received = 0
@@ -191,35 +200,51 @@ class WindowsEventSource:
             # Bookmark inside the callback: the Event handle is only valid
             # for this call (spikes/windows-support/evtlog_spike.py's
             # hard-won finding -- bookmarking after the callback returns
-            # raises EvtUpdateBookmark/'invalid handle').
+            # raises EvtUpdateBookmark/'invalid handle'). This is evidence
+            # only, though -- DM-15 forbids committing it until drain()
+            # actually removes the entry it belongs to.
             bookmark = win32evtlog.EvtCreateBookmark(None)
             win32evtlog.EvtUpdateBookmark(bookmark, event)
             bookmark_xml = win32evtlog.EvtRender(bookmark, win32evtlog.EvtRenderBookmark)
             with self._lock:
-                self._bookmarks[channel] = bookmark_xml
-                if fields is None:
-                    self.malformed += 1
-                else:
-                    self._offer_locked(fields)
+                self._offer_locked(channel, bookmark_xml, fields)
             return 0
 
         return callback
 
-    def _offer_locked(self, fields: dict) -> None:
-        self.received += 1
-        if self._queue and merge_adjacent(self._queue[-1], fields):
-            self.repeated += 1
-            return
+    def _offer_locked(self, channel: str, bookmark_xml: str, fields: dict | None) -> None:
+        """Queue one channel/bookmark-evidence pair. A malformed record
+        (fields=None) still takes a slot so its bookmark can only commit
+        via drain(), in order with everything ahead of it -- never merged,
+        since a malformed record breaks the adjacency run."""
+        if fields is None:
+            self.malformed += 1
+        else:
+            self.received += 1
+            if self._queue:
+                top = self._queue[-1]
+                if top["fields"] is not None and merge_adjacent(top["fields"], fields):
+                    self.repeated += 1
+                    top["bookmarks"][channel] = bookmark_xml  # latest position for this channel
+                    return
         if len(self._queue) == self._queue.maxlen:
+            # SA-08: the evicted entry's bookmark evidence is discarded, not
+            # committed -- it may only be passed later, by a subsequent
+            # accepted event for the same channel advancing further.
             self.dropped += 1
-        self._queue.append(fields)
+        self._queue.append({"fields": fields, "bookmarks": {channel: bookmark_xml}})
 
     def drain(self, now: float, max_items: int) -> tuple[list[EventRecord], str | None]:
         out: list[EventRecord] = []
         with self._lock:
-            while self._queue and len(out) < max_items:
-                out.append(EventRecord(ingest_ts=now, **self._queue.popleft()))
-            cursor = json.dumps(self._bookmarks) if self._bookmarks else None
+            popped = 0
+            while self._queue and popped < max_items:
+                entry = self._queue.popleft()
+                popped += 1
+                self._committed.update(entry["bookmarks"])  # DM-15: commit only what's removed
+                if entry["fields"] is not None:
+                    out.append(EventRecord(ingest_ts=now, **entry["fields"]))
+            cursor = json.dumps(self._committed) if self._committed else None
         return out, cursor
 
     def queue_depth(self) -> int:
