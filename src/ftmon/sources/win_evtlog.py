@@ -153,6 +153,13 @@ class WindowsEventSource:
 
         self._subs = []
         self._channel_ok = {}
+        # New reader epoch: any undrained entries from a prior epoch on this
+        # same instance (e.g. a reconnect) belong to a subscription that no
+        # longer exists, and _committed is about to be reseeded from this
+        # cursor's own evidence -- neither may leak across the boundary.
+        with self._lock:
+            self._queue.clear()
+            self._committed = {}
 
         prior: dict[str, str] = {}
         if cursor:
@@ -173,6 +180,16 @@ class WindowsEventSource:
                 except pywintypes.error:
                     with self._lock:
                         self.malformed += 1  # stale/foreign bookmark; this channel starts fresh
+
+            if bookmark is not None:
+                # DM-15: seed the committed cursor with this channel's valid
+                # prior position *before* subscribing it -- EvtSubscribe may
+                # deliver on a callback thread the instant it's called, and
+                # a concurrent drain(max_items=0) must never see this
+                # channel missing from the composite cursor just because
+                # subscription hadn't gotten around to recording it yet.
+                with self._lock:
+                    self._committed[channel] = bookmark_xml
 
             flags = (
                 win32evtlog.EvtSubscribeStartAfterBookmark

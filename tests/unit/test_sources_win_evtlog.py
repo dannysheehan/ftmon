@@ -491,3 +491,138 @@ class TestWindowsEventSourceLive:
             assert resumed.alive() is True
         finally:
             resumed.stop()
+
+    def test_committed_seeded_from_prior_survives_partial_drain_of_sibling_channel_dm_15(self):
+        """[DM-15] Prior cursor {System: S10, Application: A10}; draining a
+        new Application event (A11) must return {System: S10,
+        Application: A11} -- System's valid prior position must not be
+        dropped just because only Application produced a new event this
+        epoch.
+
+        Only Application is a real EvtSubscribe here (proving start()
+        genuinely seeds _committed from a validated prior bookmark);
+        System's prior seed is injected directly to stand in for a second
+        validated channel without opening two simultaneous
+        EvtSubscribeStartAfterBookmark subscriptions on a degenerate empty
+        bookmark, which pywin32 was observed to hang tearing down together
+        -- a native-library rough edge orthogonal to this invariant, never
+        hit with real per-record bookmarks (see the Phase 4 native run)."""
+        import win32evtlog
+
+        real_bookmark_xml = win32evtlog.EvtRender(
+            win32evtlog.EvtCreateBookmark(None), win32evtlog.EvtRenderBookmark
+        )
+        prior = json.dumps({"Application": real_bookmark_xml})
+
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(prior)
+            assert src.malformed == 0
+            with src._lock:
+                assert src._committed == {"Application": real_bookmark_xml}
+                src._committed["System"] = "S10"  # stands in for a second validated channel
+                src._offer_locked(
+                    "Application", "A11", _fields(event_id="new", message="a11"),
+                )
+            records, cursor = src.drain(now=0.0, max_items=10)
+            assert len(records) == 1
+            assert json.loads(cursor) == {"System": "S10", "Application": "A11"}
+        finally:
+            src.stop()
+
+    def test_drain_zero_after_restart_returns_unchanged_prior_cursor_dm_15(self):
+        """[DM-15] drain(max_items=0) immediately after a successful
+        restart must return the prior composite cursor exactly -- nothing
+        has been drained yet, so nothing should appear to have changed.
+        Same single-real-subscription-plus-injected-sibling shape as above,
+        for the same native-teardown reason."""
+        import win32evtlog
+
+        real_bookmark_xml = win32evtlog.EvtRender(
+            win32evtlog.EvtCreateBookmark(None), win32evtlog.EvtRenderBookmark
+        )
+        prior = json.dumps({"Application": real_bookmark_xml})
+
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(prior)
+            with src._lock:
+                src._committed["System"] = "S10"
+            records, cursor = src.drain(now=0.0, max_items=0)
+            assert records == []
+            assert json.loads(cursor) == {"System": "S10", "Application": real_bookmark_xml}
+        finally:
+            src.stop()
+
+    def test_stale_channel_bookmark_omitted_without_dropping_sibling_dm_15(self):
+        """[DM-15] A stale/foreign bookmark for one channel is omitted (that
+        channel starts fresh) without discarding another channel's valid
+        prior bookmark.
+
+        Application carries the *stale* bookmark here (the real
+        EvtCreateBookmark call that must reject it), and the untouched
+        sibling is injected as "System" rather than really subscribed --
+        same single-real-subscription rationale as the two tests above:
+        two real System+Application subscriptions opened together were
+        observed to occasionally stall the whole suite on teardown."""
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(json.dumps({"Application": "not valid bookmark xml"}))
+            assert src.malformed == 1  # Application's stale bookmark, counted
+            with src._lock:
+                assert src._committed == {}  # omitted -- Application starts fresh
+                src._committed["System"] = "S10"  # stands in for a sibling's valid seed
+            records, cursor = src.drain(now=0.0, max_items=0)
+            assert records == []
+            assert json.loads(cursor) == {"System": "S10"}
+        finally:
+            src.stop()
+
+    def test_restart_clears_undrained_queue_from_prior_epoch_dm_15(self):
+        """[DM-15] Restarting the same instance (e.g. a reconnect) must
+        discard undrained entries from the old epoch before subscribing --
+        they belong to a subscription that no longer exists, and replaying
+        them against the new one would be a duplicate, not a recovery."""
+        src = WindowsEventSource(channels=("Application",))
+        with src._lock:
+            src._offer_locked(
+                "Application", "stale-1", _fields(event_id="stale", message="old-epoch"),
+            )
+        assert src.queue_depth() == 1
+
+        try:
+            src.start(None)
+            assert src.queue_depth() == 0
+        finally:
+            src.stop()
+
+    def test_callback_cannot_observe_unseeded_committed_cursor_dm_15(self):
+        """[DM-15] EvtSubscribe may start delivering on a callback thread
+        the instant it's called -- this channel's committed cursor must
+        already carry its valid prior bookmark *before* that call, not
+        after, or a concurrent drain(max_items=0) could momentarily see it
+        missing."""
+        import unittest.mock
+
+        import win32evtlog
+
+        real_bookmark_xml = win32evtlog.EvtRender(
+            win32evtlog.EvtCreateBookmark(None), win32evtlog.EvtRenderBookmark
+        )
+        prior = json.dumps({"Application": real_bookmark_xml})
+
+        src = WindowsEventSource(channels=("Application",))
+        observed: dict[str, dict] = {}
+        real_subscribe = win32evtlog.EvtSubscribe
+
+        def spy(channel, flags, **kwargs):
+            with src._lock:
+                observed[channel] = dict(src._committed)
+            return real_subscribe(channel, flags, **kwargs)
+
+        try:
+            with unittest.mock.patch("win32evtlog.EvtSubscribe", side_effect=spy):
+                src.start(prior)
+            assert observed["Application"] == {"Application": real_bookmark_xml}
+        finally:
+            src.stop()
