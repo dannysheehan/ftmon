@@ -218,7 +218,7 @@ Dependabot is a **proposal engine**, not an auto-merge bot.
 
 | Workflow | Trigger | Publishes? |
 | -------- | ------- | ---------- |
-| `ci.yml` | PR + push `main` | No — lint, reqindex, pytest, build smoke |
+| `ci.yml` | PR + push `main` | No — Linux 3.11/3.13 and Windows 3.12 lint, reqindex, pytest, build smoke |
 | `exchange.yml` | Path-filtered PR/`main` | Pages **only** on push to `main` |
 | `release.yml` | `v*` tags | PyPI + GitHub Release |
 | `codeql.yml` | PR + `main` + weekly | No — uploads Code Scanning alerts |
