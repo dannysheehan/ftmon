@@ -55,10 +55,22 @@ failures.
 | Checkpoint | Categories resolved | Native Windows result |
 |---|---|---|
 | Portable host/path/process fixtures | H, I, J | 56 failed, 732 passed, 2 skipped, 5 deselected |
-| Native private-permission fixtures and process execution | B, D | 26 failed, 761 passed, 3 skipped, 5 deselected |
+| Native private-permission fixtures and process execution | B, D, K; exposed one additional C assertion | 26 failed, 761 passed, 3 skipped, 5 deselected |
 | Portable controlled-clock transport and reload signaling | A, G | 14 failed, 773 passed, 3 skipped, 5 deselected |
 | Unelevated symlink-fixture isolation | C | 8 failed, 777 passed, 9 skipped, 5 deselected |
 | Optional inode-API fixtures | E | 4 failed, 781 passed, 9 skipped, 5 deselected |
+| Windows-safe durable demo replacement | F | 785 passed, 9 skipped, 5 deselected |
+
+The category labels above retain the original audit taxonomy, but remediation
+confirmed two corrections to its hypotheses. Category E was test-only: product
+code already omitted inode metrics when `os.statvfs` is absent, while four
+fixtures incorrectly required that attribute to exist before monkeypatching it.
+Category K was another Windows ACL-fixture failure, not a separate built-in
+check defect. Resolving D also allowed the combined web-demo test to reach a
+sixth privilege-dependent symlink assertion that the original five-item C list
+had masked. Category F was a product defect: the demo builder used a read-only
+handle for `fsync`, attempted POSIX directory `fsync`, and could not replace a
+prior read-only artifact on Windows.
 
 ## Methodology
 

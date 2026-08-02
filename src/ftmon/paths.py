@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import platform
 import signal
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -123,6 +124,41 @@ def terminate_external_process(process: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         os.killpg(process.pid, signal.SIGKILL)
         process.wait()
+
+
+def replace_with_readonly_file(source: Path, target: Path) -> None:
+    """Atomically install *source* and leave the destination read-only.
+
+    Windows refuses to replace an existing file carrying its read-only
+    attribute. Temporarily clearing that owner-controlled attribute preserves
+    the old contents until ``os.replace`` succeeds; it is restored if the
+    replacement fails. POSIX can replace a read-only destination directly.
+    """
+    restore_target = False
+    if os.name == "nt" and target.exists():
+        restore_target = not bool(target.stat().st_mode & stat.S_IWRITE)
+        if restore_target:
+            os.chmod(target, stat.S_IWRITE)
+    try:
+        os.replace(source, target)
+    except BaseException:
+        if restore_target:
+            os.chmod(target, 0o444)
+        raise
+    os.chmod(target, 0o444)
+
+
+def fsync_directory(path: Path) -> None:
+    """Persist directory metadata where the host exposes that operation."""
+    if os.name == "nt":
+        # Windows does not expose POSIX directory fsync through Python; the
+        # same-volume os.replace above remains atomic.
+        return
+    directory_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 def try_lock_exclusive(file) -> bool:
     """PM-02 single-instance lock, platform seam: True if this process now
