@@ -1,5 +1,6 @@
 """[TS-05] Tier-1 e2e harness: the real `ftmon daemon` binary as a
-subprocess, deterministic via ControlledClock over a loopback TCP socket.
+subprocess, deterministic via ControlledClock over a Unix socket on POSIX or
+strictly loopback TCP on Windows.
 
 Why a subprocess and not DaemonCore-in-process (which test_fixtures already
 covers): TS-05 exists to test what only a real process can — argv/env
@@ -16,34 +17,48 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-from ftmon.paths import get_paths
+from ftmon.paths import (
+    controlled_clock_endpoint,
+    current_platform,
+    get_paths,
+    open_controlled_clock_socket,
+)
 
 
 class DaemonHarness:
     def __init__(self, root: Path, monitor_defs: dict[str, str], fixtures: str):
         self.root = root
         self.fixtures = fixtures
-        # Reserve a native loopback endpoint before launching the daemon. TCP
-        # keeps the real-process harness portable without changing its wire
-        # protocol or reducing its coverage to an in-process fake.
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
-            reservation.bind(("127.0.0.1", 0))
-            self.clock_port = reservation.getsockname()[1]
+        self._sockdir: str | None = None
+        if current_platform() == "windows":
+            # Reserve loopback only; controlled mode is explicit test machinery
+            # and must never add a generally reachable listener (SE-01).
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                clock_env = {"FTMON_CLOCK_PORT": str(reservation.getsockname()[1])}
+        else:
+            # AF_UNIX paths are short and cleaned with the harness; pytest temp
+            # roots routinely exceed the platform socket-path limit.
+            self._sockdir = tempfile.mkdtemp(prefix="ftmon-e2e-")
+            clock_env = {"FTMON_CLOCK_SOCK": os.path.join(self._sockdir, "clock.sock")}
         self.env = {
             **os.environ,
             "FTMON_CONFIG_DIR": str(root / "cfg"),
             "FTMON_DATA_DIR": str(root / "data"),
             "FTMON_STATE_DIR": str(root / "state"),
             "FTMON_RUNTIME_DIR": str(root / "run"),
-            "FTMON_CLOCK_PORT": str(self.clock_port),
+            **clock_env,
         }
+        self._clock_endpoint = controlled_clock_endpoint(self.env)
         self.paths = get_paths(self.env)
         self.paths.ensure()
         for name, text in monitor_defs.items():
@@ -70,10 +85,10 @@ class DaemonHarness:
         deadline = time.monotonic() + 20.0
         while True:
             try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.connect(("127.0.0.1", self.clock_port))
+                s = open_controlled_clock_socket(self._clock_endpoint)
+                s.connect(self._clock_endpoint.address)
                 break
-            except ConnectionRefusedError:
+            except (FileNotFoundError, ConnectionRefusedError):
                 s.close()
                 assert self.proc and self.proc.poll() is None, (
                     f"daemon exited rc={self.proc.returncode}; log:\n"
@@ -160,3 +175,6 @@ class DaemonHarness:
         if self._sock is not None:
             self._sock.close()
             self._sock = None
+        if self._sockdir is not None:
+            shutil.rmtree(self._sockdir)
+            self._sockdir = None

@@ -1,7 +1,7 @@
 """Clock abstraction (TS-03). The ONLY module allowed to touch the time module.
 
 SystemClock: production. ControlledClock: tier-1 e2e determinism (TS-05) -
-a loopback TCP server the test harness drives with line-JSON commands:
+a test-only server using a Unix socket on POSIX or loopback TCP on Windows:
 
     {"op": "step", "s": 5}                  advance both clocks by s seconds
     {"op": "set", "wall": W, "mono": M}     absolute set (suspend simulation)
@@ -14,10 +14,11 @@ synchronous with tick completion.
 from __future__ import annotations
 
 import json
-import os
 import socket
 import time  # noqa: TID251  - permitted here only (TS-03)
 from typing import Protocol
+
+from ftmon.paths import controlled_clock_endpoint, open_controlled_clock_socket
 
 
 class Clock(Protocol):
@@ -69,13 +70,14 @@ class FakeClock:
 
 
 class ControlledClock:
-    """Loopback-socket-driven clock for the e2e harness (DESIGN section 5)."""
+    """Socket-driven clock for the e2e harness (DESIGN section 5)."""
 
-    def __init__(self, port: int | None = None):
-        listen_port = port or int(os.environ["FTMON_CLOCK_PORT"])
-        self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._srv.bind(("127.0.0.1", listen_port))
+    def __init__(self):
+        endpoint = controlled_clock_endpoint()
+        self._srv = open_controlled_clock_socket(endpoint)
+        if endpoint.cleanup_path is not None:
+            endpoint.cleanup_path.unlink(missing_ok=True)
+        self._srv.bind(endpoint.address)
         self._srv.listen(1)
         self._conn: socket.socket | None = None
         self._buf = b""

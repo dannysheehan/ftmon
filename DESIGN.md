@@ -431,7 +431,17 @@ class SmallWrites:
     def ack(self, incident_id, by, note) -> None    # PM-03 short txn
 ```
 
-`ControlledClock` (tests): listens on `$FTMON_CLOCK_SOCK` (unix socket, line-JSON `{"op":"step","s":5}` / `{"op":"set","wall":…,"mono":…}`); `sleep_until` blocks on the socket; the daemon replies `{"ok":true,"tick":N}` **after** completing the tick, so harness steps are synchronous (TS-05 determinism).
+`ControlledClock` is test-only and available only when the daemon is explicitly
+started with `--clock controlled`. On Linux/macOS it preserves the
+`$FTMON_CLOCK_SOCK` Unix socket; the harness creates a short temporary socket
+directory and removes it during teardown. Windows uses `$FTMON_CLOCK_PORT` and
+AF_INET bound strictly to `127.0.0.1`, with the harness reserving an ephemeral
+loopback port. Neither transport is opened in normal daemon mode, so PM-05 and
+SE-01's production listener boundary remains the loopback web UI alone. Both
+transports use the identical line-JSON `{"op":"step","s":5}` /
+`{"op":"set","wall":…,"mono":…}` protocol: `sleep_until` blocks on the
+endpoint and the daemon replies `{"ok":true,"tick":N}` **after** completing
+the tick, so harness steps remain synchronous (TS-05 determinism).
 
 ---
 

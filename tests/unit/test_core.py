@@ -1,9 +1,11 @@
 """[FS-01][PM-06][TS-03] paths, atomic writes, clocks, and layering lint."""
 
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, call
 
 from ftmon.clock import FakeClock
 from ftmon.daemon import (
@@ -13,14 +15,19 @@ from ftmon.daemon import (
     _configure_daemon_log,
     _daemon_message,
 )
-from ftmon.paths import atomic_write, get_paths
+from ftmon.paths import (
+    atomic_write,
+    controlled_clock_endpoint,
+    get_paths,
+    open_controlled_clock_socket,
+)
 from tests.platform_permissions import assert_private
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "ftmon"
 
 
-def test_paths_env_overrides(tmp_path):
-    """[FS-01] FTMON_* env vars override every root."""
+def test_paths_env_overrides(tmp_path, monkeypatch):
+    """[FS-01][PL-01][SE-01][TS-05] Paths and test transports use env seams."""
     env = {
         "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
         "FTMON_DATA_DIR": str(tmp_path / "data"),
@@ -33,6 +40,42 @@ def test_paths_env_overrides(tmp_path):
     assert p.db_file == tmp_path / "data" / "ftmon.db"
     p.ensure()
     assert_private(p.config_dir, 0o700)  # [SE-04]
+
+    sock_path = tmp_path / "clock.sock"
+    posix = controlled_clock_endpoint(
+        {"FTMON_CLOCK_SOCK": str(sock_path)}, platform_name="darwin"
+    )
+    windows = controlled_clock_endpoint(
+        {"FTMON_CLOCK_PORT": "43123"}, platform_name="windows"
+    )
+
+    assert (posix.transport, posix.address, posix.cleanup_path) == (
+        "unix",
+        str(sock_path),
+        sock_path,
+    )
+    assert (windows.transport, windows.address, windows.cleanup_path) == (
+        "tcp",
+        ("127.0.0.1", 43123),
+        None,
+    )
+
+    unix_socket = MagicMock()
+    tcp_socket = MagicMock()
+    socket_factory = MagicMock(side_effect=[unix_socket, tcp_socket])
+    monkeypatch.setattr("ftmon.paths.socket.AF_UNIX", 1, raising=False)
+    monkeypatch.setattr("ftmon.paths.socket.socket", socket_factory)
+
+    assert open_controlled_clock_socket(posix) is unix_socket
+    assert open_controlled_clock_socket(windows) is tcp_socket
+    assert socket_factory.call_args_list == [
+        call(1, socket.SOCK_STREAM),
+        call(socket.AF_INET, socket.SOCK_STREAM),
+    ]
+    unix_socket.setsockopt.assert_not_called()
+    tcp_socket.setsockopt.assert_called_once_with(
+        socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
+    )
 
 
 def test_check_registry_path_override(tmp_path):

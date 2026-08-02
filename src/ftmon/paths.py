@@ -14,10 +14,11 @@ from __future__ import annotations
 import os
 import platform
 import signal
+import socket
 import stat
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,41 @@ def current_platform() -> str:
     """`platform.system()` ("Linux"/"Windows"/"Darwin") lowercased to exactly
     the `monitor.platforms` vocabulary (PL-02, schema.PLATFORMS)."""
     return platform.system().lower()
+
+
+@dataclass(frozen=True)
+class ControlledClockEndpoint:
+    """Platform-selected TS-05 endpoint consumed by clock and test harness."""
+
+    transport: str
+    address: str | tuple[str, int]
+    cleanup_path: Path | None
+
+
+def controlled_clock_endpoint(
+    env: Mapping[str, str] | None = None,
+    *,
+    platform_name: str | None = None,
+) -> ControlledClockEndpoint:
+    """Resolve the test-only clock transport behind the PL-01 paths seam."""
+    selected_env = os.environ if env is None else env
+    host = current_platform() if platform_name is None else platform_name
+    if host == "windows":
+        port = int(selected_env["FTMON_CLOCK_PORT"])
+        if not 1 <= port <= 65535:
+            raise ValueError("FTMON_CLOCK_PORT must be between 1 and 65535")
+        return ControlledClockEndpoint("tcp", ("127.0.0.1", port), None)
+    path = Path(selected_env["FTMON_CLOCK_SOCK"])
+    return ControlledClockEndpoint("unix", str(path), path)
+
+
+def open_controlled_clock_socket(endpoint: ControlledClockEndpoint) -> socket.socket:
+    """Create a socket for a platform-selected controlled-clock endpoint."""
+    if endpoint.transport == "tcp":
+        result = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return result
+    return socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 
 
 _WIN_LOCK_BYTE = 1 << 20  # see try_lock_exclusive: kept clear of the pid text

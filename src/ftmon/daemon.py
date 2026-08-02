@@ -797,7 +797,7 @@ def run(args) -> int:
 
     clock: Clock
     if getattr(args, "clock", "system") == "controlled":
-        clock = ControlledClock()  # test harness drives via FTMON_CLOCK_PORT (TS-05)
+        clock = ControlledClock()  # platform endpoint selected by paths (TS-05/PL-01)
     else:
         clock = SystemClock()
 
