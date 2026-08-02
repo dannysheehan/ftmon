@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import time
 
 from ftmon.checks import CheckRunner, CheckSpec
@@ -87,13 +88,14 @@ def test_runner_uses_fixed_environment_cwd_and_no_shell(tmp_path):
     """[EC-02] Runner supplies only its fixed environment and invokes argv directly."""
     state = tmp_path / "state"
     state.mkdir()
-    check = _executable(
-        tmp_path,
-        "printf '{\"schema\":1,\"state\":0,\"message\":\"%s:%s:%s\",\"metrics\":{}}' "
-        '"${FTMON_CHECK_ALIAS}" "${UNSAFE-unset}" "$PWD"\n',
+    code = (
+        "import json, os; "
+        "print(json.dumps({'schema': 1, 'state': 0, "
+        "'message': f\"{os.environ['FTMON_CHECK_ALIAS']}:\" "
+        "+ os.environ.get('UNSAFE', 'unset') + ':' + os.getcwd(), 'metrics': {}}))"
     )
     os.environ["UNSAFE"] = "inherited"
-    spec = CheckSpec("safe", (str(check), "$(touch nope)"), "ftmon-json", 2)
+    spec = CheckSpec("safe", (sys.executable, "-c", code, "$(touch nope)"), "ftmon-json", 2)
 
     result = CheckRunner(state).run(spec, float("inf"))
 

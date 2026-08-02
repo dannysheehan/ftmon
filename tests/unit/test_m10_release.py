@@ -15,7 +15,7 @@ from ftmon.engine.incidents import GroupConfig, RungConfig, RungEval, step_group
 from ftmon.engine.rings import RingStore
 from ftmon.expr.tribool import TriBool
 from ftmon.model import EventRecord, GroupState, IncidentCore, RungState, SourceDecl
-from ftmon.paths import get_paths
+from ftmon.paths import current_platform, get_paths
 from ftmon.store.db import connect, migrate
 from ftmon.store.retention import Retention
 
@@ -251,13 +251,14 @@ def test_daemon_skips_monitor_not_declared_for_running_platform_pl_01(tmp_path):
         "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
     })
     paths.ensure()
-    (paths.monitors_dir / "winonly.toml").write_text("""
+    excluded_platform = "linux" if current_platform() == "windows" else "windows"
+    (paths.monitors_dir / "foreign.toml").write_text(f"""
 schema = 1
 [monitor]
-name = "winonly"
-description = "windows-only probe"
+name = "foreign"
+description = "probe for a different platform"
 version = 1
-platforms = ["windows"]
+platforms = ["{excluded_platform}"]
 interval = "60s"
 source = "system"
 [[rule]]
@@ -267,7 +268,7 @@ severity = "warning"
 message = "busy"
 """)
     core = DaemonCore(paths=paths, clock=FakeClock(wall=1_700_000_000.0, mono=1000.0))
-    assert "winonly" not in core.monitors
+    assert "foreign" not in core.monitors
 
 
 def test_event_id_is_optional_string_pl_02():

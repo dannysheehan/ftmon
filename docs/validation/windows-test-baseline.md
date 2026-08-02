@@ -45,6 +45,17 @@ Confirmed identical (same 68 test IDs, byte-for-byte) across three
 independent full-suite runs in separate sessions on this commit lineage
 before this audit, and reproduced again for this report.
 
+## Issue #79 remediation progress
+
+The original 68-failure baseline above remains the audit reference. The
+`fix/windows-test-portability` branch records each native-Windows reduction
+here so resolved categories stay distinguishable from hidden or renamed
+failures.
+
+| Checkpoint | Categories resolved | Native Windows result |
+|---|---|---|
+| Portable host/path/process fixtures | H, I, J | 56 failed, 732 passed, 2 skipped, 5 deselected |
+
 ## Methodology
 
 Every failing test's exception type and message were extracted from a
