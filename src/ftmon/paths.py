@@ -11,6 +11,7 @@ but not one of the four named seams.
 
 from __future__ import annotations
 
+import errno
 import os
 import platform
 import signal
@@ -138,6 +139,36 @@ def set_private_permissions(path: Path, mode: int) -> None:
         security_information,
         descriptor,
     )
+
+
+def open_readonly_nofollow(path: Path) -> int:
+    """Open a read-only file handle without traversing a final symlink."""
+    if os.name != "nt":
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        return os.open(path, flags)
+
+    import msvcrt
+
+    import win32con
+    import win32file
+
+    handle = win32file.CreateFile(
+        str(path),
+        win32con.GENERIC_READ,
+        win32con.FILE_SHARE_READ,
+        None,
+        win32con.OPEN_EXISTING,
+        win32con.FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    try:
+        attributes = win32file.GetFileInformationByHandle(handle)[0]
+        if attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise OSError(errno.ELOOP, "refusing to follow a reparse point", str(path))
+        return msvcrt.open_osfhandle(handle.Detach(), os.O_RDONLY)
+    except BaseException:
+        handle.Close()
+        raise
 
 
 def external_process_group_options() -> dict[str, object]:

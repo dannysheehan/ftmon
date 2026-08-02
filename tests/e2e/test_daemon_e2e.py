@@ -17,6 +17,7 @@ from starlette.testclient import TestClient
 from ftmon.clock import FakeClock
 from ftmon.web.app import create_app
 from tests.e2e.harness import DaemonHarness
+from tests.platform_permissions import make_private
 from tests.unit.test_engine import LEAKDEF
 
 
@@ -215,6 +216,7 @@ def test_action_runs_through_real_daemon_once_e2e_ac_02(tmp_path):
         script.write_text(
             "@echo off\n>action-ran <nul set /p =%FTMON_INCIDENT_ID%\nexit /b 0\n"
         )
+        make_private(script, 0o700)
     else:
         script = h.paths.actions_dir / "capture"
         script.write_text("#!/bin/sh\nprintf '%s' \"$FTMON_INCIDENT_ID\" > action-ran\n")

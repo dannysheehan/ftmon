@@ -13,6 +13,7 @@ from ftmon.engine.actions import ActionRunner
 from ftmon.engine.effects import PendingAction
 from ftmon.paths import get_paths
 from ftmon.store.db import connect, migrate
+from tests.platform_permissions import make_private
 
 ACTION_DEF = """
 schema = 1
@@ -71,6 +72,7 @@ def test_action_runner_minimal_env_output_and_rate_limit_ac_02(tmp_path):
             "<nul set /p =%FTMON_MONITOR%^|%FTMON_ENTITY%^|%home_value%\n"
             ">&2 echo err\n"
         )
+        make_private(script, 0o700)
         action_name = "capture.cmd"
     else:
         script = paths.actions_dir / "capture"

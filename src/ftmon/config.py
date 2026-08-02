@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from ftmon.checks.trust import accessible_beyond_owner, owned_by_self
+from ftmon.paths import open_readonly_nofollow
 
 __all__ = [
     "AppConfig", "ChannelConfig", "QuietHours", "SecretRef", "SecretValue",
@@ -81,9 +82,8 @@ class SecretRef:
 
     @staticmethod
     def _read_file(path: Path) -> str:
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(path, flags)
+            fd = open_readonly_nofollow(path)
         except OSError as exc:
             raise ValueError(f"secret credential file cannot be opened safely: {path}") from exc
         try:
