@@ -55,6 +55,7 @@ failures.
 | Checkpoint | Categories resolved | Native Windows result |
 |---|---|---|
 | Portable host/path/process fixtures | H, I, J | 56 failed, 732 passed, 2 skipped, 5 deselected |
+| Native private-permission fixtures and process execution | B, D | 26 failed, 761 passed, 3 skipped, 5 deselected |
 
 ## Methodology
 

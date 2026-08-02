@@ -1,7 +1,6 @@
 """[FS-01][PM-06][TS-03] paths, atomic writes, clocks, and layering lint."""
 
 import os
-import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +14,7 @@ from ftmon.daemon import (
     _daemon_message,
 )
 from ftmon.paths import atomic_write, get_paths
+from tests.platform_permissions import assert_private
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "ftmon"
 
@@ -32,8 +32,7 @@ def test_paths_env_overrides(tmp_path):
     assert p.check_registry_file == tmp_path / "cfg" / "checks.toml"
     assert p.db_file == tmp_path / "data" / "ftmon.db"
     p.ensure()
-    mode = stat.S_IMODE(os.stat(p.config_dir).st_mode)
-    assert mode == 0o700  # [SE-04]
+    assert_private(p.config_dir, 0o700)  # [SE-04]
 
 
 def test_check_registry_path_override(tmp_path):
@@ -53,7 +52,7 @@ def test_atomic_write_modes_and_content(tmp_path):
     target = tmp_path / "monitors" / "x.toml"
     atomic_write(target, b"hello")
     assert target.read_bytes() == b"hello"
-    assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
+    assert_private(target, 0o600)
     atomic_write(target, b"replaced")
     assert target.read_bytes() == b"replaced"
     leftovers = [f for f in target.parent.iterdir() if f.name.startswith(".x.toml.")]
@@ -68,13 +67,13 @@ def test_daemon_log_is_private_rotating_and_captures_process_messages(tmp_path, 
         _daemon_message("diagnostic marker")
         handler.flush()
         assert path.read_text().endswith("INFO diagnostic marker\n")
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert_private(path, 0o600)
         assert handler.maxBytes == _LOG_MAX_BYTES
         assert handler.backupCount == _LOG_BACKUPS
         assert "diagnostic marker" in capsys.readouterr().err
         handler.doRollover()
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
-        assert stat.S_IMODE(path.with_name("daemon.log.1").stat().st_mode) == 0o600
+        assert_private(path, 0o600)
+        assert_private(path.with_name("daemon.log.1"), 0o600)
     finally:
         _DAEMON_LOG.removeHandler(handler)
         handler.close()

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import os
 import platform
+import signal
+import subprocess
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,6 +38,87 @@ def current_platform() -> str:
 
 
 _WIN_LOCK_BYTE = 1 << 20  # see try_lock_exclusive: kept clear of the pid text
+
+
+def set_private_permissions(path: Path, mode: int) -> None:
+    """Apply PM-06/SE-04 private permissions using the host's real model.
+
+    Windows ``chmod`` only toggles the read-only attribute, so relying on it
+    leaves files and directories with whatever broad DACL they inherited.
+    A protected owner/SYSTEM/Administrators DACL is the Windows equivalent of
+    the 0600/0700 contract and requires no elevation for user-owned paths.
+    """
+    if os.name != "nt":
+        os.chmod(path, mode)
+        return
+
+    import ntsecuritycon
+    import win32security
+
+    owner_sid = win32security.GetFileSecurity(
+        str(path), win32security.OWNER_SECURITY_INFORMATION
+    ).GetSecurityDescriptorOwner()
+    trusted_sids = (
+        owner_sid,
+        win32security.CreateWellKnownSid(win32security.WinLocalSystemSid),
+        win32security.CreateWellKnownSid(win32security.WinBuiltinAdministratorsSid),
+    )
+    inheritance = 0
+    if path.is_dir():
+        inheritance = (
+            win32security.OBJECT_INHERIT_ACE | win32security.CONTAINER_INHERIT_ACE
+        )
+    dacl = win32security.ACL()
+    for sid in trusted_sids:
+        dacl.AddAccessAllowedAceEx(
+            win32security.ACL_REVISION,
+            inheritance,
+            ntsecuritycon.FILE_ALL_ACCESS,
+            sid,
+        )
+    descriptor = win32security.SECURITY_DESCRIPTOR()
+    descriptor.SetSecurityDescriptorDacl(1, dacl, 0)
+    win32security.SetFileSecurity(
+        str(path),
+        win32security.DACL_SECURITY_INFORMATION
+        | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        descriptor,
+    )
+
+
+def external_process_group_options() -> dict[str, object]:
+    """Return host-specific ``Popen`` options for a separately killable tree."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def terminate_external_process(process: subprocess.Popen) -> None:
+    """Stop a timed-out external process and its descendants (EC-02)."""
+    if os.name == "nt":
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        subprocess.run(
+            [
+                str(system_root / "System32" / "taskkill.exe"),
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        process.wait()
+        return
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=0.25)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
 
 def try_lock_exclusive(file) -> bool:
     """PM-02 single-instance lock, platform seam: True if this process now
@@ -149,6 +232,7 @@ class Paths:
             self.runtime_dir,
         ):
             d.mkdir(mode=0o700, parents=True, exist_ok=True)
+            set_private_permissions(d, 0o700)
 
 
 def get_paths(env: dict[str, str] | None = None) -> Paths:
@@ -181,6 +265,7 @@ def get_paths(env: dict[str, str] | None = None) -> Paths:
 def atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
     """PM-06(a/b): tmp file in same dir + fsync + rename; 0600 by default."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    set_private_permissions(path.parent, 0o700)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
         if hasattr(os, "fchmod"):  # POSIX only; Windows has no bit mode to set
@@ -189,6 +274,7 @@ def atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        set_private_permissions(Path(tmp), mode)
         os.replace(tmp, path)
     except BaseException:
         try:

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
 import ftmon
 from ftmon.cli import main
+from tests.platform_permissions import assert_private, make_broadly_writable, make_private
 
 
 def setup_env(tmp_path, monkeypatch):
@@ -59,7 +61,7 @@ class TestInit:
         assert (cfg_dir / "config.toml").exists()
         registry = cfg_dir / "checks.toml"
         assert registry.read_text().endswith("[check]\n")
-        assert registry.stat().st_mode & 0o777 == 0o600
+        assert_private(registry, 0o600)
 
         # Check content has the right sections
         content = (cfg_dir / "config.toml").read_text()
@@ -745,17 +747,17 @@ class TestPathsCommand:
 class TestCheckTrust:
     def test_trusted_executable_cl_08(self, tmp_path, capsys):
         """[CL-08] a private executable owned by the invoking uid passes."""
-        exe = tmp_path / "ok.sh"
+        exe = tmp_path / ("ok.exe" if os.name == "nt" else "ok.sh")
         exe.write_text("#!/bin/sh\nexit 0\n")
-        exe.chmod(0o700)
+        make_private(exe, 0o700)
         assert main(["check", "trust", str(exe)]) == 0
         assert "trusted:" in capsys.readouterr().out
 
     def test_reports_every_failed_condition_cl_08(self, tmp_path, capsys):
         """[CL-08] all failing conditions print, not just the first."""
-        exe = tmp_path / "bad.sh"
+        exe = tmp_path / "bad"
         exe.write_text("#!/bin/sh\nexit 0\n")
-        exe.chmod(0o666)  # group/other-writable and not executable
+        make_broadly_writable(exe, 0o666)  # broadly writable and not executable
         assert main(["check", "trust", str(exe)]) == 1
         err = capsys.readouterr().err
         assert "group_or_other_writable" in err
@@ -763,10 +765,10 @@ class TestCheckTrust:
 
     def test_symlink_rejected_cl_08(self, tmp_path, capsys):
         """[CL-08] a symlink fails even when its target would pass."""
-        real = tmp_path / "real.sh"
+        real = tmp_path / ("real.exe" if os.name == "nt" else "real.sh")
         real.write_text("#!/bin/sh\nexit 0\n")
-        real.chmod(0o700)
-        link = tmp_path / "link.sh"
+        make_private(real, 0o700)
+        link = tmp_path / real.name.replace("real", "link")
         link.symlink_to(real)
         assert main(["check", "trust", str(link)]) == 1
         assert "symlink" in capsys.readouterr().err

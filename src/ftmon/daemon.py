@@ -14,7 +14,6 @@ milestone plan, not oversight.
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import sys
 from dataclasses import dataclass, field
@@ -40,7 +39,7 @@ from ftmon.engine.scheduler import DueTable, Scheduler
 from ftmon.model import EventRecord, GroupState, IncidentCore, RungState
 from ftmon.notify import FileNotifier, NtfyNotifier, SmtpNotifier, WebhookNotifier
 from ftmon.notify.base import DeliveryError, Notifier
-from ftmon.paths import Paths, current_platform, get_paths
+from ftmon.paths import Paths, current_platform, get_paths, set_private_permissions
 from ftmon.selfmon import SelfSampler, SelfStats
 from ftmon.sources.base import EventSource
 from ftmon.sources.disk import DiskSampler
@@ -66,13 +65,14 @@ IncidentKey = tuple[str, str, str]  # (monitor, entity_id, group)
 class _PrivateRotatingFileHandler(RotatingFileHandler):
     def _open(self):
         stream = super()._open()
-        os.chmod(self.baseFilename, 0o600)
+        set_private_permissions(Path(self.baseFilename), 0o600)
         return stream
 
 
 def _configure_daemon_log(path: Path) -> RotatingFileHandler:
     """Write the PM-06 daemon log independently of a service wrapper's stderr."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    set_private_permissions(path.parent, 0o700)
     for existing in tuple(_DAEMON_LOG.handlers):
         _DAEMON_LOG.removeHandler(existing)
         existing.close()

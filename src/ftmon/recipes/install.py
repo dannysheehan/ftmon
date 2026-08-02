@@ -20,7 +20,7 @@ import tomli_w
 from ftmon.checks.registry import RegistryError
 from ftmon.checks.registry import load as load_check_registry
 from ftmon.definitions import manage
-from ftmon.paths import Paths, atomic_write
+from ftmon.paths import Paths, atomic_write, set_private_permissions
 from ftmon.recipes.catalogue import load_manifest, resolve_recipe_path
 
 _REGISTRY_HEADER = (
@@ -68,14 +68,17 @@ def _commit_registry(paths: Paths, payload: bytes) -> None:
     """Validate merged authority on a scratch file, then replace the live registry."""
     target = paths.check_registry_file
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    set_private_permissions(target.parent, 0o700)
     fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.")
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as stream:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
         tmp_path = Path(tmp)
+        set_private_permissions(tmp_path, 0o600)
         try:
             load_check_registry(tmp_path, paths=paths)
         except RegistryError as exc:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +14,7 @@ from ftmon.cli import main
 from ftmon.demo import build
 from ftmon.store.db import connect, migrate
 from ftmon.web.demo_app import DEMO_SCENARIO_NAME, DEMO_SCENARIO_VERSION, create_demo_app
+from tests.platform_permissions import make_broadly_writable, make_private
 
 
 def _demo_db(tmp_path: Path) -> Path:
@@ -42,7 +42,7 @@ def _demo_db(tmp_path: Path) -> Path:
     conn.commit()
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     conn.close()
-    os.chmod(path, 0o600)
+    make_private(path, 0o600)
     return path
 
 
@@ -206,7 +206,7 @@ def test_demo_rejects_unmarked_unsafe_and_symlink_databases_ui_15(tmp_path):
         create_demo_app(unmarked, "demo.ftmon.org")
 
     unsafe = _demo_db(tmp_path / "unsafe")
-    os.chmod(unsafe, 0o620)
+    make_broadly_writable(unsafe, 0o620)
     with pytest.raises(ValueError, match="group/world writable"):
         create_demo_app(unsafe, "demo.ftmon.org")
 

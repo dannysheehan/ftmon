@@ -3,20 +3,13 @@
 from __future__ import annotations
 
 import os
-import stat
 import sys
 import time
 
 from ftmon.checks import CheckRunner, CheckSpec
 from ftmon.checks.jsoncheck import parse as parse_json
 from ftmon.checks.nagios import parse as parse_nagios
-
-
-def _executable(tmp_path, body: str):
-    path = tmp_path / "check"
-    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    return path
+from tests.platform_permissions import make_broadly_writable, make_private
 
 
 def test_nagios_state_message_perfdata_and_duplicate_labels():
@@ -108,24 +101,32 @@ def test_runner_rejects_untrusted_executable_and_caps_output(tmp_path):
     """[EC-02] Last-moment trust checks and stdout bounds fail closed."""
     state = tmp_path / "state"
     state.mkdir()
-    check = _executable(tmp_path, "head -c 70000 /dev/zero\n")
     runner = CheckRunner(state)
-    spec = CheckSpec("large", (str(check),), "nagios", 2)
+    spec = CheckSpec(
+        "large", (sys.executable, "-c", "import sys; sys.stdout.write('x' * 70000)"),
+        "nagios", 2,
+    )
 
     assert runner.run(spec, float("inf")).failure == "output_limit"
-    check.chmod(0o777)
-    assert runner.run(spec, float("inf")).failure == "executable"
+    untrusted = tmp_path / ("untrusted.exe" if os.name == "nt" else "untrusted")
+    untrusted.write_text("x")
+    make_private(untrusted, 0o700)
+    make_broadly_writable(untrusted, 0o777)
+    assert runner.run(
+        CheckSpec("untrusted", (str(untrusted),), "nagios", 2), float("inf")
+    ).failure == "executable"
 
 
 def test_runner_times_out_complete_check(tmp_path):
     """[EC-02] Deadline expiry returns unknown without leaving the leader alive."""
     state = tmp_path / "state"
     state.mkdir()
-    check = _executable(tmp_path, "sleep 10\n")
     started = time.monotonic()
 
     result = CheckRunner(state).run(
-        CheckSpec("slow", (str(check),), "nagios", 0.05), float("inf")
+        CheckSpec("slow", (sys.executable, "-c", "import time; time.sleep(10)"),
+                  "nagios", 0.05),
+        float("inf"),
     )
 
     assert result.failure == "timeout"

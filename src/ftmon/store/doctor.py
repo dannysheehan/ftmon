@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from pathlib import Path
+
+from ftmon.paths import set_private_permissions
 
 
 def inspect(conn: sqlite3.Connection, *, now: float, deep: bool = False) -> dict:
@@ -50,6 +51,7 @@ def backup(conn: sqlite3.Connection, destination: Path) -> None:
     """Create a consistent live snapshot using SQLite's backup API (VC-03)."""
     destination = destination.expanduser().resolve()
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    set_private_permissions(destination.parent, 0o700)
     if destination.exists():
         raise FileExistsError(f"backup destination already exists: {destination}")
     try:
@@ -61,7 +63,7 @@ def backup(conn: sqlite3.Connection, destination: Path) -> None:
                 raise sqlite3.DatabaseError(f"backup integrity check: {result}")
         finally:
             target.close()
-        os.chmod(destination, 0o600)
+        set_private_permissions(destination, 0o600)
     except BaseException:
         destination.unlink(missing_ok=True)
         raise
