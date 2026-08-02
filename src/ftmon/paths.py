@@ -149,21 +149,20 @@ def open_readonly_nofollow(path: Path) -> int:
 
     import msvcrt
 
-    import win32con
     import win32file
 
     handle = win32file.CreateFile(
         str(path),
-        win32con.GENERIC_READ,
-        win32con.FILE_SHARE_READ,
+        win32file.GENERIC_READ,
+        win32file.FILE_SHARE_READ,
         None,
-        win32con.OPEN_EXISTING,
-        win32con.FILE_FLAG_OPEN_REPARSE_POINT,
+        win32file.OPEN_EXISTING,
+        win32file.FILE_FLAG_OPEN_REPARSE_POINT,
         None,
     )
     try:
         attributes = win32file.GetFileInformationByHandle(handle)[0]
-        if attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT:
+        if attributes & win32file.FILE_ATTRIBUTE_REPARSE_POINT:
             raise OSError(errno.ELOOP, "refusing to follow a reparse point", str(path))
         return msvcrt.open_osfhandle(handle.Detach(), os.O_RDONLY)
     except BaseException:
