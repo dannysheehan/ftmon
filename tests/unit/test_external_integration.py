@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+from pathlib import Path
 
 from ftmon.clock import FakeClock
 from ftmon.daemon import DaemonCore
 from ftmon.paths import get_paths
 from tests.platform_permissions import make_private, toml_path
+
+_PYTHON = str(Path(sys.executable).resolve())
 
 EXTERNAL_DEF = """
 schema = 1
@@ -77,7 +80,7 @@ def test_registered_json_metric_reaches_history_derived_rule_and_trend(tmp_path)
         "'metrics': {'size': {'value': n, 'uom': 'B'}}}))\n"
     )
     paths.check_registry_file.write_text(
-        f'[check.growing_value]\nargv=["{toml_path(sys.executable)}", '
+        f'[check.growing_value]\nargv=["{toml_path(_PYTHON)}", '
         f'"{toml_path(check)}"]\n'
         'protocol="ftmon-json"\ntimeout="2s"\n'
     )

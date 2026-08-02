@@ -5,11 +5,14 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 
 from ftmon.checks import CheckRunner, CheckSpec
 from ftmon.checks.jsoncheck import parse as parse_json
 from ftmon.checks.nagios import parse as parse_nagios
 from tests.platform_permissions import make_broadly_writable, make_private
+
+_PYTHON = str(Path(sys.executable).resolve())
 
 
 def test_nagios_state_message_perfdata_and_duplicate_labels():
@@ -88,7 +91,7 @@ def test_runner_uses_fixed_environment_cwd_and_no_shell(tmp_path):
         "+ os.environ.get('UNSAFE', 'unset') + ':' + os.getcwd(), 'metrics': {}}))"
     )
     os.environ["UNSAFE"] = "inherited"
-    spec = CheckSpec("safe", (sys.executable, "-c", code, "$(touch nope)"), "ftmon-json", 2)
+    spec = CheckSpec("safe", (_PYTHON, "-c", code, "$(touch nope)"), "ftmon-json", 2)
 
     result = CheckRunner(state).run(spec, float("inf"))
 
@@ -103,7 +106,7 @@ def test_runner_rejects_untrusted_executable_and_caps_output(tmp_path):
     state.mkdir()
     runner = CheckRunner(state)
     spec = CheckSpec(
-        "large", (sys.executable, "-c", "import sys; sys.stdout.write('x' * 70000)"),
+        "large", (_PYTHON, "-c", "import sys; sys.stdout.write('x' * 70000)"),
         "nagios", 2,
     )
 
@@ -124,7 +127,7 @@ def test_runner_times_out_complete_check(tmp_path):
     started = time.monotonic()
 
     result = CheckRunner(state).run(
-        CheckSpec("slow", (sys.executable, "-c", "import time; time.sleep(10)"),
+        CheckSpec("slow", (_PYTHON, "-c", "import time; time.sleep(10)"),
                   "nagios", 0.05),
         float("inf"),
     )
