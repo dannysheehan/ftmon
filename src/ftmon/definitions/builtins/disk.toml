@@ -12,7 +12,7 @@ name = "disk"
 description = "Disk space thresholds, inode thresholds, and filling-rate detection"
 version = 4
 enabled = true
-platforms = ["linux", "windows"]
+platforms = ["linux"]
 interval = "60s"
 source = "disk"
 

@@ -55,6 +55,58 @@ class TestVersion:
 class TestInit:
     """[CL-01][FS-02] ftmon init subcommand."""
 
+    @pytest.fixture(autouse=True)
+    def _stable_linux_profile_aliases(self, monkeypatch):
+        """Keep generic-profile assertions independent of the test host."""
+        monkeypatch.setattr("ftmon.paths.current_platform", lambda: "linux")
+
+    @pytest.mark.parametrize(
+        ("host", "requested", "expected"),
+        [
+            ("windows", None, "windesktop"),
+            ("windows", "desktop", "windesktop"),
+            ("windows", "server", "winserver"),
+            ("darwin", None, "macdesktop"),
+            ("darwin", "desktop", "macdesktop"),
+            ("darwin", "server", "macserver"),
+            ("linux", None, "desktop"),
+            ("linux", "server", "server"),
+        ],
+    )
+    def test_generic_profiles_resolve_to_host_calibration_pm_08(
+        self, host, requested, expected
+    ):
+        """[PM-08][PL-01] Generic init aliases never install another OS's tree."""
+        from ftmon.cli import _resolve_init_profile
+
+        assert _resolve_init_profile(requested, host) == expected
+
+    def test_windows_default_init_installs_windows_tree_pm_08(
+        self, tmp_path, monkeypatch
+    ):
+        """[PM-08][PL-01] No-profile Windows init is useful and calibrated."""
+        setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr("ftmon.paths.current_platform", lambda: "windows")
+        assert main(["init"]) == 0
+        content = (tmp_path / "cfg" / "config.toml").read_text()
+        assert "Generated for the windesktop profile" in content
+        hog = (tmp_path / "cfg" / "monitors" / "hog.toml").read_text()
+        assert 'platforms = ["windows"]' in hog
+        assert "System Idle Process" in hog
+
+    def test_windows_server_alias_installs_windows_tree_pm_08(
+        self, tmp_path, monkeypatch
+    ):
+        """[PM-08][PL-01] Generic server maps to calibrated winserver."""
+        setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr("ftmon.paths.current_platform", lambda: "windows")
+        assert main(["init", "--profile", "server"]) == 0
+        content = (tmp_path / "cfg" / "config.toml").read_text()
+        assert "Generated for the winserver profile" in content
+        selfmon = (tmp_path / "cfg" / "monitors" / "self.toml").read_text()
+        assert "cpu_budget_pct = { value = 30" in selfmon
+        assert "stall_s = { value = 5400" in selfmon
+
     def test_init_creates_dirs_and_config(self, tmp_path, monkeypatch, capsys):
         """[FS-02] init creates all directories (0700) and default config."""
         setup_env(tmp_path, monkeypatch)

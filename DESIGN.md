@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.21**. Companion to `SPEC.md` v0.36 — every design element
+Status: **DRAFT v0.22**. Companion to `SPEC.md` v0.37 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -252,16 +252,19 @@ owned by the service account and not group/world-readable, and has surrounding
 ASCII whitespace stripped. Environment and file forms are mutually exclusive.
 Literal `token`, `password`, or webhook `url` keys are rejected rather than
 deprecated, because silently accepting them would defeat SE-05. The generated
-desktop and windesktop profiles write desktop enabled; server and winserver
-write it disabled. `cli.py::_PROFILE_CALIBRATED_DIRS` maps profile name to
-calibrated-tree subdirectory: `desktop` → `profile/desktop` (real
+desktop variants write desktop enabled; server variants write it disabled.
+Before that scaffold is written, generic `desktop`/`server` aliases resolve to
+`windesktop`/`winserver` on Windows and `macdesktop`/`macserver` on Darwin;
+omitting the option is the generic desktop case.
+`cli.py::_PROFILE_CALIBRATED_DIRS` then maps profile name to calibrated-tree
+subdirectory: Linux `desktop` → `profile/desktop` (real
 GNOME host-tuning data, `docs/tuning-desktop-xps15.md`); `windesktop` and
 `winserver` both → `profile/windows`, one shared tree since the fixes it
 carries are OS-semantic (dead rules removed because the metrics they key on
 can never exist on Windows), not a desktop-vs-server tuning distinction —
-there is no Windows tuning data to justify two separate trees. Any profile
-not in that map (`server`, and anything else) falls through to the
-normative uncalibrated `design/builtins` set. Profile effects are visible
+there is no Windows tuning data to justify two separate trees. The remaining
+Linux `server` profile falls through to the normative, Linux-only uncalibrated
+`design/builtins` set. Profile effects are visible
 text in the generated file and disappear as a runtime concept after
 initialization.
 
@@ -310,7 +313,8 @@ process token's user SID (`OpenProcessToken` + `GetTokenInformation`,
 writability checks walk the file's DACL (`GetSecurityDescriptorDacl`/
 `GetAce`) and fail if any `ACCESS_ALLOWED` entry grants a write-capable (or,
 for the stricter secrets check, any) right to a trustee outside that same
-owner/SYSTEM/Administrators set. An unreadable ACL fails closed. The
+owner/SYSTEM/Administrators set. An unreadable, absent, or NULL DACL fails
+closed; Windows grants everyone full access when no DACL restricts it. The
 Linux-only `masked_system_executable` escape hatch (NoNewPrivileges masking
 distro plugin ownership to an overflow uid) has no Windows counterpart —
 it is a narrow systemd sandboxing workaround, not a general rule.
@@ -911,6 +915,15 @@ adapters in ignored/personal locations, never separately committed skills.
 ## 11. Event pipeline (SA-03/08, DM-07..10, DM-15/20)
 
 `journald.py`: spawns `journalctl -f -o json --output-fields=MESSAGE,PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,__CURSOR [--after-cursor=C]`. Reader thread appends raw lines to deque. `drain()` (main thread): parse JSON (malformed → count, skip), normalize → `EventRecord` (severity map: PRIORITY 0–2→critical, 3→error, 4→warning, 5→notice, 6–7→info; provider = `_SYSTEMD_UNIT` else `SYSLOG_IDENTIFIER`), return last `__CURSOR`. Cursor is persisted in the tick's write txn (DM-15). Storm counter per (source, provider) sliding minute (DM-10); store-filter per amended DM-09; matching against loaded event rules uses the same compiled `when` expressions with the event-field NameEnv. Reader death → `alive()` false → scheduler restarts with backoff (SA-03).
+
+`win_evtlog.py` keeps one subscription and bookmark per configured channel.
+On first use of a channel absent from the durable composite cursor, a reverse
+filtered query snapshots its tail and seeds that bookmark before subscription;
+an empty result seeds an internal oldest-record marker and subscribes from the
+oldest record. This preserves first-run “now” behavior for populated logs while
+making the first event in an empty log replayable after a sibling-only partial
+drain. Callback bookmarks remain queue evidence only; `drain()` advances each
+channel independently as represented entries are removed (DM-15/DM-19).
 
 All three platform adapters call the same adjacent-repeat reducer before queue
 admission. It compares the complete canonical origin/message signature and

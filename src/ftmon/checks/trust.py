@@ -111,7 +111,10 @@ def _win_grants_beyond_owner(path: Path, mask_filter: int | None) -> bool:
     trusted = _win_root_equivalent_sids() | {owner}
     dacl = sd.GetSecurityDescriptorDacl()
     if dacl is None:
-        return False  # no DACL: no explicit grants beyond implicit owner access
+        # A missing or NULL DACL grants full access to everyone; it is the
+        # opposite of an empty DACL. Treat it as broadly accessible for both
+        # executable and credential-file trust decisions.
+        return True
     for i in range(dacl.GetAceCount()):
         (ace_type, _flags), mask, sid = dacl.GetAce(i)
         if ace_type != win32security.ACCESS_ALLOWED_ACE_TYPE:

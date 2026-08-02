@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import Mock, call, patch
 
 from ftmon.checks import CheckRunner, CheckSpec
 from ftmon.checks.jsoncheck import parse as parse_json
@@ -13,6 +15,24 @@ from ftmon.checks.nagios import parse as parse_nagios
 from tests.platform_permissions import make_broadly_writable, make_private
 
 _PYTHON = str(Path(sys.executable).resolve())
+
+
+def test_windows_termination_falls_back_without_blocking_tick():
+    """[EC-02] A failed taskkill and stubborn child use only bounded waits."""
+    from ftmon.paths import _terminate_windows_process
+
+    process = Mock(pid=1234)
+    process.wait.side_effect = [
+        subprocess.TimeoutExpired("child", 0.25),
+        subprocess.TimeoutExpired("child", 0.25),
+    ]
+    with patch("ftmon.paths.subprocess.run", side_effect=OSError("taskkill failed")) as run:
+        _terminate_windows_process(process)
+
+    run.assert_called_once()
+    assert run.call_args.kwargs["timeout"] == 1.0
+    assert process.wait.call_args_list == [call(timeout=0.25), call(timeout=0.25)]
+    process.kill.assert_called_once_with()
 
 
 def test_nagios_state_message_perfdata_and_duplicate_labels():

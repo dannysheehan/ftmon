@@ -1,6 +1,8 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.36** — v0.36 integrates Windows Event Log channel
+Status: **DRAFT v0.37** — v0.37 makes generic init profiles select the
+current host's calibrated monitor tree and closes Windows multi-channel
+checkpoint gaps at first subscription. v0.36 integrates Windows Event Log channel
 selection and per-channel subscribe-time filtering configurability (MD-13,
 DM-19, SA-10) from feature/windows-support into this lineage: a
 `source = "events"` monitor's `[source_options]` can now declare `channels`
@@ -206,7 +208,10 @@ support policy and packaging must be resolved before macOS is advertised.
 - **PM-08** `ftmon init --profile desktop|server|windesktop|winserver|macdesktop|macserver`
   writes
   explicit initial settings; the profile is scaffolding, not a permanent
-  hidden behavior switch. `desktop` enables the file and desktop channels,
+  hidden behavior switch. The generic `desktop` and `server` names MUST
+  resolve to the current host's calibrated platform variant on Windows and
+  macOS; omitting `--profile` selects the host's desktop variant. On Linux,
+  `desktop` enables the file and desktop channels,
   installing GNOME-calibrated monitor definitions (real host-tuning data,
   `docs/tuning-desktop-xps15.md`). `server` enables the file channel only,
   disables desktop delivery, and documents remote-channel setup, installing
@@ -311,7 +316,11 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 - **DM-10** Event ingestion MUST be rate-defended: per (source, provider), more than 100 stored events/min collapses into a single `event_storm` self-event with a count, until the rate drops. (A log-spamming app must not fill the DB.)
 - **DM-15** Each `EventSource` persists a source-specific **checkpoint** in the
   DB after every drained batch. Journald stores its cursor string and Windows
-  stores `EvtBookmark` XML. macOS unified log has no persistent bookmark: its
+  stores a composite of per-channel `EvtBookmark` XML. Before subscribing to
+  any Windows channel absent from that composite, the source MUST persist a
+  restart-safe initial boundary at the filtered channel tail; an empty channel
+  MUST retain an explicit oldest-record boundary until its first event drains.
+  macOS unified log has no persistent bookmark: its
   checkpoint is a wall-time high-water mark plus a bounded set of recent event
   identities. First run ever starts at "now" (no historical backfill). On
   daemon restart the reader resumes from the checkpoint and replays events
@@ -1309,6 +1318,17 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.37 (2026-08-02)** — resolves PR #80's cross-platform review blockers.
+Generic `desktop`/`server` initialization now selects the Windows or macOS
+calibrated tree on those hosts, while the generic builtin tree is Linux-only
+(PM-08/PL-01). Windows Event Log startup snapshots a filtered per-channel tail
+bookmark, or an explicit oldest-record boundary for an empty channel, before
+subscription; partial drains can therefore never omit an undrained sibling or
+newly added channel from the durable composite checkpoint (DM-15/DM-19).
+Windows NULL/absent DACLs fail closed at every shared trust caller, matching
+their real world-accessible semantics (EC-01/SE-04/SE-07), and external-check
+termination remains bounded when `taskkill` fails (EC-02).
 
 **v0.36 (2026-08-01)** — integrates Windows Event Log channel selection and
 per-channel subscribe-time filtering (MD-13, DM-19, SA-10) from

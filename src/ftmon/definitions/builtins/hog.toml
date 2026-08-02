@@ -6,7 +6,7 @@ name = "hog"
 description = "Detects processes with sustained high CPU use"
 version = 2
 enabled = true
-platforms = ["linux", "windows"]
+platforms = ["linux"]
 interval = "60s"
 source = "process"
 

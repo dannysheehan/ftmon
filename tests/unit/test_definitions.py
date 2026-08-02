@@ -54,6 +54,15 @@ def test_design_builtins_mirror_package_builtins_md_07():
         ), f"{design_path.name} diverges from package builtin"
 
 
+def test_generic_builtins_are_linux_only_pl_01():
+    """[PL-01][PM-08] Other hosts use their calibrated profile trees."""
+    import tomllib
+
+    for definition in DESIGN_BUILTINS_DIR.glob("*.toml"):
+        parsed = tomllib.loads(definition.read_text(encoding="utf-8"))
+        assert parsed["monitor"]["platforms"] == ["linux"], definition.name
+
+
 DESIGN_DESKTOP_DIR = Path(__file__).resolve().parents[2] / "design" / "profile" / "desktop"
 PACKAGE_DESKTOP_DIR = (
     Path(__file__).resolve().parents[2] / "src" / "ftmon" / "definitions" / "profile" / "desktop"

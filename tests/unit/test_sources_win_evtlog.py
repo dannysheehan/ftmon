@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -423,6 +424,100 @@ class TestWindowsEventSourceQueueMechanics:
         assert occurrence_count({"attrs": records[0].attrs}) == 4
 
 
+class TestWindowsEventSourceInitialCheckpoint:
+    """Deterministic cold-restart checks with a tiny Win32 API fixture."""
+
+    @staticmethod
+    def _api(monkeypatch, events):
+        class FakeWinError(Exception):
+            pass
+
+        subscriptions = []
+
+        def create_bookmark(xml):
+            if xml is not None and not xml.startswith("bookmark:"):
+                raise FakeWinError(13, "invalid bookmark")
+            return {"xml": xml}
+
+        def update_bookmark(bookmark, event):
+            bookmark["xml"] = event
+
+        def render(handle, flag):
+            assert flag == 4
+            return handle["xml"]
+
+        def subscribe(channel, flags, **kwargs):
+            subscriptions.append((channel, flags, kwargs.get("Bookmark")))
+            return object()
+
+        api = SimpleNamespace(
+            EvtQueryChannelPath=1,
+            EvtQueryReverseDirection=2,
+            EvtSubscribeStartAfterBookmark=10,
+            EvtSubscribeStartAtOldestRecord=11,
+            EvtSubscribeActionError=0,
+            EvtSubscribeActionDeliver=1,
+            EvtRenderBookmark=4,
+            EvtQuery=lambda channel, _flags, _query: channel,
+            EvtNext=lambda channel, _count, _timeout: events.get(channel, [])[-1:],
+            EvtCreateBookmark=create_bookmark,
+            EvtUpdateBookmark=update_bookmark,
+            EvtRender=render,
+            EvtSubscribe=subscribe,
+        )
+        monkeypatch.setitem(sys.modules, "win32evtlog", api)
+        monkeypatch.setitem(sys.modules, "pywintypes", SimpleNamespace(error=FakeWinError))
+        return api, subscriptions
+
+    def test_empty_sibling_restarts_at_oldest_after_partial_drain_dm_15(self, monkeypatch):
+        """[DM-15] An empty channel gets a durable replay boundary, so its
+        first undrained event cannot disappear when another channel drains."""
+        api, subscriptions = self._api(
+            monkeypatch, {"System": ["bookmark:S0"], "Application": []}
+        )
+        src = WindowsEventSource()
+        src.start(None)
+        _records, initial = src.drain(now=0.0, max_items=0)
+        assert json.loads(initial) == {
+            "System": "bookmark:S0",
+            "Application": "ftmon:oldest",
+        }
+
+        with src._lock:
+            src._offer_locked("System", "bookmark:S1", _fields(message="system"))
+            src._offer_locked("Application", "bookmark:A1", _fields(message="application"))
+        _records, partial = src.drain(now=0.0, max_items=1)
+        assert json.loads(partial) == {
+            "System": "bookmark:S1",
+            "Application": "ftmon:oldest",
+        }
+
+        subscriptions.clear()
+        resumed = WindowsEventSource()
+        resumed.start(partial)
+        app = next(item for item in subscriptions if item[0] == "Application")
+        assert app[1] == api.EvtSubscribeStartAtOldestRecord
+        assert app[2] is None
+
+    def test_new_nonempty_channel_snapshots_tail_before_subscribe_dm_15(self, monkeypatch):
+        """[DM-15][DM-19] A newly configured channel absent from an older
+        composite cursor starts after a persisted tail, never from future."""
+        api, subscriptions = self._api(
+            monkeypatch,
+            {"System": ["bookmark:S10"], "Application": ["bookmark:A20"]},
+        )
+        src = WindowsEventSource()
+        src.start(json.dumps({"System": "bookmark:S10"}))
+        _records, cursor = src.drain(now=0.0, max_items=0)
+        assert json.loads(cursor) == {
+            "System": "bookmark:S10",
+            "Application": "bookmark:A20",
+        }
+        app = next(item for item in subscriptions if item[0] == "Application")
+        assert app[1] == api.EvtSubscribeStartAfterBookmark
+        assert app[2]["xml"] == "bookmark:A20"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="win32evtlog is Windows-only")
 class TestWindowsEventSourceLive:
     """Fast, deterministic checks against the real Win32 Event Log API (no
@@ -557,9 +652,8 @@ class TestWindowsEventSourceLive:
             src.stop()
 
     def test_stale_channel_bookmark_omitted_without_dropping_sibling_dm_15(self):
-        """[DM-15] A stale/foreign bookmark for one channel is omitted (that
-        channel starts fresh) without discarding another channel's valid
-        prior bookmark.
+        """[DM-15] A stale/foreign bookmark is replaced by a fresh tail
+        boundary without discarding another channel's valid prior bookmark.
 
         Application carries the *stale* bookmark here (the real
         EvtCreateBookmark call that must reject it), and the untouched
@@ -572,11 +666,13 @@ class TestWindowsEventSourceLive:
             src.start(json.dumps({"Application": "not valid bookmark xml"}))
             assert src.malformed == 1  # Application's stale bookmark, counted
             with src._lock:
-                assert src._committed == {}  # omitted -- Application starts fresh
+                assert set(src._committed) == {"Application"}
                 src._committed["System"] = "S10"  # stands in for a sibling's valid seed
             records, cursor = src.drain(now=0.0, max_items=0)
             assert records == []
-            assert json.loads(cursor) == {"System": "S10"}
+            committed = json.loads(cursor)
+            assert committed["System"] == "S10"
+            assert committed["Application"]
         finally:
             src.stop()
 

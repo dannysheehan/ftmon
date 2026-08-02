@@ -57,7 +57,7 @@ ftmon check
 
 For development, use `uv sync` followed by `uv run ftmon ...`. `ftmon init`
 creates private directories, installs eight built-in monitor definitions (the
-`desktop` profile uses calibrated thresholds documented in
+Linux `desktop` profile uses calibrated thresholds documented in
 [docs/tuning-desktop-xps15.md](tuning-desktop-xps15.md)), and writes explicit
 desktop notification settings. Extra monitors from `extra-monitors/` are
 installed separately with `ftmon recipe install` and never ship inside the
@@ -68,6 +68,11 @@ private `checks.toml` registry for external checks. Profiles only scaffold a
 new `config.toml`—they do not
 become a hidden runtime mode. Running init again preserves existing settings;
 `--force` replaces built-in definitions only (PM-08).
+
+The generic `desktop` and `server` names automatically select the calibrated
+monitor tree for the current operating system. On Windows they resolve to
+`windesktop` and `winserver`; on macOS they resolve to `macdesktop` and
+`macserver`. The explicit platform names remain available for automation.
 
 On macOS choose `macdesktop` (file audit plus best-effort Notification Center
 delivery) or `macserver` (file audit only). Desktop notifications appear under

@@ -70,6 +70,22 @@ def _everyone_sid():
     return win32security.CreateWellKnownSid(win32security.WinWorldSid)
 
 
+def _null_dacl_file(tmp_path: Path, name: str) -> Path:
+    """A user-owned file whose NULL DACL makes it accessible to everyone."""
+    path = tmp_path / name
+    path.write_text("x")
+    set_private_permissions(path, 0o600)
+    sd = win32security.SECURITY_DESCRIPTOR()
+    sd.SetSecurityDescriptorDacl(1, None, 0)
+    win32security.SetFileSecurity(
+        str(path),
+        win32security.DACL_SECURITY_INFORMATION
+        | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        sd,
+    )
+    return path
+
+
 class TestOwnershipAndWritability:
     def test_clean_file_is_trusted_and_not_broadly_accessible(self, tmp_path):
         path = _protected_file(tmp_path, "clean.exe")
@@ -107,6 +123,18 @@ class TestOwnershipAndWritability:
         )
         failures = trust_failures(str(path))
         assert any(f.startswith("group_or_other_writable:") for f in failures)
+
+    def test_null_dacl_fails_closed_for_checks_and_secrets(self, tmp_path):
+        """[EC-01][SE-04][SE-07] NULL means full access, not no access."""
+        path = _null_dacl_file(tmp_path, "null_dacl.exe")
+        info = os.stat(path)
+        assert owned_by_self(path, info) is True
+        assert writable_beyond_owner(path, info) is True
+        assert accessible_beyond_owner(path, info) is True
+        assert any(
+            failure.startswith("group_or_other_writable:")
+            for failure in trust_failures(str(path))
+        )
 
     def test_real_system_file_is_not_a_trusted_owner(self):
         """cmd.exe is owned by TrustedInstaller on a stock install -- neither

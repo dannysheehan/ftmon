@@ -165,11 +165,11 @@ verification:
 
 - NULL-DACL handling in `_win_grants_beyond_owner` treating `None` as "no
   grants" (pywin32 collapses "DACL absent" and "DACL present but NULL" to
-  the same return) — ruled out (3/10): reaching that state requires
-  `WRITE_DAC` on the file or write access to its parent directory, both of
-  which the surrounding checks (`writable_beyond_owner`'s own ACE walk,
-  `registry.py`'s parent-directory validation) already independently catch
-  first.
+  the same return) — the original review ruled this out, but PR #80 review
+  correctly identified the missed create-time case and the absence of a
+  parent-directory check for every trust caller. Windows treats a missing or
+  NULL DACL as granting everyone full access, so the implementation now fails
+  closed and native fixture coverage preserves that boundary.
 - Missing `MapGenericMask` before filtering ACE masks, theoretically
   letting a raw unmapped `GENERIC_ALL`/`GENERIC_WRITE` ACE evade the write
   check — ruled out (2/10): real DACL-authoring tools (`icacls`, PowerShell
@@ -179,7 +179,8 @@ verification:
   the claimed access either (the reviewer's exploit mechanics were
   backwards).
 
-**Verdict: clear to ship.** No findings met the exploitability bar. Full
+**Original verdict superseded by PR #80 review.** The NULL-DACL finding met
+the exploitability bar and was fixed before merge. Full
 transcript lives in this conversation's history, not duplicated here —
 this entry is the pointer for whoever cuts the next release to confirm the
 condition was met, per DO-09 (review artifacts are maintainer-facing

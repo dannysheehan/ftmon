@@ -181,7 +181,20 @@ def external_process_group_options() -> dict[str, object]:
 def terminate_external_process(process: subprocess.Popen) -> None:
     """Stop a timed-out external process and its descendants (EC-02)."""
     if os.name == "nt":
-        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        _terminate_windows_process(process)
+        return
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=0.25)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+
+
+def _terminate_windows_process(process: subprocess.Popen) -> None:
+    """Best-effort tree termination without letting a stuck child stall a tick."""
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    try:
         subprocess.run(
             [
                 str(system_root / "System32" / "taskkill.exe"),
@@ -194,16 +207,25 @@ def terminate_external_process(process: subprocess.Popen) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=1.0,
         )
-        process.wait()
+    except (OSError, subprocess.TimeoutExpired):
+        # taskkill is an optimization for descendants. Popen.kill remains
+        # the bounded fallback for the direct child if taskkill is absent,
+        # denied, or itself stalls.
+        pass
+    try:
+        process.wait(timeout=0.25)
         return
-    os.killpg(process.pid, signal.SIGTERM)
+    except subprocess.TimeoutExpired:
+        process.kill()
     try:
         process.wait(timeout=0.25)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
+        # Nothing stronger is available through Popen; return control to the
+        # daemon rather than turning an external-check timeout into a stall.
+        pass
 
 
 def replace_with_readonly_file(source: Path, target: Path) -> None:

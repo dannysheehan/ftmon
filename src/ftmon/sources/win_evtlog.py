@@ -52,6 +52,7 @@ class ChannelSpec:
 QUEUE_MAX = 10_000  # SA-08, same bound as JournaldEventSource
 _MSG_MAX = 2048  # DM-13: event messages truncate at 2 KB
 _DEFAULT_CHANNELS = ("System", "Application")
+_OLDEST_BOOKMARK = "ftmon:oldest"  # empty-channel baseline; not Win32 bookmark XML
 
 _NS = "{http://schemas.microsoft.com/win/2004/08/events/event}"
 
@@ -214,14 +215,32 @@ class WindowsEventSource:
             channel = spec.path
             bookmark = None
             bookmark_xml = prior.get(channel)
-            if bookmark_xml:
+            start_at_oldest = bookmark_xml == _OLDEST_BOOKMARK
+            if bookmark_xml and not start_at_oldest:
                 try:
                     bookmark = win32evtlog.EvtCreateBookmark(bookmark_xml)
                 except pywintypes.error:
                     with self._lock:
                         self.malformed += 1  # stale/foreign bookmark; this channel starts fresh
+                    bookmark_xml = None
 
-            if bookmark is not None:
+            # A channel absent from the composite cursor cannot safely use
+            # EvtSubscribeToFutureEvents: if a sibling is drained and this
+            # channel's first event remains queued at crash time, the absent
+            # key would restart after that event and lose it. Snapshot the
+            # filtered channel tail and use it as the initial committed
+            # boundary. An empty channel has no native bookmark, so persist
+            # an explicit oldest-record marker until its first drain.
+            if bookmark is None and not start_at_oldest:
+                try:
+                    bookmark_xml, bookmark, start_at_oldest = self._initial_checkpoint(spec)
+                except pywintypes.error as exc:
+                    with self._lock:
+                        self._channel_ok[channel] = False
+                        self.subscribe_errors[channel] = str(exc)
+                    continue
+
+            if bookmark is not None or start_at_oldest:
                 # DM-15: seed the committed cursor with this channel's valid
                 # prior position *before* subscribing it -- EvtSubscribe may
                 # deliver on a callback thread the instant it's called, and
@@ -234,7 +253,7 @@ class WindowsEventSource:
             flags = (
                 win32evtlog.EvtSubscribeStartAfterBookmark
                 if bookmark is not None
-                else win32evtlog.EvtSubscribeToFutureEvents
+                else win32evtlog.EvtSubscribeStartAtOldestRecord
             )
             # One bad channel (unknown name, or -- once callers pass Query --
             # a malformed XPath filter) must not abort subscription setup for
@@ -248,11 +267,41 @@ class WindowsEventSource:
                 )
             except pywintypes.error as exc:
                 with self._lock:
+                    if self._committed.get(channel) == bookmark_xml:
+                        self._committed.pop(channel)
                     self._channel_ok[channel] = False
                     self.subscribe_errors[channel] = str(exc)
                 continue
             self._subs.append(sub)
             self._channel_ok[channel] = True
+
+    def _initial_checkpoint(self, spec: ChannelSpec) -> tuple[str, object | None, bool]:
+        """Capture a restart-safe boundary for a channel with no valid cursor.
+
+        The reverse query and subsequent StartAfter subscription intentionally
+        overlap at the bookmark: events created between them are delivered by
+        the subscription. Empty channels use StartAtOldest plus a persisted
+        marker so an event queued before a crash is replayed on restart.
+        """
+        import pywintypes
+        import win32evtlog
+
+        flags = win32evtlog.EvtQueryChannelPath | win32evtlog.EvtQueryReverseDirection
+        result_set = win32evtlog.EvtQuery(spec.path, flags, spec.query)
+        try:
+            events = win32evtlog.EvtNext(result_set, 1, 0)
+        except pywintypes.error as exc:
+            winerror = getattr(exc, "winerror", exc.args[0] if exc.args else None)
+            if winerror != 259:  # ERROR_NO_MORE_ITEMS: valid empty result set
+                raise
+            events = []
+        if not events:
+            return _OLDEST_BOOKMARK, None, True
+
+        bookmark = win32evtlog.EvtCreateBookmark(None)
+        win32evtlog.EvtUpdateBookmark(bookmark, events[0])
+        bookmark_xml = win32evtlog.EvtRender(bookmark, win32evtlog.EvtRenderBookmark)
+        return bookmark_xml, bookmark, False
 
     def _make_callback(self, channel: str):
         import win32evtlog

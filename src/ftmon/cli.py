@@ -23,8 +23,8 @@ from ftmon.paths import get_paths
 # host-tuning data (docs/tuning-desktop-xps15.md); platform profile pairs share
 # one Windows tree that fixes OS-semantic dead rules (no PSI/inodes/journald
 # on Windows) rather than tuning thresholds -- there is no Windows tuning
-# data yet. server has no tree of its own and falls through to the generic
-# design/builtins defaults below, same as any profile not listed here.
+# data yet. After host alias resolution, Linux server has no tree of its own
+# and falls through to the Linux-only generic design/builtins defaults below.
 _PROFILE_CALIBRATED_DIRS = {
     "desktop": "desktop",
     "windesktop": "windows",
@@ -32,6 +32,21 @@ _PROFILE_CALIBRATED_DIRS = {
     "macdesktop": "macos",
     "macserver": "macos",
 }
+
+
+def _resolve_init_profile(profile: str | None, platform_name: str | None = None) -> str:
+    """Resolve generic desktop/server names to the host's calibrated tree."""
+    from ftmon.paths import current_platform
+
+    selected = profile or "desktop"
+    host = current_platform() if platform_name is None else platform_name
+    aliases = {
+        ("windows", "desktop"): "windesktop",
+        ("windows", "server"): "winserver",
+        ("darwin", "desktop"): "macdesktop",
+        ("darwin", "server"): "macserver",
+    }
+    return aliases.get((host, selected), selected)
 
 
 def _builtin_monitors_source(profile: str):
@@ -211,12 +226,14 @@ def cmd_init(args: argparse.Namespace) -> int:
     """
     from ftmon.paths import atomic_write
 
+    profile = _resolve_init_profile(args.profile)
+
     paths = get_paths()
     paths.ensure()
 
     # Write config.toml only if absent (FS-02: never touch user config)
     if not paths.config_file.exists():
-        atomic_write(paths.config_file, _default_config_toml(args.profile).encode())
+        atomic_write(paths.config_file, _default_config_toml(profile).encode())
         print(f"wrote: {paths.config_file}")
     else:
         print(f"kept: {paths.config_file} (unchanged)")
@@ -235,7 +252,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"wrote: {paths.check_registry_file}")
 
     # Install builtin monitors for the selected profile.
-    builtins_dir = _builtin_monitors_source(args.profile)
+    builtins_dir = _builtin_monitors_source(profile)
     installed, skipped = _copy_toml_files(builtins_dir, paths.monitors_dir, args.force)
 
     # Print summary
@@ -250,7 +267,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # Curated drafts (MD-05): never loaded until a human approves them --
     # e.g. Windows Security-Auditing visibility, sensitive and dependent on
     # audit policy this tool does not configure on your behalf.
-    drafts_dir = _draft_monitors_source(args.profile)
+    drafts_dir = _draft_monitors_source(profile)
     d_installed, d_skipped = _copy_toml_files(drafts_dir, paths.drafts_dir, args.force)
     if d_installed:
         print(f"installed {len(d_installed)} draft monitor(s) pending approval "
@@ -916,8 +933,9 @@ def main(argv: list[str] | None = None) -> int:
     init_parser.add_argument(
         "--profile",
         choices=("desktop", "server", "windesktop", "winserver", "macdesktop", "macserver"),
-        default="desktop",
-        help="Write explicit desktop/server, Windows, or macOS defaults (default: desktop)",
+        default=None,
+        help=("Write desktop/server defaults calibrated for this host, or an explicit "
+              "Windows/macOS profile (default: host desktop)"),
     )
 
     # check
