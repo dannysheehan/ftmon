@@ -7,7 +7,12 @@ import pytest
 
 from ftmon.checks.registry import RegistryError, load
 from ftmon.paths import get_paths
-from tests.platform_permissions import make_broadly_writable, make_private, toml_path
+from tests.platform_permissions import (
+    make_broadly_writable,
+    make_private,
+    symlink_or_skip,
+    toml_path,
+)
 
 
 def _executable(tmp_path: Path) -> Path:
@@ -67,7 +72,7 @@ def test_rejects_invalid_entry_without_disclosing_argv(tmp_path, replacement, ca
     assert str(executable) not in str(caught.value)
 
 
-def test_rejects_symlink_and_writable_registry_or_parent(tmp_path):
+def test_rejects_writable_registry_or_parent(tmp_path):
     """[SE-07] Command authority must be a protected regular file."""
     executable = _executable(tmp_path)
     target = _registry(
@@ -75,11 +80,6 @@ def test_rejects_symlink_and_writable_registry_or_parent(tmp_path):
         f'[check.test_check]\nargv = ["{toml_path(executable)}"]\n'
         'protocol = "ftmon-json"\n',
     )
-    link = tmp_path / "linked.toml"
-    link.symlink_to(target)
-    with pytest.raises(RegistryError, match="registry_untrusted"):
-        load(link)
-
     make_broadly_writable(target, 0o620)
     with pytest.raises(RegistryError, match="registry_untrusted"):
         load(target)
@@ -87,6 +87,20 @@ def test_rejects_symlink_and_writable_registry_or_parent(tmp_path):
     make_broadly_writable(tmp_path, 0o770)
     with pytest.raises(RegistryError, match="registry_untrusted"):
         load(target)
+
+
+def test_rejects_symlink_registry(tmp_path):
+    """[SE-07] Command authority must not be supplied through a symlink."""
+    executable = _executable(tmp_path)
+    target = _registry(
+        tmp_path,
+        f'[check.test_check]\nargv = ["{toml_path(executable)}"]\n'
+        'protocol = "ftmon-json"\n',
+    )
+    link = tmp_path / "linked.toml"
+    symlink_or_skip(link, target)
+    with pytest.raises(RegistryError, match="registry_untrusted"):
+        load(link)
 
 
 def test_rejects_unready_executable_and_protected_runtime_location(tmp_path):

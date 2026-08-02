@@ -14,7 +14,7 @@ from ftmon.cli import main
 from ftmon.demo import build
 from ftmon.store.db import connect, migrate
 from ftmon.web.demo_app import DEMO_SCENARIO_NAME, DEMO_SCENARIO_VERSION, create_demo_app
-from tests.platform_permissions import make_broadly_writable, make_private
+from tests.platform_permissions import make_broadly_writable, make_private, symlink_or_skip
 
 
 def _demo_db(tmp_path: Path) -> Path:
@@ -196,7 +196,7 @@ def test_demo_rejects_non_public_or_ambiguous_hostname_se_06(tmp_path, hostname)
         create_demo_app(_demo_db(tmp_path), hostname)
 
 
-def test_demo_rejects_unmarked_unsafe_and_symlink_databases_ui_15(tmp_path):
+def test_demo_rejects_unmarked_and_unsafe_databases_ui_15(tmp_path):
     """[UI-15][TS-14] Startup fails closed before serving non-demo telemetry."""
     unmarked = tmp_path / "unmarked.db"
     conn = connect(unmarked)
@@ -210,8 +210,11 @@ def test_demo_rejects_unmarked_unsafe_and_symlink_databases_ui_15(tmp_path):
     with pytest.raises(ValueError, match="group/world writable"):
         create_demo_app(unsafe, "demo.ftmon.org")
 
+
+def test_demo_rejects_symlink_database_ui_15(tmp_path):
+    """[UI-15][TS-14] Startup refuses a symlink to a marked database."""
     target = _demo_db(tmp_path / "linked")
     link = tmp_path / "linked.db"
-    link.symlink_to(target)
+    symlink_or_skip(link, target)
     with pytest.raises(ValueError, match="non-symlink"):
         create_demo_app(link, "demo.ftmon.org")

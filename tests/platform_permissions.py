@@ -6,6 +6,8 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
+
 from ftmon.paths import set_private_permissions
 
 
@@ -18,6 +20,19 @@ def make_private(path: Path, mode: int) -> Path:
 def toml_path(path: Path | str) -> str:
     """Render an absolute path without TOML basic-string backslash escapes."""
     return Path(path).as_posix()
+
+
+def symlink_or_skip(link: Path, target: Path | str) -> None:
+    """Create a test symlink or skip only when Windows denies that privilege."""
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip(
+                "Windows symlink creation requires Developer Mode or "
+                "SeCreateSymbolicLinkPrivilege (WinError 1314)"
+            )
+        raise
 
 
 def assert_private(path: Path, mode: int) -> None:

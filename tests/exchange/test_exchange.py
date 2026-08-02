@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import sys
@@ -16,6 +15,7 @@ ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from build_exchange import BuildError, build  # noqa: E402
+from tests.platform_permissions import symlink_or_skip  # noqa: E402
 
 
 def _files(root: Path) -> dict[str, bytes]:
@@ -81,7 +81,7 @@ def test_exchange_escapes_active_content_and_never_executes_recipe_files(tmp_pat
     assert not marker.exists()
 
 
-def test_exchange_rejects_unsafe_links_symlinks_and_unmarked_replacement(tmp_path):
+def test_exchange_rejects_unsafe_links_and_unmarked_replacement(tmp_path):
     """[XR-08][TS-19] Unsafe input and ambiguous destinations fail closed."""
     catalogue = _catalogue(tmp_path)
     readme = catalogue / "http-tls/README.md"
@@ -89,17 +89,20 @@ def test_exchange_rejects_unsafe_links_symlinks_and_unmarked_replacement(tmp_pat
     with pytest.raises(BuildError, match="unsafe Markdown link"):
         build(tmp_path / "bad-link", catalogue)
 
-    catalogue = _catalogue(tmp_path / "symlink-case")
-    os.symlink("README.md", catalogue / "http-tls/linked-readme")
-    with pytest.raises(BuildError, match="symlink"):
-        build(tmp_path / "bad-symlink", catalogue)
-
     unmarked = tmp_path / "not-generated"
     unmarked.mkdir()
     (unmarked / "valuable.txt").write_text("keep")
     with pytest.raises(BuildError, match="unmarked"):
         build(unmarked)
     assert (unmarked / "valuable.txt").read_text() == "keep"
+
+
+def test_exchange_rejects_symlinks(tmp_path):
+    """[XR-08][TS-19] Catalogue traversal never follows a symlink."""
+    catalogue = _catalogue(tmp_path)
+    symlink_or_skip(catalogue / "http-tls/linked-readme", "README.md")
+    with pytest.raises(BuildError, match="symlink"):
+        build(tmp_path / "bad-symlink", catalogue)
 
 
 def test_exchange_generated_local_links_resolve(tmp_path):

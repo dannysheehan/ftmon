@@ -9,7 +9,12 @@ import pytest
 
 import ftmon
 from ftmon.cli import main
-from tests.platform_permissions import assert_private, make_broadly_writable, make_private
+from tests.platform_permissions import (
+    assert_private,
+    make_broadly_writable,
+    make_private,
+    symlink_or_skip,
+)
 
 
 def setup_env(tmp_path, monkeypatch):
@@ -769,7 +774,7 @@ class TestCheckTrust:
         real.write_text("#!/bin/sh\nexit 0\n")
         make_private(real, 0o700)
         link = tmp_path / real.name.replace("real", "link")
-        link.symlink_to(real)
+        symlink_or_skip(link, real)
         assert main(["check", "trust", str(link)]) == 1
         assert "symlink" in capsys.readouterr().err
 

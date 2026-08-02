@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from ftmon.definitions import ValidationError, load_dir, load_file, load_text
+from tests.platform_permissions import symlink_or_skip
 
 BUILTINS_DIR = Path(__file__).resolve().parents[2] / "src" / "ftmon" / "definitions" / "builtins"
 DESIGN_BUILTINS_DIR = Path(__file__).resolve().parents[2] / "design" / "builtins"
@@ -711,7 +712,7 @@ def test_load_file_rejects_symlinks(tmp_path):
     real = tmp_path / "real.toml"
     real.write_text(VALID_SAMPLER)
     link = tmp_path / "link.toml"
-    link.symlink_to(real)
+    symlink_or_skip(link, real)
     with pytest.raises(OSError):
         load_file(link)
 
