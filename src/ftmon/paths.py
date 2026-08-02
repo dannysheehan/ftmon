@@ -94,9 +94,16 @@ def set_private_permissions(path: Path, mode: int) -> None:
         return
 
     import ntsecuritycon
+    import win32api
     import win32security
 
-    owner_sid = win32security.GetFileSecurity(
+    token = win32security.OpenProcessToken(
+        win32api.GetCurrentProcess(), win32security.TOKEN_QUERY
+    )
+    owner_sid, _attrs = win32security.GetTokenInformation(
+        token, win32security.TokenUser
+    )
+    existing_owner_sid = win32security.GetFileSecurity(
         str(path), win32security.OWNER_SECURITY_INFORMATION
     ).GetSecurityDescriptorOwner()
     trusted_sids = (
@@ -119,10 +126,16 @@ def set_private_permissions(path: Path, mode: int) -> None:
         )
     descriptor = win32security.SECURITY_DESCRIPTOR()
     descriptor.SetSecurityDescriptorDacl(1, dacl, 0)
+    security_information = (
+        win32security.DACL_SECURITY_INFORMATION
+        | win32security.PROTECTED_DACL_SECURITY_INFORMATION
+    )
+    if existing_owner_sid != owner_sid:
+        descriptor.SetSecurityDescriptorOwner(owner_sid, False)
+        security_information |= win32security.OWNER_SECURITY_INFORMATION
     win32security.SetFileSecurity(
         str(path),
-        win32security.DACL_SECURITY_INFORMATION
-        | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        security_information,
         descriptor,
     )
 

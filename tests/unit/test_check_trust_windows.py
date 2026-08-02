@@ -33,6 +33,7 @@ if sys.platform == "win32":
         trusted_owner,
         writable_beyond_owner,
     )
+    from ftmon.paths import set_private_permissions
 
 
 def _protected_file(tmp_path: Path, name: str, extra_aces=()) -> Path:
@@ -41,6 +42,7 @@ def _protected_file(tmp_path: Path, name: str, extra_aces=()) -> Path:
     protected so nothing is inherited back in from the parent directory."""
     path = tmp_path / name
     path.write_text("x")
+    set_private_permissions(path, 0o600)
 
     owner_sid = win32security.GetFileSecurity(
         str(path), win32security.OWNER_SECURITY_INFORMATION
