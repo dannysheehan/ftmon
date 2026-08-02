@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ftmon.model import Notification
 from ftmon.notify.base import DeliveryResult, RetryableDelivery
+from ftmon.paths import set_private_permissions
 
 
 class FileNotifier:
@@ -35,7 +36,9 @@ class FileNotifier:
         )
         try:
             self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            set_private_permissions(self._path.parent, 0o700)
             with open(self._path, "a", encoding="utf-8") as f:
+                set_private_permissions(self._path, 0o600)
                 f.write(line + "\n")
         except OSError as e:
             # File audit retries indefinitely; the path/OS message does not

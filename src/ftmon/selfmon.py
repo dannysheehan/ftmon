@@ -27,6 +27,9 @@ class SelfStats:
     tick_overruns: int = 0
     event_queue_depth: int = 0
     events_dropped: int = 0
+    events_received: int = 0
+    events_repeated: int = 0
+    event_rate_per_min: float = 0.0
     events_unstored: int = 0
     ring_mem_bytes: int = 0
     source_activity_age_s: float = 0.0
@@ -59,6 +62,9 @@ class SelfSampler:
             "tick_overruns": float(s.tick_overruns),
             "event_queue_depth": float(s.event_queue_depth),
             "events_dropped": float(s.events_dropped),
+            "events_received": float(s.events_received),
+            "events_repeated": float(s.events_repeated),
+            "event_rate_per_min": s.event_rate_per_min,
             "events_unstored": float(s.events_unstored),
             "ring_mem_bytes": float(s.ring_mem_bytes),
             "source_activity_age_s": s.source_activity_age_s,

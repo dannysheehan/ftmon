@@ -1,6 +1,38 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.29** — v0.29 keeps churny historical process identities out
+Status: **DRAFT v0.38** — v0.38 hardens Windows managed paths, secret-file
+handle validation, and the minimal external-check environment. v0.37 makes generic init profiles select the
+current host's calibrated monitor tree and closes Windows multi-channel
+checkpoint gaps at first subscription. v0.36 integrates Windows Event Log channel
+selection and per-channel subscribe-time filtering configurability (MD-13,
+DM-19, SA-10) from feature/windows-support into this lineage: a
+`source = "events"` monitor's `[source_options]` can now declare `channels`
+(path + optional XPath query, unioned across every loaded event monitor)
+instead of the hardcoded System/Application default, and a bad channel name
+or malformed query is isolated to that one channel instead of aborting the
+whole subscription pass. Also closes a real doc/code gap: DM-09's
+`store_min_severity` override was documented but had no schema branch to
+actually accept it. v0.35 adds cursor-safe adjacent event coalescing
+and raw event-rate telemetry/presentation across platform adapters. v0.34 replaces ambient macOS unified-log ingestion
+with an enabled, source-filtered operational allowlist after a live event storm
+proved that downstream rules and storage filtering cannot protect the reader queue.
+v0.33 ships the validated macOS event, notification,
+LaunchAgent, and builtin-profile seams. v0.32 replaces the `windowsdesktop` placeholder
+profile with `windesktop`/`winserver` (PM-08), sharing one Windows-adapted
+monitor tree that drops rules dead on Windows by construction (an
+inode-based ladder — NTFS has no POSIX inode concept — and a
+journald-provider-gated OOM rule) rather than leaving them silently
+inert; `load`'s PSI-gated rules are deliberately left unchanged, since
+§7.7.5 already specifies "absent, not replaced by an inferred metric" for
+exactly this case. v0.31 adds the `windowsdesktop` init profile (PM-08)
+and gives EC-01/SE-07's ownership/writability trust check a real Windows ACL
+equivalent (owner SID + DACL walk in place of POSIX uid/mode bits) so the
+check registry, external-check runner, secret-credential files (SE-04), and
+the demo database (SE-06) all enforce their existing trust contract on
+Windows instead of only on POSIX. v0.30 records real-hardware macOS
+platform-spike contracts for unified-log replay, Script Editor
+notifications, and LaunchAgent reload behavior. v0.29 keeps churny
+historical process identities out
 of the Trends entity selector while preserving direct incident and bookmark
 access to their retained history. v0.28 hardens the web response boundary, refreshes
 the remaining operational pages, and makes Metrics baselines unmistakably
@@ -133,18 +165,18 @@ These were decided during specification and are not open for re-litigation by im
 
 ### 4.1 Platform matrix
 
-| Capability | Linux (v1) | Windows (v1.x, planned) | macOS (v1.x, planned) |
+| Capability | Linux (v1) | Windows (v1.x) | macOS (v1.x) |
 |---|---|---|---|
 | Process/CPU/mem/disk sampling | psutil | psutil | psutil |
 | Event source | journald (`journalctl -o json` subprocess) | `win32evtlog.EvtSubscribe` (pywin32) | `log stream --style ndjson` subprocess |
-| Event cursor (DM-15) | journald cursor string | `EvtBookmark` XML | last-seen timestamp |
-| Notification | `notify-send` (fallback: D-Bus) | toast (`windows-toasts`) | `osascript display notification` |
+| Event cursor (DM-15) | journald cursor string | `EvtBookmark` XML | wall-time high-water mark + bounded recent-event identities |
+| Notification | `notify-send` (fallback: D-Bus) | toast (`windows-toasts`) | `osascript display notification` (Script Editor identity) |
 | External checks | local executable; Nagios + FTMON JSON | FTMON JSON planned | FTMON JSON planned |
 | Service wrapper | systemd user unit | Task Scheduler (logon) | launchd LaunchAgent |
 | Config/data paths | XDG dirs | `%APPDATA%` / `%LOCALAPPDATA%` | `~/Library/Application Support` |
 
 - **PL-01** All platform-specific behavior MUST live behind exactly four seams: `Sampler` implementations, `EventSource` implementations, the notification adapter, and the service wrapper/paths module (use `platformdirs`). No platform conditionals anywhere else.
-- **PL-02** The canonical schemas (§5) MUST NOT assume any platform's shape. In particular `event_id` is an **optional string** (Windows has numeric IDs, journald has identifiers, macOS has none).
+- **PL-02** The canonical schemas (§5) MUST NOT assume any platform's shape. In particular `event_id` is an **optional string** (Windows has numeric IDs, journald has identifiers, and macOS has no native ID but MAY assign a stable FTMON event class during normalization).
 - **PL-03** Permission failures during sampling (e.g. psutil `AccessDenied`) MUST degrade gracefully: skip the entity, count it in self-metrics (§13), never crash or spam the log (log once per entity per daemon lifetime at DEBUG).
 - **PL-04** v1 ships and is tested on Linux only, but the fake/fixture implementations of `Sampler` and `EventSource` (§16) count as second implementations, keeping the seams honest.
 - **PL-05** Every `Sampler` and `EventSource` declares its schema: entity kind,
@@ -153,6 +185,10 @@ These were decided during specification and are not open for re-litigation by im
   EC-04 performance-data mappings; no runtime output can add a name to the
   expression namespace. Validation (MD-01) resolves expressions against the
   resulting declaration, which is also the documentation source for DO-01.
+
+On Intel macOS 12, the locked dependency set lacks a
+`cryptography==49.0.0` x86_64 wheel and requires a native OpenSSL/Rust build;
+support policy and packaging must be resolved before macOS is advertised.
 
 ### 4.2 Processes
 
@@ -169,13 +205,38 @@ These were decided during specification and are not open for re-litigation by im
 - **PM-04** The daemon MUST re-scan monitor definition files for changes every 30 s (mtime + content-hash) and apply add/change/remove without restart. An invalid changed file MUST NOT take down the daemon: keep the currently loaded version, record a `config_error` self-event, surface it in CLI/web/MCP status. **After a daemon restart**, an invalid file on disk means that monitor is simply not loaded (config_error) — the persisted copy (PM-07) is for diagnostics and history, never silent resurrection.
 - **PM-05** MCP transport is **stdio only** in v1. The web UI binds **127.0.0.1** only, default port 8420, configurable. No other sockets are opened.
 - **PM-06** Definition-file coordination rules, binding on every process that writes to the config tree: (a) all writes are atomic — write to a temp file in the same directory, fsync, `rename()`; (b) directories 0700, files 0600 at creation; (c) symlinked definition files are rejected at load with a config_error; (d) approval (`drafts/x.toml` → `monitors/x.toml`) re-validates then renames atomically, and fails if the target exists; (e) concurrent writers are resolved last-write-wins — acceptable for a single-user tool — but every load path re-validates, so a torn outcome is at worst a config_error, never a partial load.
+  On Windows, every managed-directory permission mutation MUST open the final
+  component with reparse traversal disabled, reject any reparse point, and
+  apply its protected DACL through that verified handle; initialization and
+  `atomic_write` MUST fail before mutating a junction target.
 - **PM-07** On each successful load, the daemon persists the monitor's normalized definition, content hash, and load timestamp in the DB. This is the substrate for change detection (PM-04), `get_monitor` history, and MD-06 — not a fallback config store (see PM-04).
-- **PM-08** `ftmon init --profile desktop|server` writes explicit initial
-  settings; the profile is scaffolding, not a permanent hidden behavior switch.
-  `desktop` enables the file and desktop channels. `server` enables the file
-  channel only, disables desktop delivery, and documents remote-channel setup.
-  Existing configuration is never rewritten; `--force` continues to reinstall
-  built-in monitor definitions only (FS-02), not user settings.
+- **PM-08** `ftmon init --profile desktop|server|windesktop|winserver|macdesktop|macserver`
+  writes
+  explicit initial settings; the profile is scaffolding, not a permanent
+  hidden behavior switch. The generic `desktop` and `server` names MUST
+  resolve to the current host's calibrated platform variant on Windows and
+  macOS; omitting `--profile` selects the host's desktop variant. On Linux,
+  `desktop` enables the file and desktop channels,
+  installing GNOME-calibrated monitor definitions (real host-tuning data,
+  `docs/tuning-desktop-xps15.md`). `server` enables the file channel only,
+  disables desktop delivery, and documents remote-channel setup, installing
+  the normative uncalibrated definitions. `windesktop` and `winserver` share
+  one Windows monitor tree — not host-tuning data, but OS-semantic fixes: an
+  inode-based rule ladder and a journald-provider-gated event rule are
+  dropped because they are dead on Windows by construction (NTFS has no
+  POSIX inodes; no Windows Event Log provider is ever named `"kernel"`),
+  not because of any threshold tuning. `windesktop` enables the file and
+  desktop (toast) channels like `desktop`; `winserver` enables the file
+  channel only, like `server`. Existing configuration is never rewritten;
+  `--force` continues to reinstall built-in monitor definitions only
+  (FS-02), not user settings. `macdesktop` and `macserver` share a Darwin
+  tree: PSI and foreign event rules are removed; unified-log ingestion is
+  enabled only behind a source-side allowlist for third-party faults and
+  explicit kernel storage-integrity messages; read-only/nobrowse mounts
+  and inode rules are excluded; connection
+  alerts require an explicit listener watchlist; service examples are
+  process-based; and only the desktop variant enables best-effort Script
+  Editor notifications.
 - **PM-09** The supported server deployment runs the daemon as a dedicated
   unprivileged account or the administrator's ordinary account. It MUST NOT run
   as root. The normal web process remains on loopback; remote operational access
@@ -195,7 +256,10 @@ These were decided during specification and are not open for re-litigation by im
   refresh as the periodic rescan (PM-04): notification channels, the
   external-check registry, monitor definitions, and acknowledgements. A reload
   request MUST NOT interrupt an in-progress tick. The packaged daemon systemd
-  units MUST expose this via `ExecReload=` so `systemctl reload` works.
+  units MUST expose this via `ExecReload=` so `systemctl reload` works. A
+  macOS LaunchAgent MUST preserve the same signal contract: sending SIGHUP to
+  the launchd-managed PID reloads in place. `launchctl kickstart -k` is a
+  restart (new PID), not a reload substitute.
 
 ### 4.3 Filesystem layout (Linux)
 
@@ -253,9 +317,53 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 
 - **DM-07** `source` ∈ {`journald`, `eventlog`, `oslog`, `file`, `self`}. `provider` is the platform's producer field (journald `SYSLOG_IDENTIFIER`/`_SYSTEMD_UNIT`, Event Log Provider, os_log subsystem). `self` is FTMON's own operational events (config errors, budget breaches, prune runs, clock gaps, event overflows).
 - **DM-08** `severity` is normalized to the 5-level scale: `info(0) notice(1) warning(2) error(3) critical(4)`. Each `EventSource` documents and tests its mapping (journald PRIORITY 0–7 → this scale; Event Log Level; os_log messageType).
-- **DM-09** Stored events are kept 30 d (subject to DM-05 degradation). A **store-filter** (v0.3 amendment, capacity-driven) decides what is stored: events with severity ≥ `notice` (configurable `store_min_severity`) plus any event matching a loaded event rule; info-level non-matching events are counted in a self-metric but not stored — a desktop journal's full volume (50–200 k lines/day) cannot fit the DM-05 budget. Event *rules* (§7.7.3) evaluate against the live stream before the store-filter (a rule can match info-level events; matching forces storage) and match on canonical fields only — a rule written against journald fields MUST be expressible identically against Event Log fields.
+- **DM-09** Stored events are kept 30 d (subject to DM-05 degradation). A **store-filter** (v0.3 amendment, capacity-driven) decides what is stored: events with severity ≥ `notice` (configurable `store_min_severity`) plus any event matching a loaded event rule; info-level non-matching events are counted in a self-metric but not stored — a desktop journal's full volume (50–200 k lines/day) cannot fit the DM-05 budget. Event *rules* (§7.7.3) evaluate against the live stream before the store-filter (a rule can match info-level events; matching forces storage) and match on canonical fields only — a rule written against journald fields MUST be expressible identically against Event Log fields. This storage policy is not source admission control: platform adapters MAY apply a stricter upstream predicate to protect SA-08's queue and process budget.
 - **DM-10** Event ingestion MUST be rate-defended: per (source, provider), more than 100 stored events/min collapses into a single `event_storm` self-event with a count, until the rate drops. (A log-spamming app must not fill the DB.)
-- **DM-15** Each `EventSource` persists a **cursor** in the DB after every drained batch (journald cursor string / EvtBookmark / last-seen timestamp). First run ever starts at "now" (no historical backfill). On daemon restart the reader resumes from the cursor, which replays events that occurred while the daemon was down; the cursor's monotonicity is the dedup guarantee. Events carry both source timestamp (stored as `ts`) and ingest timestamp; ordering for rules is ingest order, so late-arriving source timestamps cannot re-trigger past windows.
+- **DM-15** Each `EventSource` persists a source-specific **checkpoint** in the
+  DB after every drained batch. Journald stores its cursor string and Windows
+  stores a composite of per-channel `EvtBookmark` XML. Before subscribing to
+  any Windows channel absent from that composite, the source MUST persist a
+  restart-safe initial boundary at the filtered channel tail; an empty channel
+  MUST retain an explicit oldest-record boundary until its first event drains.
+  macOS unified log has no persistent bookmark: its
+  checkpoint is a wall-time high-water mark plus a bounded set of recent event
+  identities. First run ever starts at "now" (no historical backfill). On
+  daemon restart the reader resumes from the checkpoint and replays events
+  that occurred while the daemon was down. Bookmark sources resume after the
+  exact checkpoint; macOS MUST replay from before its watermark and
+  deduplicate the overlap, including the `log show` → `log stream` handoff.
+  The checkpoint advances only after the corresponding events are durably
+  accepted. An expired macOS replay boundary MUST record an observable
+  retention-gap self-event rather than silently claiming exact resume. Events
+  carry both source timestamp (stored as `ts`) and ingest timestamp; ordering
+  for rules is ingest order, so late-arriving source timestamps cannot
+  re-trigger past windows.
+- **DM-19** `channels` (MD-13) selects which platform-specific event channels
+  an `EventSource` subscribes to and, where the platform's query language
+  supports filtering at the subscription itself (e.g. Windows Event Log's
+  XPath-subset query engine — shared by `EvtQuery`/`EvtSubscribe`/`wevtutil`/
+  `Get-WinEvent`, not WEC/WEF-specific), narrows which events on that channel
+  are delivered at all, before DM-09's store-filter ever runs. There is one
+  shared subscription for the whole daemon, not one per monitor: channels are
+  unioned across every loaded event monitor. The same channel path requested
+  with conflicting non-empty queries keeps the first-seen query and reports
+  the conflict as a self-event (SA-10) rather than silently choosing one.
+  Channel/query configuration is read once, at the event reader's first
+  start; changing an already-running reader's channels requires a daemon
+  restart to take effect — PM-04's hot-reload guarantee covers rule changes,
+  not this.
+- **DM-20** Before bounded-queue admission, every platform event adapter MUST
+  coalesce a contiguous run of canonically identical events. Identity is the
+  exact `(source, provider, event_id, severity, message)` tuple; origin is
+  mandatory so one producer cannot conceal another. The aggregate retains the
+  first event record, advances its source checkpoint to the last represented
+  event, and records string attrs `repeat_count`, `repeat_first_ts`, and
+  `repeat_last_ts`. Coalescing MUST NOT cross an intervening event because an
+  opaque journal cursor or bookmark could then advance past undrained evidence.
+  Event-rule confirmation and episode occurrence totals count represented raw
+  occurrences, not aggregate rows. The `self` source exposes cumulative raw
+  `events_received`, cumulative `events_repeated`, and a rolling
+  `event_rate_per_min` gauge that includes coalesced repeats.
 
 ### 5.4 Incident
 
@@ -309,8 +417,15 @@ sources due? → each needed source runs ONCE → immutable snapshot (single ts)
 ### 6.3 Sources
 
 - **SA-03** `EventSource`s run as supervised subprocess readers (e.g. `journalctl -f -o json --after-cursor=…`) feeding an in-daemon queue, drained each tick. A dead reader is restarted with exponential backoff (1 s → 60 s cap) and a self-event on first death.
-- **SA-08** The event queue is bounded at 10 000 entries; on overflow the oldest are dropped and an `event_overflow` self-event records the count. Malformed lines are skipped and counted (self-metric), never fatal. Reader stall detection: `event_source_last_activity_age` is a self-metric; the `self` monitor warns when it exceeds 10 m while the reader process is alive.
+- **SA-08** The event queue is bounded at 10 000 entries; on overflow the oldest are dropped and an `event_overflow` self-event records the count. Malformed lines are skipped and counted (self-metric), never fatal. Reader stall detection: `event_source_last_activity_age` is a self-metric; the `self` monitor warns when it exceeds 10 m while the reader process is alive. The macOS adapter MUST apply the same fixed operational predicate to replay and streaming before records enter this queue; ambient debug-level unified-log ingestion is forbidden.
 - **SA-09** Process display identity (v0.19, issue #20). Interpreter-hosted processes often expose a generic runtime thread name (`MainThread`, `node`, `python3`) as the kernel process name, defeating both operator recognition and name-based exemptions. The process sampler MUST additionally collect, where readable: `exe` (executable path, already collected), `exe_base` (its basename), and `cmd_hint` (executable basename plus the basename of the first path-like argument, ≤ 64 chars total — derived basenames only, never raw arguments; SE-04's posture is unchanged). It MUST publish a `display` attr: `"{exe_base} ({name})"` when `exe_base` is present and differs from `name`, else `name`. `{entity}` in rule/notification templates resolves to `display` when present (falling back to `name`, then `entity_id`). All of these are declared attrs (PL-05) so exemptions (CA-07) and rules can target executable identity. Raw `cmdline` remains governed by SE-04 and MUST NOT appear in notifications; loopback surfaces (web incident detail, MCP) SHOULD expose the sampled attrs. Stable identity (DM-02) is unchanged.
+- **SA-10** A per-channel subscribe failure in a multi-channel `EventSource`
+  (an unknown channel name, or a malformed filter query, DM-19) MUST be
+  isolated to that channel: the reader keeps every other channel alive
+  rather than aborting the whole subscription pass. Each distinct failing
+  channel is reported once per daemon lifetime as a self-event — not a
+  spam-guarded renotify, since nothing about a permanently invalid
+  channel/query self-heals the way SA-03's death/restart does.
 - **SA-04** Built-in samplers v1: `process` (per-process cpu%, rss, and — where available without elevated rights — open fds, threads, io counters), `disk` (per-mount total/used/free bytes, inodes where supported), `system` (load1/5/15, cpu% total, mem available/used, swap, PSI where present), `net` (per-listen-socket presence, per-proto/state connection counts; **no per-process attribution in v1**, NG-06), `unit` (systemd unit active-state + NRestarts via `systemctl show`).
 - **SA-05** The `process` source implements **track-all + promote**: every process is sampled into a bounded in-memory window (last 15 of its samples) each tick it's due; long-term persistence happens only for entities that are (a) on a monitor's watchlist, (b) in the top-N (default 15) by cpu or rss that cycle, or (c) **promoted** by a trend heuristic (§7.6.1). Promotion/demotion transitions are recorded as self-events. This keeps DM-05/DM-16 achievable with hundreds of processes.
 
@@ -420,7 +535,9 @@ rate_threshold_params = ["latency_growth_sph"]
   group/other; every parent from the selected trust root must reject
   group/other writes.
 - **EC-02** The runner invokes `argv` directly—never through a shell—with no
-  stdin, a minimal fixed `PATH`, no inherited environment, closed file
+  stdin, a minimal fixed `PATH`, no inherited environment except the explicit
+  Windows runtime allowlist `SystemRoot`, `SystemDrive`, `windir`, `TEMP`,
+  `TMP`, and `PATHEXT`, closed file
   descriptors, a private process group, a state-directory working directory,
   and capped stdout/stderr. The daemon MUST run unprivileged. Timeout kills the
   complete process group and returns an unknown check result; subprocess work
@@ -641,10 +758,10 @@ Metrics: `rss_bytes` (+ derived `rss_slope_bph` = slope in bytes/hour). Promotio
 Metrics: `cpu_pct`. Rules (group `hog`): warning when `avg(cpu_pct, "5m") > 80` for `confirm_cycles = 5`; error rung at `avg(cpu_pct, "15m") > 90`. Default exempt examples (commented): `matches(name, "^(cc1|rustc|ld|clang|make|cargo|ffmpeg)")`. Glance: maximum five-minute CPU average with only its matching warning parameter; the fifteen-minute error threshold MUST NOT be presented as though it applied to that value.
 
 #### 7.7.3 `events` — journal/event-log entries of interest
-Consumes the event stream; rules are **episode** rules (IN-08). Example shipped enabled: `severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")`; a specific-ID example (`event_id == "6008"`, styled for future Windows use) ships commented. Episode identity: `(rule, provider, event_id if present else msg_hash)`. `msg_hash` is normatively defined: lowercase the message, collapse whitespace, replace digit runs and hex runs (≥ 8 chars) with `#`, then SHA-256, first 16 hex chars — collisions merely group unrelated events, which is harmless. Per-rule `cooldown` (default `"10m"`) limits renotification; `clear_after` (default `"30m"` without a matching event) closes the episode with `clear_reason = quiet_period` and **no recovery notification** by default (`notify_recovery = false` for event rules). A new matching event after clearing opens a new episode; the flap guard (IN-05) applies.
+Consumes the event stream; rules are **episode** rules (IN-08). Example shipped enabled: `severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")`; a specific-ID example (`event_id == "6008"`, styled for future Windows use) ships commented; a third rule targeting `provider == "kernel"` OOM messages also ships enabled on the generic/Linux tree. Episode identity: `(rule, provider, event_id if present else msg_hash)`. `msg_hash` is normatively defined: lowercase the message, collapse whitespace, replace digit runs and hex runs (≥ 8 chars) with `#`, then SHA-256, first 16 hex chars — collisions merely group unrelated events, which is harmless. Per-rule `cooldown` (default `"10m"`) limits renotification; `clear_after` (default `"30m"` without a matching event) closes the episode with `clear_reason = quiet_period` and **no recovery notification** by default (`notify_recovery = false` for event rules). A new matching event after clearing opens a new episode; the flap guard (IN-05) applies. The `windesktop`/`winserver` profile tree drops the `provider == "kernel"` OOM rule: `"kernel"` is a journald syslog-identifier convention no Windows Event Log provider is ever named, so the rule would sit in the file permanently dead rather than degrading gracefully; no replacement Windows low-memory event is wired up yet.
 
 #### 7.7.4 `disk` — space + filling
-Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`.
+Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`. The `windesktop`/`winserver` profile tree drops the `inodes` group entirely: NTFS has no POSIX inode concept, so `inode_used_pct` is always absent there and the ladder would never fire — dropped rather than left in the file to imply coverage that doesn't exist.
 
 #### 7.7.5 `load` — system pressure
 Metrics: `load1`, `cpu_pct`, `mem_available_bytes`, `mem_total_bytes`, `swap_used_pct`, PSI `psi_some_cpu`/`psi_some_mem`/`psi_some_io` (60 s avg) where present. Rules: group `pressure` — warning when `avg(psi_some_cpu, "5m") > 40` or `pct(mem_available_bytes, mem_total_bytes) < 5` for 5 cycles; error rung on `slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > 25`. Glance: five-minute CPU PSI with its warning parameter. On kernels without PSI the readout is absent rather than replaced by an inferred secondary metric.
@@ -757,6 +874,13 @@ message = "Disk {entity} at {used_pct:.0f}% used"
   units, aggregation and threshold meaning are definition metadata; the loader
   and presentation layer MUST NOT infer them from rules, metric names,
   parameter names or trend profiles. Event monitors cannot declare a glance.
+- **MD-13** A `source = "events"` monitor's `[source_options]` MAY declare
+  `channels` (§5.3 DM-19): an array of `{path, query}` tables, `path` required
+  and unique within the array (≤16 entries, ≤256 chars), `query` optional
+  (≤2048 chars) — and `store_min_severity` (an override of DM-09's default
+  threshold, as a severity name or 0–4 int). Unknown keys in either are
+  validation errors, same as every other source's `[source_options]` shape
+  (MD-11).
 
 ## 9. Incident lifecycle and notifications
 
@@ -796,7 +920,16 @@ message = "Disk {entity} at {used_pct:.0f}% used"
   monitor's tray pile-up is what arms gnome-shell's notification/calendar
   SIGABRT (LP #2138529, issue #40). Capabilities are probed from the installed
   `notify-send`; a missing flag degrades that behavior to plain persistent
-  delivery, never to a delivery failure.
+  delivery, never to a delivery failure. The macOS adapter invokes
+  `osascript display notification` without requiring an FTMON app bundle; the
+  OS attributes these notifications to Script Editor
+  (`com.apple.ScriptEditor2`). Exit 0 means accepted for best-effort delivery,
+  not proof that Notification Center displayed a banner. The adapter MUST NOT
+  depend on private `com.apple.ncprefs` flags to infer global notification,
+  Focus, or per-app state; command failure/timeout is reported normally, while
+  OS suppression after exit 0 degrades silently. A future FTMON-specific
+  authorization preflight requires a bundled `UNUserNotificationCenter`
+  helper and is outside the `osascript` adapter.
 - **NO-03** Global quiet hours (`config.toml`, default off): during quiet hours, `warning`-and-below notifications are held and delivered as one digest at quiet-hours end; `error`+ always notify. Incidents open/clear regardless — quiet hours affect delivery only. Global-only in v1 (per-monitor overrides deferred).
 - **NO-04** **Delivery guarantee — at-least-once, honestly.** The notification
   and its DM-18 channel deliveries are committed with the incident transition;
@@ -924,6 +1057,11 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   or configuration-error tiles, and when no active sample is newer than twice
   the monitor interval. Retained rollups and disappeared entities MUST NOT be
   used as current evidence.
+- **UI-18** A healthy Events dashboard tile MUST show the latest fresh
+  `event_rate_per_min` self metric as `ingest … events/min`. This operational
+  readout does not define thresholds and MUST NOT alter UI-14 health state; it
+  follows the same stale, unknown, disabled, and configuration-error omission
+  rules as other glance values.
 
 ## 13. Resource budget (self-enforced)
 
@@ -946,7 +1084,10 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   variables or service-account-readable credential files, never literal
   tokens/passwords in `config.toml`, CLI arguments, URLs, database rows, logs,
   errors, `doctor`, MCP, or web output. Missing references fail that channel
-  closed. Error redaction removes credential values and URL user-info.
+  closed. Error redaction removes credential values and URL user-info. A
+  credential file is opened without following its final component; on Windows,
+  ownership and DACL validation MUST query that same open handle rather than
+  resolving the path again.
 - **SE-06** A reverse proxy is the public TLS and rate-limiting boundary for
   demo mode. The backend still enforces the exact configured Host, existing CSP
   and output escaping, a maximum request-target length, and read-only routing.
@@ -1187,6 +1328,136 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.38 (2026-08-02)** — closes the second PR #80 Windows hardening review.
+External checks retain only the small set of host-root/temp variables required
+by ordinary Windows runtimes while arbitrary parent environment remains
+scrubbed (EC-02). Managed directory DACL writes now reject final-component
+reparse points and operate on a verified handle, preventing an unelevated NTFS
+junction from redirecting initialization or atomic writes (PM-06/FS-02).
+Secret credential owner/DACL validation likewise stays anchored to the
+already-open no-follow handle (SE-04/SE-05). Native tests cover junctions,
+runtime environment, NULL-DACL handle checks, and descendant process reaping;
+DM-15 storage coverage injects a cursor-write failure to prove events and their
+checkpoint roll back atomically.
+
+**v0.37 (2026-08-02)** — resolves PR #80's cross-platform review blockers.
+Generic `desktop`/`server` initialization now selects the Windows or macOS
+calibrated tree on those hosts, while the generic builtin tree is Linux-only
+(PM-08/PL-01). Windows Event Log startup snapshots a filtered per-channel tail
+bookmark, or an explicit oldest-record boundary for an empty channel, before
+subscription; partial drains can therefore never omit an undrained sibling or
+newly added channel from the durable composite checkpoint (DM-15/DM-19).
+Windows NULL/absent DACLs fail closed at every shared trust caller, matching
+their real world-accessible semantics (EC-01/SE-04/SE-07), and external-check
+termination remains bounded when `taskkill` fails (EC-02).
+
+**v0.36 (2026-08-01)** — integrates Windows Event Log channel selection and
+per-channel subscribe-time filtering (MD-13, DM-19, SA-10) from
+feature/windows-support into this lineage. Grew out of analyzing two days
+of real desktop incident data: the only channels available (hardcoded
+System/Application) miss the events people actually want for
+security-relevant monitoring, and Windows' Event Log query engine (the
+XPath-subset language shared by `EvtQuery`/`EvtSubscribe`/`wevtutil`/
+`Get-WinEvent` — confirmed *not* WEC/WEF-specific, so it works standalone
+on a single local host) already supports the filtering needed to make a
+high-volume channel like Security usable without flooding the bounded
+event queue. `events.toml`'s `[source_options]` can now declare `channels`
+(`{path, query}` tables); channels are unioned across every loaded event
+monitor since there is one shared `EvtSubscribe` pass for the whole daemon,
+not one per monitor, and a conflicting query for the same channel path
+keeps the first-seen one and reports the conflict rather than silently
+picking one. Channel/query configuration is read once at the event
+reader's first start — an explicit, documented exception to PM-04's
+hot-reload guarantee, not an oversight; a monitor loaded after the reader
+already started that requests a not-yet-subscribed channel gets a clear
+self-event saying a restart is needed, rather than sitting there silently
+never receiving anything. Landed alongside a correctness fix this work
+would otherwise have inherited and amplified: `EvtSubscribe` failures
+(unknown channel, malformed query) previously aborted subscription setup
+for *every* channel, not just the bad one — SA-10 isolates them per
+channel and reports each once per daemon lifetime. Also closes a real
+doc/code gap unrelated to Windows specifically: DM-09's `store_min_severity`
+override has been documented since it was written but `schema.py` had no
+`[source_options]` branch for `source = "events"` to actually accept it —
+MD-13 fixes that for both platforms. Landed alongside a renumbering this
+integration found necessary: v0.35's event-coalescing requirement had been
+filed as DM-18, colliding with the pre-existing DM-18 (notification-delivery
+fan-out); it is DM-20 as of this merge, since DM-19 was independently taken
+by this same integration's channel-selection requirement above.
+
+**v0.35 (2026-08-01)** — coalesces contiguous, origin-aware duplicate event
+runs before queue admission without weakening cursor order, while preserving
+raw episode occurrence totals in aggregate attrs. New self metrics expose raw
+received/repeated counts and rolling events/min, and the Events dashboard tile
+shows the fresh ingest rate without changing health policy (DM-20, UI-18;
+issue #78).
+
+**v0.34 (2026-08-01)** — hardens the standard macOS events monitor after a
+live unrestricted reader dropped more than 27,000 records within minutes.
+Replay and streaming now share a source-side operational allowlist for
+third-party executable faults and explicit kernel storage-integrity
+messages; the monitor is enabled by default with a canonical `critical` store
+threshold. Downstream rules remain a semantic boundary, not queue protection
+(SA-08, DM-09, PM-08).
+
+**v0.33 (2026-07-26)** — ships the macOS implementation validated by the
+v0.30 spike: unified-log replay/stream dedup checkpoints with observable
+retention gaps (DM-15), best-effort `osascript` desktop delivery (NO-02), a
+LaunchAgent service template preserving SIGHUP (PM-11), and conservative
+Darwin-specific init profiles with behavior-tested rule bodies (PM-08).
+
+**v0.32 (2026-07-25)** — replaces the `windowsdesktop` placeholder profile
+(v0.31) with `windesktop`/`winserver` (PM-08), sharing one Windows monitor
+tree built from checking every builtin rule's *body* against real data
+from a live Windows daemon, not just whether the sampler crashes. Two
+concrete, permanent gaps were found and fixed: `disk`'s `inodes` rule
+group (NTFS has no POSIX inode concept, always absent) and `events`'
+`provider == "kernel"` OOM rule (a journald-only convention no Windows
+Event Log provider uses) are both dropped from the Windows tree rather
+than left silently dead. `load`'s PSI-gated rules were evaluated the same
+way and deliberately left unchanged: §7.7.5 already specifies that a
+PSI-less system gets an absent readout, not a substitute metric, and
+Windows is exactly that case — substituting `cpu_pct` thresholds would
+have both contradicted that existing decision and invented an unvalidated
+signal (PSI's stall-time measurement is not the same claim as raw CPU%).
+`hog`/`leak`/`net`/`self` needed no changes, confirmed against real
+process/connection/memory data from the same live daemon. `service` is
+reworded (Windows service name examples) with no rule changes.
+
+**v0.31 (2026-07-25)** — Windows implementation: adds the `windowsdesktop`
+init profile (PM-08) so Windows users get sane desktop-notification defaults
+without fabricated calibration data standing in for the GNOME `desktop`
+profile's real tuning. Gives EC-01/SE-07's ownership and writability trust
+check a real Windows ACL equivalent (file owner SID compared against the
+current process token, DACL walked for grants beyond owner/SYSTEM/
+Administrators) in place of the POSIX uid/mode-bit check it previously only
+had — the check registry, external-check runner, SE-04 secret-credential
+files, and the SE-06 demo database all share this one evaluator on both
+platforms, so the trust contract cannot diverge between them. Windows
+Event Log (`win32evtlog.EvtSubscribe`), toast notifications
+(`windows-toasts`), and a named Win32 Event as the PM-11 reload-equivalent
+(no `SIGHUP` on Windows) fill the three platform seams PL-01 already
+reserved; the built-in `disk`/`hog`/`leak`/`load`/`net`/`service`/`events`
+monitors are enabled on Windows now that their samplers (already
+psutil-based) and event source have real implementations behind them, and
+`service`'s `{unit=...}` watchlist kind gains a Windows Service Manager
+backend alongside its existing systemd one (no restart-count metric there —
+no single queryable counter exists the way `systemctl`'s `NRestarts` does).
+
+**v0.30 (2026-07-26)** — records the macOS platform spike on real Intel
+macOS 12 hardware, unelevated. A custom non-Apple `os_log` subsystem streams
+without sudo or a TCC prompt, but `--style ndjson` includes non-JSON/status
+lines and unified log exposes no persistent bookmark. DM-15 therefore uses an
+overlapping wall-time replay with bounded event identities and an observable
+retention-gap path, rather than claiming timestamp monotonicity is an exact
+cursor. Zero-bundle `osascript display notification` succeeds under Script
+Editor's identity, but has no supported global-disable preflight. A user-domain
+LaunchAgent bootstraps without elevation and passes SIGHUP through to reload
+the same PID; `kickstart -k` is explicitly a restart. The package's POSIX
+guards and platform-definition filter work on Darwin, while full installation
+on Intel macOS 12 is blocked by the current dependency wheel/native-build
+story; none of these validated targets is a claim that macOS adapters ship.
 
 **v0.29 (2026-07-23)** — bounds the Trends entity selector under process churn.
 Exited process history remains retained under DM-04 and available through

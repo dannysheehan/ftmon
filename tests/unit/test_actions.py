@@ -13,6 +13,7 @@ from ftmon.engine.actions import ActionRunner
 from ftmon.engine.effects import PendingAction
 from ftmon.paths import get_paths
 from ftmon.store.db import connect, migrate
+from tests.platform_permissions import make_private
 
 ACTION_DEF = """
 schema = 1
@@ -62,12 +63,25 @@ def test_active_action_requires_user_executable_but_draft_does_not_ac_01_ac_03(t
 def test_action_runner_minimal_env_output_and_rate_limit_ac_02(tmp_path):
     """[AC-02] One post-commit run/10m records capped output and allowlisted env."""
     paths = _paths(tmp_path)
-    script = paths.actions_dir / "capture"
-    script.write_text(
-        "#!/bin/sh\nprintf '%s|%s|%s' \"$FTMON_MONITOR\" \"$FTMON_ENTITY\" "
-        "\"${HOME-unset}\"\nprintf err >&2\n"
-    )
-    script.chmod(0o700)
+    if os.name == "nt":
+        script = paths.actions_dir / "capture.cmd"
+        script.write_text(
+            "@echo off\n"
+            "setlocal\n"
+            "if defined HOME (set home_value=%HOME%) else (set home_value=unset)\n"
+            "<nul set /p =%FTMON_MONITOR%^|%FTMON_ENTITY%^|%home_value%\n"
+            ">&2 echo err\n"
+        )
+        make_private(script, 0o700)
+        action_name = "capture.cmd"
+    else:
+        script = paths.actions_dir / "capture"
+        script.write_text(
+            "#!/bin/sh\nprintf '%s|%s|%s' \"$FTMON_MONITOR\" \"$FTMON_ENTITY\" "
+            "\"${HOME-unset}\"\nprintf err >&2\n"
+        )
+        script.chmod(0o700)
+        action_name = "capture"
     conn = connect(paths.db_file)
     migrate(conn)
     conn.execute(
@@ -76,7 +90,7 @@ def test_action_runner_minimal_env_output_and_rate_limit_ac_02(tmp_path):
         "VALUES(1,'disk','filling','/','open',2,'fill',1,1,1,1)"
     )
     conn.commit()
-    request = PendingAction(1, "capture", {
+    request = PendingAction(1, action_name, {
         "FTMON_MONITOR": "disk", "FTMON_RULE": "fill", "FTMON_ENTITY": "/",
         "FTMON_SEVERITY": "warning", "FTMON_MESSAGE": "filling",
         "FTMON_INCIDENT_ID": "1", "FTMON_VALUE": "true",
@@ -91,7 +105,7 @@ def test_action_runner_minimal_env_output_and_rate_limit_ac_02(tmp_path):
     detail = json.loads(rows[0]["detail"])
     assert detail["exit_code"] == 0
     assert detail["stdout"] == "disk|/|unset"
-    assert detail["stderr"] == "err"
+    assert detail["stderr"].strip() == "err"
     conn.close()
 
 

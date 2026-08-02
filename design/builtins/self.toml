@@ -8,7 +8,7 @@ name = "self"
 description = "FTMON watches its own resource budget and pipeline health"
 version = 1
 enabled = true
-platforms = ["linux", "windows", "darwin"]
+platforms = ["linux"]
 interval = "60s"
 source = "self"
 

@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
 import ftmon
 from ftmon.cli import main
+from tests.platform_permissions import (
+    assert_private,
+    make_broadly_writable,
+    make_private,
+    symlink_or_skip,
+)
 
 
 def setup_env(tmp_path, monkeypatch):
@@ -48,6 +55,58 @@ class TestVersion:
 class TestInit:
     """[CL-01][FS-02] ftmon init subcommand."""
 
+    @pytest.fixture(autouse=True)
+    def _stable_linux_profile_aliases(self, monkeypatch):
+        """Keep generic-profile assertions independent of the test host."""
+        monkeypatch.setattr("ftmon.paths.current_platform", lambda: "linux")
+
+    @pytest.mark.parametrize(
+        ("host", "requested", "expected"),
+        [
+            ("windows", None, "windesktop"),
+            ("windows", "desktop", "windesktop"),
+            ("windows", "server", "winserver"),
+            ("darwin", None, "macdesktop"),
+            ("darwin", "desktop", "macdesktop"),
+            ("darwin", "server", "macserver"),
+            ("linux", None, "desktop"),
+            ("linux", "server", "server"),
+        ],
+    )
+    def test_generic_profiles_resolve_to_host_calibration_pm_08(
+        self, host, requested, expected
+    ):
+        """[PM-08][PL-01] Generic init aliases never install another OS's tree."""
+        from ftmon.cli import _resolve_init_profile
+
+        assert _resolve_init_profile(requested, host) == expected
+
+    def test_windows_default_init_installs_windows_tree_pm_08(
+        self, tmp_path, monkeypatch
+    ):
+        """[PM-08][PL-01] No-profile Windows init is useful and calibrated."""
+        setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr("ftmon.paths.current_platform", lambda: "windows")
+        assert main(["init"]) == 0
+        content = (tmp_path / "cfg" / "config.toml").read_text()
+        assert "Generated for the windesktop profile" in content
+        hog = (tmp_path / "cfg" / "monitors" / "hog.toml").read_text()
+        assert 'platforms = ["windows"]' in hog
+        assert "System Idle Process" in hog
+
+    def test_windows_server_alias_installs_windows_tree_pm_08(
+        self, tmp_path, monkeypatch
+    ):
+        """[PM-08][PL-01] Generic server maps to calibrated winserver."""
+        setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr("ftmon.paths.current_platform", lambda: "windows")
+        assert main(["init", "--profile", "server"]) == 0
+        content = (tmp_path / "cfg" / "config.toml").read_text()
+        assert "Generated for the winserver profile" in content
+        selfmon = (tmp_path / "cfg" / "monitors" / "self.toml").read_text()
+        assert "cpu_budget_pct = { value = 30" in selfmon
+        assert "stall_s = { value = 5400" in selfmon
+
     def test_init_creates_dirs_and_config(self, tmp_path, monkeypatch, capsys):
         """[FS-02] init creates all directories (0700) and default config."""
         setup_env(tmp_path, monkeypatch)
@@ -59,7 +118,7 @@ class TestInit:
         assert (cfg_dir / "config.toml").exists()
         registry = cfg_dir / "checks.toml"
         assert registry.read_text().endswith("[check]\n")
-        assert registry.stat().st_mode & 0o777 == 0o600
+        assert_private(registry, 0o600)
 
         # Check content has the right sections
         content = (cfg_dir / "config.toml").read_text()
@@ -83,6 +142,73 @@ class TestInit:
         assert "enabled = false" in desktop
         assert "[notify.ntfy]" in content
         assert "# token_env = \"FTMON_NTFY_TOKEN\"" in content
+
+    def test_windesktop_profile_enables_desktop_channel_pm_08(self, tmp_path, monkeypatch):
+        """[PM-08] windesktop gets desktop-shaped (toast) notification
+        defaults, like the GNOME desktop profile."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "windesktop"]) == 0
+        content = (tmp_path / "cfg" / "config.toml").read_text()
+        assert "Generated for the windesktop profile" in content
+        desktop = content.split("[notify.desktop]", 1)[1].split("[", 1)[0]
+        assert "enabled = true" in desktop
+
+    def test_winserver_profile_disables_desktop_channel_pm_08(self, tmp_path, monkeypatch):
+        """[PM-08] winserver gets server-shaped notification defaults."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "winserver"]) == 0
+        content = (tmp_path / "cfg" / "config.toml").read_text()
+        assert "Generated for the winserver profile" in content
+        desktop = content.split("[notify.desktop]", 1)[1].split("[", 1)[0]
+        assert "enabled = false" in desktop
+
+    def test_windesktop_and_winserver_share_one_monitor_tree_pm_08(self):
+        """[PM-08] No Windows tuning data exists to justify two separate
+        calibrated trees -- both profiles resolve to the same source."""
+        from ftmon.cli import _builtin_monitors_source
+
+        assert _builtin_monitors_source("windesktop") == _builtin_monitors_source(
+            "winserver"
+        )
+
+    def test_windows_profile_installs_the_calibrated_windows_tree_pm_08(
+        self, tmp_path, monkeypatch
+    ):
+        """[PM-08] Installed-artifact check, not just source-path equality:
+        the bytes actually written to disk must match profile/windows/,
+        with all 8 files present and each declaring platforms=["windows"]
+        only -- including self, whose cpu_budget_pct is recalibrated for
+        Windows and must not be loadable elsewhere (RB-01/RB-02)."""
+        import tomllib
+        from pathlib import Path
+
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "windesktop"]) == 0
+
+        monitors_dir = tmp_path / "cfg" / "monitors"
+        installed = {f.name: f for f in monitors_dir.glob("*.toml")}
+        expected_names = {
+            "disk.toml", "events.toml", "hog.toml", "leak.toml",
+            "load.toml", "net.toml", "self.toml", "service.toml",
+        }
+        assert set(installed) == expected_names
+
+        source_dir = (
+            Path(__file__).resolve().parents[2]
+            / "src" / "ftmon" / "definitions" / "profile" / "windows"
+        )
+        for name, installed_path in installed.items():
+            source_bytes = (source_dir / name).read_bytes()
+            assert installed_path.read_bytes() == source_bytes, (
+                f"{name}: installed bytes don't match profile/windows source"
+            )
+            parsed = tomllib.loads(installed_path.read_text(encoding="utf-8"))
+            platforms = tuple(parsed["monitor"]["platforms"])
+            # self.toml is windows-only-narrowed here too, unlike the generic
+            # cross-platform copy: its cpu_budget_pct is recalibrated for
+            # measured Windows overhead (WIN-BACKLOG.md) and must never load
+            # elsewhere with that loosened threshold.
+            assert platforms == ("windows",), f"{name}: platforms={platforms}"
 
     def test_init_does_not_overwrite_config(self, tmp_path, monkeypatch):
         """[FS-02] init writes config.toml only if absent."""
@@ -226,6 +352,63 @@ class TestInit:
         # Should still be modified
         assert self_toml.read_bytes() == modified_text
 
+    def test_windesktop_profile_installs_curated_security_draft_md_05(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """[MD-05] windesktop/winserver init ships the curated Security/
+        PowerShell draft into monitors/drafts/, never monitors/ directly --
+        it must not be loaded until a human approves it."""
+        setup_env(tmp_path, monkeypatch)
+        rc = main(["init", "--profile", "windesktop"])
+        assert rc == 0
+
+        draft = tmp_path / "cfg" / "monitors" / "drafts" / "events_security.toml"
+        assert draft.exists()
+        assert not (tmp_path / "cfg" / "monitors" / "events_security.toml").exists()
+        assert 'name = "events_security"' in draft.read_text()
+
+        captured = capsys.readouterr()
+        assert "draft monitor" in captured.out
+        assert "events_security.toml" in captured.out
+
+    def test_winserver_profile_also_installs_curated_draft(self, tmp_path, monkeypatch):
+        """[MD-05] winserver shares the same Windows-calibrated tree as
+        windesktop (_PROFILE_CALIBRATED_DIRS), so it gets the same draft."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "winserver"]) == 0
+        draft = tmp_path / "cfg" / "monitors" / "drafts" / "events_security.toml"
+        assert draft.exists()
+
+    def test_desktop_profile_has_no_curated_drafts(self, tmp_path, monkeypatch):
+        """Non-Windows profiles have no curated drafts today -- drafts/
+        stays empty, init must not invent or error over their absence."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "desktop"]) == 0
+        drafts_dir = tmp_path / "cfg" / "monitors" / "drafts"
+        assert list(drafts_dir.glob("*.toml")) == []
+
+    def test_init_skips_existing_draft_normally(self, tmp_path, monkeypatch):
+        """[FS-02] init does not overwrite an existing draft without
+        --force -- same skip-unless-force contract as builtins."""
+        setup_env(tmp_path, monkeypatch)
+        main(["init", "--profile", "windesktop"])
+        draft = tmp_path / "cfg" / "monitors" / "drafts" / "events_security.toml"
+        modified = b"# USER MODIFIED\n" + draft.read_bytes()
+        draft.write_bytes(modified)
+
+        main(["init", "--profile", "windesktop"])
+        assert draft.read_bytes() == modified
+
+    def test_init_force_reinstalls_draft(self, tmp_path, monkeypatch):
+        """[FS-02] init --force re-installs the curated draft too."""
+        setup_env(tmp_path, monkeypatch)
+        main(["init", "--profile", "windesktop"])
+        draft = tmp_path / "cfg" / "monitors" / "drafts" / "events_security.toml"
+        draft.write_bytes(b"# MODIFIED\n" + draft.read_bytes())
+
+        main(["init", "--profile", "windesktop", "--force"])
+        assert not draft.read_bytes().startswith(b"# MODIFIED")
+
 
 class TestCheck:
     """[CL-01][CL-02] ftmon check subcommand."""
@@ -337,6 +520,41 @@ class TestStatus:
             assert "status" in obj or "message" in obj
         except json.JSONDecodeError:
             pytest.fail(f"status --json did not output valid JSON: {captured.out}")
+
+
+class TestDoctor:
+    """[CL-05][PL-01] ftmon doctor subcommand."""
+
+    def test_desktop_channel_status_uses_platform_dispatch_not_linux_hardcode(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """[PL-01] doctor's desktop-channel readiness must go through
+        desktop_notifier_for_platform(), not a hardcoded DesktopNotifier() --
+        found via a real Windows daemon reporting desktop_unavailable while
+        the actual (Windows) notifier was available."""
+        def seed(conn):
+            pass
+
+        _seed_db(tmp_path, monkeypatch, seed)
+        assert main(["init", "--profile", "desktop"]) == 0
+
+        class _FakeUnavailable:
+            available = False
+
+        class _FakeAvailable:
+            available = True
+
+        monkeypatch.setattr(
+            "ftmon.notify.desktop_notifier_for_platform", lambda: _FakeUnavailable(),
+        )
+        main(["doctor"])
+        assert "Notification desktop: error (desktop_unavailable)" in capsys.readouterr().out
+
+        monkeypatch.setattr(
+            "ftmon.notify.desktop_notifier_for_platform", lambda: _FakeAvailable(),
+        )
+        main(["doctor"])
+        assert "Notification desktop: ready" in capsys.readouterr().out
 
 
 class TestMonitors:
@@ -586,17 +804,17 @@ class TestPathsCommand:
 class TestCheckTrust:
     def test_trusted_executable_cl_08(self, tmp_path, capsys):
         """[CL-08] a private executable owned by the invoking uid passes."""
-        exe = tmp_path / "ok.sh"
+        exe = tmp_path / ("ok.exe" if os.name == "nt" else "ok.sh")
         exe.write_text("#!/bin/sh\nexit 0\n")
-        exe.chmod(0o700)
+        make_private(exe, 0o700)
         assert main(["check", "trust", str(exe)]) == 0
         assert "trusted:" in capsys.readouterr().out
 
     def test_reports_every_failed_condition_cl_08(self, tmp_path, capsys):
         """[CL-08] all failing conditions print, not just the first."""
-        exe = tmp_path / "bad.sh"
+        exe = tmp_path / "bad"
         exe.write_text("#!/bin/sh\nexit 0\n")
-        exe.chmod(0o666)  # group/other-writable and not executable
+        make_broadly_writable(exe, 0o666)  # broadly writable and not executable
         assert main(["check", "trust", str(exe)]) == 1
         err = capsys.readouterr().err
         assert "group_or_other_writable" in err
@@ -604,11 +822,11 @@ class TestCheckTrust:
 
     def test_symlink_rejected_cl_08(self, tmp_path, capsys):
         """[CL-08] a symlink fails even when its target would pass."""
-        real = tmp_path / "real.sh"
+        real = tmp_path / ("real.exe" if os.name == "nt" else "real.sh")
         real.write_text("#!/bin/sh\nexit 0\n")
-        real.chmod(0o700)
-        link = tmp_path / "link.sh"
-        link.symlink_to(real)
+        make_private(real, 0o700)
+        link = tmp_path / real.name.replace("real", "link")
+        symlink_or_skip(link, real)
         assert main(["check", "trust", str(link)]) == 1
         assert "symlink" in capsys.readouterr().err
 
@@ -627,26 +845,20 @@ class TestMonitorRescan:
 
     def test_rescan_signals_lock_holder_cl_07(self, tmp_path, monkeypatch,
                                               capsys):
-        """[CL-07] SIGHUP goes to the pid recorded by the flock holder; this
-        test holds the lock itself so it must receive the signal."""
-        import fcntl
-        import os
-        import signal as sig
+        """[CL-07] rescan signals the pid recorded by the lock holder."""
+        from ftmon.paths import try_lock_exclusive
 
         setup_env(tmp_path, monkeypatch)
         run_dir = tmp_path / "run"
         run_dir.mkdir(parents=True, exist_ok=True)
-        got: list[bool] = []
-        old = sig.signal(sig.SIGHUP, lambda *_: got.append(True))
-        try:
-            with open(run_dir / "daemon.lock", "w") as holder:
-                fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                holder.write(str(os.getpid()))
-                holder.flush()
-                assert main(["monitor", "rescan"]) == 0
-        finally:
-            sig.signal(sig.SIGHUP, old)
-        assert got == [True]
+        got: list[int] = []
+        monkeypatch.setattr("ftmon.paths.signal_reload", got.append)
+        with open(run_dir / "daemon.lock", "w") as holder:
+            assert try_lock_exclusive(holder)
+            holder.write("12345")
+            holder.flush()
+            assert main(["monitor", "rescan"]) == 0
+        assert got == [12345]
 
     def test_monitor_actions_require_name(self, tmp_path, monkeypatch, capsys):
         """[CL-01] rescan made the name optional; the others still need it."""

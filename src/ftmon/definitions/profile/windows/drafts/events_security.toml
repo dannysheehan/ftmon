@@ -1,0 +1,111 @@
+# FTMON curated draft: Windows Security-Auditing + PowerShell script-block
+# visibility (SPEC 7.7.3, MD-13/DM-19). Ships as a DRAFT -- never loaded by
+# the daemon until a human runs `ftmon monitor approve events_security` or
+# clicks approve in the web UI (MD-05) -- deliberately, for two reasons:
+# subscribing to the Security log is sensitive (it can surface interactive
+# logon/privilege/account-management activity for every user of this
+# machine), and every event below depends on Windows audit policy that is
+# OFF BY DEFAULT on a stock Windows 10/11/Server install. Approving this
+# file alone does nothing until you also run the auditpol commands below --
+# ftmon deliberately does not change system audit policy itself; that is a
+# real security/compliance decision for an administrator to make, not
+# something a monitoring tool should do silently on your behalf.
+#
+# Prerequisites (elevated PowerShell/cmd, one-time, survives reboots):
+#   auditpol /set /subcategory:"Logon"                    /success:enable /failure:enable
+#   auditpol /set /subcategory:"Special Logon"             /success:enable
+#   auditpol /set /subcategory:"User Account Management"   /success:enable
+#   auditpol /set /subcategory:"Security Group Management" /success:enable
+# Event 1102 (security log cleared) needs no policy change -- Windows always
+# logs it, regardless of audit settings, specifically so clearing the log
+# cannot itself go unnoticed.
+# PowerShell script block logging (event 4104) is a separate GPO, not
+# auditpol: Computer Configuration > Administrative Templates > Windows
+# Components > Windows PowerShell > "Turn on PowerShell Script Block
+# Logging" -> Enabled (or the equivalent registry key: HKLM\SOFTWARE\
+# Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging,
+# EnableScriptBlockLogging=1).
+#
+# Reading the Security channel also needs the daemon's account to be an
+# administrator or a member of the built-in "Event Log Readers" group --
+# a standard user account cannot subscribe to it at all (EvtSubscribe
+# fails per channel, isolated from the rest, and self-reports -- it will
+# not take down System/Application, but you'll see the failure once in
+# `ftmon events`).
+#
+# Deliberately NOT included by default: event 4688 (process creation).
+# It needs a second, separate policy on top of "Audit Process Creation"
+# (Administrative Templates > System > Audit Process Creation > "Include
+# command line in process creation events") to be useful at all, and even
+# then is materially higher-volume than everything else here. Add it
+# yourself once the prerequisites above feel worth extending:
+#   auditpol /set /subcategory:"Process Creation" /success:enable
+# then add `4688` to the channels query and a matching [[rule]] below.
+#
+# channels/query is additive to the primary events.toml's System/
+# Application subscription (DM-19) -- approving this draft does not lose
+# those. It DOES require a daemon restart to take effect if the reader has
+# already started (same DM-19 caveat as any channel/query change); a
+# self-event will say so if you approve this while the daemon is running.
+schema = 1
+
+[[source_options.channels]]
+path = "Security"
+query = '*[System[(EventID=1102 or EventID=4648 or EventID=4672 or EventID=4720 or EventID=4732)]]'
+
+[[source_options.channels]]
+path = "Microsoft-Windows-PowerShell/Operational"
+query = '*[System[(EventID=4104)]]'
+
+[monitor]
+name = "events_security"
+description = "Security-auditing and PowerShell script-block visibility (draft, see header)"
+version = 1
+enabled = true
+platforms = ["windows"]
+source = "events"
+
+# Always logged regardless of audit policy -- clearing the security log is
+# the single strongest anti-forensics signal available here.
+[[rule]]
+id = "log-cleared"
+when = 'provider == "Microsoft-Windows-Eventlog" and event_id == "1102"'
+severity = "critical"
+cooldown = "1h"
+clear_after = "1h"
+message = "Security log cleared: {message}"
+
+# Explicit-credential logon (runas / scheduled-task-as-another-user / lateral
+# movement) and admin-equivalent ("special privileges assigned") logons.
+# Kept at notice: routine on a single-user dev box that uses runas/UAC
+# elevation regularly -- this is audit-trail visibility, not an alarm.
+[[rule]]
+id = "explicit-creds-or-priv-logon"
+when = 'provider == "Microsoft-Windows-Security-Auditing" and event_id in ("4648", "4672")'
+severity = "notice"
+cooldown = "30m"
+clear_after = "2h"
+message = "{provider} event {event_id}: {message}"
+
+# Local account creation / security-group membership changes (esp.
+# Administrators). Rare and notable on most single-host installs, so
+# warning rather than notice.
+[[rule]]
+id = "account-or-group-change"
+when = 'provider == "Microsoft-Windows-Security-Auditing" and event_id in ("4720", "4732")'
+severity = "warning"
+cooldown = "10m"
+clear_after = "1h"
+message = "{provider} event {event_id}: {message}"
+
+# PowerShell script-block content, when the GPO above is on. Notice, long
+# cooldown: repeat matches collapse into one renotified incident with a
+# rising occurrence count (IN-08) rather than paging per script, since
+# routine scripting on a dev box would otherwise be constant noise.
+[[rule]]
+id = "powershell-script-block"
+when = 'provider == "Microsoft-Windows-PowerShell" and event_id == "4104"'
+severity = "notice"
+cooldown = "30m"
+clear_after = "2h"
+message = "PowerShell script block logged: {message}"

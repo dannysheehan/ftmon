@@ -59,7 +59,9 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
         metrics=(
             _m("cpu_pct", "%", "gauge", "CPU percent of one core since last sample"),
             _m("rss_bytes", "bytes", "gauge", "Resident set size"),
-            _m("num_fds", "count", "gauge", "Open file descriptors (may be None unprivileged)"),
+            _m("num_fds", "count", "gauge",
+               "Open file descriptors (None if unprivileged, or unsupported -- no Windows "
+               "equivalent exists)"),
             _m("num_threads", "count", "gauge", "Thread count"),
             _m("io_read_bytes", "bytes", "counter", "Cumulative bytes read (may be None)"),
             _m("io_write_bytes", "bytes", "counter", "Cumulative bytes written (may be None)"),
@@ -90,6 +92,9 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
         attrs=(
             _a("fstype", "Filesystem type, e.g. ext4"),
             _a("device", "Backing device"),
+            _a("mountpoint", "Mounted path"),
+            _a("readonly", "true when the mount is read-only"),
+            _a("mount_options", "Comma-separated mount options"),
         ),
     ),
     "system": SourceDecl(
@@ -152,6 +157,11 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("tick_overruns", "count", "counter", "Cycles skipped due to overrun (SA-01)"),
             _m("event_queue_depth", "count", "gauge", "Queued undrained events"),
             _m("events_dropped", "count", "counter", "Events dropped on overflow (SA-08)"),
+            _m("events_received", "count", "counter", "Raw normalized events received"),
+            _m("events_repeated", "count", "counter",
+               "Adjacent duplicate events coalesced before queue admission (DM-20)"),
+            _m("event_rate_per_min", "events/min", "gauge",
+               "Rolling raw event arrival rate including coalesced repeats (DM-20)"),
             _m("events_unstored", "count", "counter", "Events excluded by store-filter (DM-09)"),
             _m("ring_mem_bytes", "bytes", "gauge", "Ring buffer memory (CA-04)"),
             _m("source_activity_age_s", "s", "gauge", "Seconds since event reader produced data"),

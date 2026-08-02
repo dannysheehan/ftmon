@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import signal
 import subprocess
 import threading
 from pathlib import Path
@@ -12,6 +10,11 @@ from ftmon.checks import jsoncheck, nagios
 from ftmon.checks.model import CheckSpec, RawCheckResult, unknown
 from ftmon.checks.trust import trusted_executable_path
 from ftmon.clock import Clock, SystemClock
+from ftmon.paths import (
+    external_check_environment,
+    external_process_group_options,
+    terminate_external_process,
+)
 
 _STDOUT_LIMIT = 64 * 1024
 _STDERR_LIMIT = 8 * 1024
@@ -40,11 +43,7 @@ class CheckRunner:
         timeout = min(spec.timeout_s, max(0.0, deadline_mono - started))
         if timeout <= 0:
             return unknown(0.0, "timeout")
-        env = {
-            "PATH": os.defpath,
-            "FTMON_CHECK_ALIAS": spec.alias,
-            "FTMON_CHECK_TIMEOUT": str(spec.timeout_s),
-        }
+        env = external_check_environment(spec.alias, spec.timeout_s)
         try:
             process = subprocess.Popen(
                 spec.argv,
@@ -54,7 +53,7 @@ class CheckRunner:
                 cwd=self._state_dir,
                 env=env,
                 close_fds=True,
-                start_new_session=True,
+                **external_process_group_options(),
             )
         except OSError:
             return unknown(self._clock.monotonic() - started, "launch")
@@ -79,12 +78,7 @@ class CheckRunner:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=0.25)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+            terminate_external_process(process)
         for reader in readers:
             reader.join()
         duration = max(0.0, self._clock.monotonic() - started)

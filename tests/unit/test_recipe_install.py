@@ -11,6 +11,7 @@ from ftmon.checks.registry import load
 from ftmon.cli import main
 from ftmon.paths import get_paths
 from ftmon.recipes.install import InstallError, install_recipe, merge_recipe_checks
+from tests.platform_permissions import assert_private, make_private, toml_path
 
 
 def _env(tmp_path, monkeypatch) -> None:
@@ -31,9 +32,11 @@ def _recipe_tree(tmp_path: Path, recipe_id: str = "test-recipe") -> Path:
 
 
 def _executable(tmp_path: Path, name: str = "check_http") -> Path:
+    if os.name == "nt" and not name.endswith(".exe"):
+        name += ".exe"
     executable = tmp_path / name
     executable.write_text("#!/bin/sh\nexit 0\n")
-    executable.chmod(0o700)
+    make_private(executable, 0o700)
     return executable
 
 
@@ -56,7 +59,7 @@ def test_merge_recipe_checks_writes_protected_registry(tmp_path, monkeypatch):
     monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "checks.toml.example").write_text(
         f'[check.demo_ftmon_https]\n'
-        f'argv = ["{plugin}", "-H", "example.test"]\n'
+        f'argv = ["{toml_path(plugin)}", "-H", "example.test"]\n'
         f'protocol = "nagios"\n'
         f'timeout = "9s"\n'
     )
@@ -67,7 +70,7 @@ def test_merge_recipe_checks_writes_protected_registry(tmp_path, monkeypatch):
 
     assert aliases == ("demo_ftmon_https",)
     registry = paths.check_registry_file
-    assert registry.stat().st_mode & 0o777 == 0o600
+    assert_private(registry, 0o600)
     assert "demo_ftmon_https" in load(registry, paths=paths)
 
 
@@ -78,7 +81,7 @@ def test_install_recipe_enables_monitor_without_restart(tmp_path, monkeypatch):
     recipe = _recipe_tree(tmp_path)
     monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "checks.toml.example").write_text(
-        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(plugin)}"]\nprotocol = "nagios"\n'
     )
     (recipe / "monitor.toml").write_text(_monitor_toml())
     paths = get_paths()
@@ -97,7 +100,7 @@ def test_install_recipe_accepts_explicit_directory_path(tmp_path, monkeypatch):
     plugin = _executable(tmp_path)
     recipe = _recipe_tree(tmp_path)
     (recipe / "checks.toml.example").write_text(
-        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(plugin)}"]\nprotocol = "nagios"\n'
     )
     (recipe / "monitor.toml").write_text(_monitor_toml())
     paths = get_paths()
@@ -116,7 +119,7 @@ def test_cli_recipe_install_and_check_install_alias(tmp_path, monkeypatch, capsy
     recipe = _recipe_tree(tmp_path)
     monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "checks.toml.example").write_text(
-        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(plugin)}"]\nprotocol = "nagios"\n'
     )
     (recipe / "monitor.toml").write_text(_monitor_toml())
     assert main(["recipe", "list"]) == 0
@@ -134,20 +137,22 @@ def test_merge_recipe_checks_skips_existing_alias_without_force(tmp_path, monkey
     recipe = _recipe_tree(tmp_path)
     monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "checks.toml.example").write_text(
-        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(plugin)}"]\nprotocol = "nagios"\n'
     )
     paths = get_paths()
     paths.ensure()
     paths.check_registry_file.write_text(
-        f'[check.demo_ftmon_https]\nargv = ["{existing}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(existing)}"]\n'
+        'protocol = "nagios"\n'
     )
-    paths.check_registry_file.chmod(0o600)
+    make_private(paths.check_registry_file, 0o600)
 
     aliases = merge_recipe_checks(paths, "test-recipe")
 
     assert aliases == ()
-    assert load(paths.check_registry_file, paths=paths)["demo_ftmon_https"].argv[0] == str(
-        existing,
+    assert (
+        load(paths.check_registry_file, paths=paths)["demo_ftmon_https"].argv[0]
+        == toml_path(existing)
     )
 
 
@@ -158,12 +163,12 @@ def test_merge_recipe_checks_rejects_invalid_existing_registry(tmp_path, monkeyp
     recipe = _recipe_tree(tmp_path)
     monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "checks.toml.example").write_text(
-        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(plugin)}"]\nprotocol = "nagios"\n'
     )
     paths = get_paths()
     paths.ensure()
     paths.check_registry_file.write_text('[check]\ndemo_ftmon_https = "oops"\n')
-    paths.check_registry_file.chmod(0o600)
+    make_private(paths.check_registry_file, 0o600)
 
     with pytest.raises(InstallError, match="invalid_registry"):
         merge_recipe_checks(paths, "test-recipe")
@@ -181,10 +186,11 @@ def test_merge_recipe_checks_leaves_registry_unchanged_on_rejection(tmp_path, mo
     paths = get_paths()
     paths.ensure()
     before = (
-        f'[check.demo_ftmon_https]\nargv = ["{existing}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(existing)}"]\n'
+        'protocol = "nagios"\n'
     )
     paths.check_registry_file.write_text(before)
-    paths.check_registry_file.chmod(0o600)
+    make_private(paths.check_registry_file, 0o600)
 
     with pytest.raises(InstallError):
         merge_recipe_checks(paths, "test-recipe", force=True)
@@ -199,7 +205,7 @@ def test_install_recipe_invalid_monitor_leaves_registry_untouched(tmp_path, monk
     recipe = _recipe_tree(tmp_path)
     monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "checks.toml.example").write_text(
-        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(plugin)}"]\nprotocol = "nagios"\n'
     )
     (recipe / "monitor.toml").write_text('schema = 1\n[monitor]\ndescription = "missing name"\n')
     paths = get_paths()
@@ -218,7 +224,7 @@ def test_install_recipe_no_enable_leaves_monitor_disabled(tmp_path, monkeypatch)
     recipe = _recipe_tree(tmp_path)
     monkeypatch.setenv("FTMON_EXTRA_MONITORS", str(recipe.parent))
     (recipe / "checks.toml.example").write_text(
-        f'[check.demo_ftmon_https]\nargv = ["{plugin}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(plugin)}"]\nprotocol = "nagios"\n'
     )
     (recipe / "monitor.toml").write_text(_monitor_toml())
     paths = get_paths()
@@ -259,6 +265,10 @@ def test_cli_recipe_install_reports_missing_recipe(tmp_path, monkeypatch, capsys
     assert "recipe_not_found" in capsys.readouterr().err
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="masked overflow UIDs are a POSIX NoNewPrivileges behavior",
+)
 def test_registry_accepts_masked_system_executable_owner(tmp_path, monkeypatch):
     """[EC-01] NoNewPrivileges maps distro plugin ownership to the overflow uid."""
     executable = tmp_path / "check_http"
@@ -282,10 +292,11 @@ def test_registry_accepts_masked_system_executable_owner(tmp_path, monkeypatch):
     )
     path = tmp_path / "checks.toml"
     path.write_text(
-        f'[check.demo_ftmon_https]\nargv = ["{executable}"]\nprotocol = "nagios"\n'
+        f'[check.demo_ftmon_https]\nargv = ["{toml_path(executable)}"]\n'
+        'protocol = "nagios"\n'
     )
-    path.chmod(0o600)
+    make_private(path, 0o600)
 
     registry = load(path)
 
-    assert registry["demo_ftmon_https"].argv[0] == str(executable)
+    assert registry["demo_ftmon_https"].argv[0] == toml_path(executable)

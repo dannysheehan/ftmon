@@ -3,9 +3,11 @@ canned systemctl output (no systemd needed in CI), real sockets for net."""
 
 from __future__ import annotations
 
-import socket
+import sys
+from types import SimpleNamespace
 
 import psutil
+import pytest
 
 from ftmon.clock import FakeClock
 from ftmon.sources.net import NetSampler
@@ -87,22 +89,57 @@ class TestUnitSampler:
         assert [e.entity_id for e in snap.entities] == ["unit:ok.service"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="win32serviceutil is Windows-only")
+class TestWindowsServiceQuery:
+    """[SA-04][PL-01][PL-03] unit.py's {unit=...} kind against the real
+    Windows Service Control Manager -- no NRestarts equivalent exists there
+    (see unit.py's module docstring), only ActiveState."""
+
+    def test_real_running_service_reports_active(self):
+        """[SA-04] Task Scheduler ('Schedule') runs by default on every
+        Windows install -- a real, always-available positive case."""
+        from ftmon.sources.unit import _query_windows_service
+
+        assert _query_windows_service("Schedule") == "ActiveState=active"
+
+    def test_unknown_service_reports_inactive_not_an_exception(self):
+        """[PL-03] a typo'd watchlist entry alerts as down, never crashes."""
+        from ftmon.sources.unit import _query_windows_service
+
+        assert _query_windows_service("NoSuchServiceXYZ") == "ActiveState=inactive"
+
+    def test_default_run_cmd_dispatches_to_windows_query(self):
+        from ftmon.sources.unit import _default_run_cmd, _query_windows_service
+
+        assert _default_run_cmd("Schedule") == _query_windows_service("Schedule")
+
+    def test_unit_sampler_end_to_end_against_a_real_service(self):
+        """[SA-04] UnitSampler's default run_cmd (no override) against the
+        real Service Control Manager, not a canned string."""
+        s = UnitSampler(FakeClock())
+        snap = sample(s, {"watchlist": [{"unit": "Schedule"}]})
+        (ent,) = snap.entities
+        assert ent.metrics["present"] == 1.0
+        assert "restarts" not in ent.metrics
+
+
 class TestNetSampler:
-    def test_totals_and_watchlist_listener(self):
-        """[SA-04] totals entity always present; a real listening socket is
-        present=1, a (hopefully) unused port present=0."""
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.bind(("127.0.0.1", 0))
-        srv.listen(1)
-        port = srv.getsockname()[1]
-        try:
-            snap = sample(NetSampler(FakeClock()), {"watchlist": [
-                {"listen": f"tcp:{port}"},
-                {"listen": "tcp:1"},  # reserved, never listening in CI
-                {"listen": "bogus"},  # PL-03: skipped, not fatal
-            ]})
-        finally:
-            srv.close()
+    def test_totals_and_watchlist_listener(self, monkeypatch):
+        """[SA-04] totals and watchlist use one deterministic connection
+        snapshot; OS visibility rules must not make the unit test flaky."""
+        port = 43210
+        monkeypatch.setattr(psutil, "net_connections", lambda **_kwargs: [
+            SimpleNamespace(
+                status=psutil.CONN_LISTEN,
+                laddr=SimpleNamespace(port=port),
+                type=1,  # SOCK_STREAM
+            ),
+        ])
+        snap = sample(NetSampler(FakeClock()), {"watchlist": [
+            {"listen": f"tcp:{port}"},
+            {"listen": "tcp:1"},
+            {"listen": "bogus"},  # PL-03: skipped, not fatal
+        ]})
         by_id = {e.entity_id: e for e in snap.entities}
         assert by_id["totals"].metrics["conn_total"] >= 1
         assert by_id["totals"].metrics["conn_listen"] >= 1

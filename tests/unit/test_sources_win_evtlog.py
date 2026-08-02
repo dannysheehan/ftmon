@@ -1,0 +1,842 @@
+"""[DM-07][DM-08][DM-13][DM-15][DM-19][DM-20][PL-01][PL-02][PL-03][PL-05]
+[SA-08][SA-10] Windows Event Log parsing, severity mapping, and EventSource
+queue/cursor/channel/query mechanics.
+
+Fixture XML in TestParseEventXml is real EvtRenderEventXml output captured
+from this machine's System and Application channels (SPEC.md's "captured
+real samples as fixtures" guidance for DM-08 tables), not hand-authored.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from types import SimpleNamespace
+
+import pytest
+
+from ftmon.model import EventRecord
+from ftmon.sources.base import SOURCE_DECLS
+from ftmon.sources.repeats import occurrence_count
+from ftmon.sources.win_evtlog import (
+    LEVEL_TO_SEVERITY,
+    ChannelSpec,
+    WindowsEventSource,
+    parse_event_xml,
+)
+
+
+def _fields(**overrides) -> dict:
+    base = {
+        "ts": 1.0, "source": "eventlog", "provider": "p",
+        "event_id": "42", "severity": 2, "message": "same",
+    }
+    base.update(overrides)
+    return base
+
+# --- real captured samples (spikes/windows-support/NOTES.md-adjacent capture) ---
+
+SYS_SAMPLE_DCOM_WARNING = (
+    "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+    "<System><Provider Name='Microsoft-Windows-DistributedCOM' "
+    "Guid='{1B562E86-B7AA-4131-BADC-B6F3A001407E}' EventSourceName='DCOM'/>"
+    "<EventID Qualifiers='0'>10016</EventID><Version>0</Version><Level>3</Level>"
+    "<Task>0</Task><Opcode>0</Opcode><Keywords>0x8080000000000000</Keywords>"
+    "<TimeCreated SystemTime='2026-07-25T07:57:19.8931204Z'/>"
+    "<EventRecordID>106610</EventRecordID>"
+    "<Correlation ActivityID='{e9e18570-19ac-0008-827f-c3ebac19dd01}'/>"
+    "<Execution ProcessID='1980' ThreadID='10292'/><Channel>System</Channel>"
+    "<Computer>4070TI</Computer>"
+    "<Security UserID='S-1-5-21-1313809561-7131544-1056195617-1002'/></System>"
+    "<EventData><Data Name='param1'>application-specific</Data>"
+    "<Data Name='param2'>Local</Data><Data Name='param3'>Activation</Data>"
+    "</EventData></Event>"
+)
+
+SYS_SAMPLE_KERNEL_GENERAL_INFO = (
+    "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+    "<System><Provider Name='Microsoft-Windows-Kernel-General' "
+    "Guid='{a68ca8b7-004f-d7b6-a698-07e2de0f1f5d}'/><EventID>15</EventID>"
+    "<Version>0</Version><Level>4</Level><Task>10</Task><Opcode>0</Opcode>"
+    "<Keywords>0x8000000000000000</Keywords>"
+    "<TimeCreated SystemTime='2026-07-25T07:48:35.1319514Z'/>"
+    "<EventRecordID>106609</EventRecordID><Correlation/>"
+    "<Execution ProcessID='24116' ThreadID='58024'/><Channel>System</Channel>"
+    "<Computer>4070TI</Computer><Security UserID='S-1-5-18'/></System>"
+    "<EventData><Data Name='HiveNameLength'>171</Data>"
+    "<Data Name='OriginalSize'>147009536</Data></EventData></Event>"
+)
+
+APP_SAMPLE_SPP_UNNAMED_DATA = (
+    "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+    "<System><Provider Name='Microsoft-Windows-Security-SPP' "
+    "Guid='{E23B33B0-C8C9-472C-A5F9-F2BDFEA0F156}' "
+    "EventSourceName='Software Protection Platform Service'/>"
+    "<EventID Qualifiers='16384'>16384</EventID><Version>0</Version><Level>4</Level>"
+    "<Task>0</Task><Opcode>0</Opcode><Keywords>0x80000000000000</Keywords>"
+    "<TimeCreated SystemTime='2026-07-25T08:13:15.6353751Z'/>"
+    "<EventRecordID>77702</EventRecordID><Correlation/>"
+    "<Execution ProcessID='55560' ThreadID='0'/><Channel>Application</Channel>"
+    "<Computer>4070TI</Computer><Security/></System>"
+    "<EventData><Data>2126-07-01T08:13:15Z</Data><Data>RulesEngine</Data>"
+    "</EventData></Event>"
+)
+
+APP_SAMPLE_SPP_EMPTY_EVENTDATA = (
+    "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+    "<System><Provider Name='Microsoft-Windows-Security-SPP' "
+    "Guid='{E23B33B0-C8C9-472C-A5F9-F2BDFEA0F156}' "
+    "EventSourceName='Software Protection Platform Service'/>"
+    "<EventID Qualifiers='49152'>16394</EventID><Version>0</Version><Level>4</Level>"
+    "<Task>0</Task><Opcode>0</Opcode><Keywords>0x80000000000000</Keywords>"
+    "<TimeCreated SystemTime='2026-07-25T08:12:45.4058740Z'/>"
+    "<EventRecordID>77701</EventRecordID><Correlation/>"
+    "<Execution ProcessID='55560' ThreadID='0'/><Channel>Application</Channel>"
+    "<Computer>4070TI</Computer><Security/></System><EventData></EventData></Event>"
+)
+
+
+class TestParseEventXml:
+    def test_level_to_severity_table_is_exact(self):
+        """[DM-08] Windows Level 1-5 -> ftmon severity, no surprise entries."""
+        assert LEVEL_TO_SEVERITY == {1: 4, 2: 3, 3: 2, 4: 0, 5: 0}
+
+    def test_real_system_dcom_warning_golden(self):
+        """[DM-07][DM-08] Real captured System-channel sample, named Data."""
+        fields = parse_event_xml(SYS_SAMPLE_DCOM_WARNING)
+        assert fields["source"] == "eventlog"
+        assert fields["provider"] == "Microsoft-Windows-DistributedCOM"
+        assert fields["event_id"] == "10016"
+        assert fields["severity"] == 2  # Level 3 (Warning) -> warning
+        assert fields["ts"] == pytest.approx(1784966239.893, abs=0.01)
+        assert "param1=application-specific" in fields["message"]
+
+    def test_real_system_kernel_general_info_golden(self):
+        """[DM-08] Level 4 (Information) -> info; unqualified EventID."""
+        fields = parse_event_xml(SYS_SAMPLE_KERNEL_GENERAL_INFO)
+        assert fields["event_id"] == "15"
+        assert fields["severity"] == 0
+        assert "HiveNameLength=171" in fields["message"]
+
+    def test_real_application_unnamed_data_joined(self):
+        """[DM-07] Data elements without a Name attribute join as bare values."""
+        fields = parse_event_xml(APP_SAMPLE_SPP_UNNAMED_DATA)
+        assert fields["message"] == "2126-07-01T08:13:15Z; RulesEngine"
+
+    def test_real_application_empty_eventdata_falls_back(self):
+        """No EventData content -> synthesized EventID/provider fallback message."""
+        fields = parse_event_xml(APP_SAMPLE_SPP_EMPTY_EVENTDATA)
+        assert fields["message"] == "EventID 16394 (Microsoft-Windows-Security-SPP)"
+
+    def test_malformed_xml_returns_none(self):
+        """[SA-08] Unparseable input is skipped, never fatal."""
+        assert parse_event_xml("not xml at all") is None
+
+    def test_missing_system_element_returns_none(self):
+        assert parse_event_xml(
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'/>"
+        ) is None
+
+    def test_missing_level_defaults_to_info(self):
+        """[DM-08] Absent Level, same fallback style as PRIORITY_TO_SEVERITY.get."""
+        xml = (
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+            "<System><Provider Name='Test'/><EventID>1</EventID>"
+            "<TimeCreated SystemTime='2026-01-01T00:00:00.000000Z'/></System>"
+            "<EventData/></Event>"
+        )
+        fields = parse_event_xml(xml)
+        assert fields["severity"] == 0
+        assert fields["provider"] == "Test"
+
+    def test_missing_provider_defaults_to_unknown(self):
+        xml = (
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+            "<System><EventID>1</EventID><Level>1</Level></System></Event>"
+        )
+        fields = parse_event_xml(xml)
+        assert fields["provider"] == "unknown"
+        assert fields["severity"] == 4  # Level 1 Critical -> critical
+
+    def test_missing_event_id_is_none_pl_02(self):
+        """[PL-02] event_id is optional; absent EventID -> None, not '0' or ''."""
+        xml = (
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+            "<System><Provider Name='NoIdProvider'/><Level>2</Level></System>"
+            "</Event>"
+        )
+        fields = parse_event_xml(xml)
+        assert fields["event_id"] is None
+        assert fields["message"] == "(NoIdProvider)"
+
+    def test_unparseable_timecreated_defaults_to_zero(self):
+        xml = (
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+            "<System><Provider Name='P'/><EventID>1</EventID>"
+            "<TimeCreated SystemTime='not-a-timestamp'/></System></Event>"
+        )
+        fields = parse_event_xml(xml)
+        assert fields["ts"] == 0.0
+
+    def test_message_truncated_at_2kb_dm_13(self):
+        """[DM-13] Event messages truncate at 2 KB, same bound as journald."""
+        long_value = "x" * 5000
+        xml = (
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+            "<System><Provider Name='P'/><EventID>1</EventID><Level>4</Level></System>"
+            f"<EventData><Data Name='d'>{long_value}</Data></EventData></Event>"
+        )
+        fields = parse_event_xml(xml)
+        assert len(fields["message"]) == 2048
+
+
+class TestWindowsEventSourceQueueMechanics:
+    """Pure queue/cursor logic -- exercised without any live EvtSubscribe
+    call, by driving the same lock-protected internals the real callback
+    uses (test_notify_desktop.py asserts on adapter internals the same way).
+
+    DM-15's contract: a channel's bookmark evidence may commit into the
+    returned cursor only when drain() actually removes the queue entry
+    carrying it -- never on arrival in the callback."""
+
+    def test_source_decl_matches_events_schema_pl_05(self):
+        assert WindowsEventSource.decl is SOURCE_DECLS["events"]
+
+    def test_not_alive_before_start(self):
+        assert WindowsEventSource().alive() is False
+
+    def test_adjacent_run_is_coalesced_before_queue_admission_dm_20(self):
+        """[DM-20] Windows uses the same origin-aware repeat contract."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "bookmark-1", _fields())
+            src._offer_locked("System", "bookmark-2", _fields(ts=2.0))
+        records, cursor = src.drain(now=42.0, max_items=10)
+        assert len(records) == 1
+        assert records[0].attrs["repeat_count"] == "2"
+        assert src.received == 2 and src.repeated == 1
+        assert json.loads(cursor) == {"System": "bookmark-2"}
+
+    def test_drain_stamps_ingest_ts_and_serializes_composite_cursor(self):
+        """[DM-15] cursor is a per-channel bookmark map, committed by drain."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._queue.append({
+                "fields": _fields(event_id=None, message="m"),
+                "bookmarks": {"System": "<BookmarkList/>"},
+            })
+            src._queue.append({
+                "fields": _fields(event_id=None, message="n"),
+                "bookmarks": {"Application": "<BookmarkList/>"},
+            })
+        records, cursor = src.drain(now=42.0, max_items=10)
+        assert len(records) == 2
+        assert isinstance(records[0], EventRecord)
+        assert records[0].ingest_ts == 42.0
+        assert json.loads(cursor) == {
+            "System": "<BookmarkList/>", "Application": "<BookmarkList/>",
+        }
+
+    def test_drain_respects_max_items(self):
+        src = WindowsEventSource()
+        with src._lock:
+            for i in range(5):
+                src._offer_locked(
+                    "System", f"bookmark-{i}",
+                    _fields(ts=float(i), event_id=None, message=str(i)),
+                )
+        records, _ = src.drain(now=0.0, max_items=2)
+        assert len(records) == 2
+        assert src.queue_depth() == 3
+
+    def test_drain_with_no_bookmarks_returns_none_cursor(self):
+        src = WindowsEventSource()
+        records, cursor = src.drain(now=0.0, max_items=10)
+        assert records == []
+        assert cursor is None
+
+    def test_queue_overflow_increments_dropped_sa_08(self):
+        """[SA-08] Bounded queue drops the oldest on overflow."""
+        src = WindowsEventSource()
+        from ftmon.sources.win_evtlog import QUEUE_MAX
+
+        with src._lock:
+            for i in range(QUEUE_MAX):
+                src._offer_locked(
+                    "System", f"bookmark-{i}",
+                    _fields(ts=float(i), event_id=None, message=f"m{i}"),
+                )
+            src._offer_locked(
+                "System", "overflow",
+                _fields(ts=99.0, event_id=None, message="overflow"),
+            )
+        assert src.dropped == 1
+        assert src.queue_depth() == QUEUE_MAX
+
+    # --- DM-15 checkpoint-correctness ---
+
+    def test_partial_drain_commits_only_the_drained_bookmark_dm_15(self):
+        """Three queued events in one channel, drain one: the cursor must
+        contain bookmark 1's evidence, not bookmark 3's -- the two
+        undrained events exist only in memory and must be replayable."""
+        src = WindowsEventSource()
+        with src._lock:
+            for i in (1, 2, 3):
+                src._offer_locked(
+                    "System", f"bookmark-{i}",
+                    _fields(ts=float(i), event_id=str(i), message=f"m{i}"),
+                )
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "bookmark-1"}
+        assert src.queue_depth() == 2
+
+    def test_drain_zero_does_not_advance_checkpoint_dm_15(self):
+        """drain(max_items=0) must not commit anything or fabricate a
+        cursor, and must not disturb an already-committed one."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "bookmark-1", _fields(event_id="1", message="m"))
+        records, cursor = src.drain(now=0.0, max_items=0)
+        assert records == []
+        assert cursor is None  # nothing has ever been drained/committed
+        assert src.queue_depth() == 1
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "bookmark-1"}
+
+        records, cursor2 = src.drain(now=0.0, max_items=0)
+        assert records == []
+        assert cursor2 == cursor  # unchanged, not re-derived or advanced
+
+    def test_partial_drains_across_multiple_channels_dm_15(self):
+        """Committing one channel's bookmark must not disturb another
+        channel's still-undrained position."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "sys-1", _fields(event_id="1", message="s1"))
+            src._offer_locked("Application", "app-1", _fields(event_id="2", message="a1"))
+            src._offer_locked("System", "sys-2", _fields(event_id="3", message="s2"))
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "sys-1"}  # Application untouched
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "sys-1", "Application": "app-1"}
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert len(records) == 1
+        assert json.loads(cursor) == {"System": "sys-2", "Application": "app-1"}
+
+    def test_adjacent_duplicates_one_channel_latest_bookmark_dm_15(self):
+        """One EventRecord, correct repeat_count, and the bookmark committed
+        on drain is the *latest* of the coalesced run, not the first."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "bookmark-1", _fields())
+            src._offer_locked("System", "bookmark-2", _fields(ts=2.0))
+            src._offer_locked("System", "bookmark-3", _fields(ts=3.0))
+        assert src.queue_depth() == 1
+
+        records, cursor = src.drain(now=0.0, max_items=10)
+        assert len(records) == 1
+        assert records[0].attrs["repeat_count"] == "3"
+        assert json.loads(cursor) == {"System": "bookmark-3"}
+
+    def test_identical_events_two_channels_one_aggregate_both_bookmarks_dm_15(self):
+        """Identical canonical events arriving from different channels
+        coalesce into one aggregate that retains each represented channel's
+        own latest bookmark."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "sys-1", _fields())
+            src._offer_locked("Application", "app-1", _fields(ts=2.0))
+        assert src.queue_depth() == 1
+
+        records, cursor = src.drain(now=0.0, max_items=10)
+        assert len(records) == 1
+        assert records[0].attrs["repeat_count"] == "2"
+        assert json.loads(cursor) == {"System": "sys-1", "Application": "app-1"}
+
+    def test_malformed_entry_consumed_without_replay_loop_dm_15_sa_08(self):
+        """A malformed-but-consumed entry still occupies its queue slot so
+        drain() advances past it in order once it's actually drained -- it
+        must neither block nor be skipped ahead of an earlier, still
+        undrained, valid event."""
+        src = WindowsEventSource()
+        with src._lock:
+            src._offer_locked("System", "sys-1", _fields(event_id="1", message="valid-1"))
+            src._offer_locked("System", "sys-2", None)  # malformed: no fields
+            src._offer_locked("System", "sys-3", _fields(event_id="3", message="valid-3"))
+        assert src.queue_depth() == 3
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert [r.message for r in records] == ["valid-1"]
+        assert json.loads(cursor) == {"System": "sys-1"}  # not sys-2 or sys-3
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert records == []  # the malformed entry produces no EventRecord
+        assert json.loads(cursor) == {"System": "sys-2"}  # but its slot commits
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert [r.message for r in records] == ["valid-3"]
+        assert json.loads(cursor) == {"System": "sys-3"}
+
+    def test_overflow_dropped_entry_does_not_commit_its_bookmark_dm_15_sa_08(self):
+        """An overflow-evicted entry's bookmark is discarded, not committed
+        -- only a later accepted event for that channel may pass it, per
+        the intentional SA-08 loss policy."""
+        src = WindowsEventSource()
+        from ftmon.sources.win_evtlog import QUEUE_MAX
+
+        with src._lock:
+            for i in range(QUEUE_MAX):
+                src._offer_locked(
+                    "System", f"bookmark-{i}",
+                    _fields(ts=float(i), event_id=str(i), message="m"),
+                )
+            # bookmark-0's entry is about to be evicted by this append.
+            src._offer_locked(
+                "System", "bookmark-overflow",
+                _fields(ts=99.0, event_id="over", message="overflow"),
+            )
+        assert src.dropped == 1
+        assert src.queue_depth() == QUEUE_MAX
+
+        records, cursor = src.drain(now=0.0, max_items=1)
+        assert records[0].event_id == "1"  # bookmark-0 was dropped, never queued
+        assert json.loads(cursor) == {"System": "bookmark-1"}
+
+    def test_episode_occurrence_count_reflects_all_coalesced_events_dm_15(self):
+        """A merged aggregate's repeat_count is what engine occurrence
+        accounting (ftmon.engine.events._occurrence_count) reads, so an
+        episode counts every raw event coalesced into the one EventRecord,
+        not just one."""
+        src = WindowsEventSource()
+        with src._lock:
+            for i, bookmark in enumerate(("b1", "b2", "b3", "b4")):
+                src._offer_locked("System", bookmark, _fields(ts=float(i)))
+        records, _cursor = src.drain(now=0.0, max_items=10)
+        assert len(records) == 1
+        assert occurrence_count({"attrs": records[0].attrs}) == 4
+
+
+class TestWindowsEventSourceInitialCheckpoint:
+    """Deterministic cold-restart checks with a tiny Win32 API fixture."""
+
+    @staticmethod
+    def _api(monkeypatch, events):
+        class FakeWinError(Exception):
+            pass
+
+        subscriptions = []
+
+        def create_bookmark(xml):
+            if xml is not None and not xml.startswith("bookmark:"):
+                raise FakeWinError(13, "invalid bookmark")
+            return {"xml": xml}
+
+        def update_bookmark(bookmark, event):
+            bookmark["xml"] = event
+
+        def render(handle, flag):
+            assert flag == 4
+            return handle["xml"]
+
+        def subscribe(channel, flags, **kwargs):
+            subscriptions.append((channel, flags, kwargs.get("Bookmark")))
+            return object()
+
+        api = SimpleNamespace(
+            EvtQueryChannelPath=1,
+            EvtQueryReverseDirection=2,
+            EvtSubscribeStartAfterBookmark=10,
+            EvtSubscribeStartAtOldestRecord=11,
+            EvtSubscribeActionError=0,
+            EvtSubscribeActionDeliver=1,
+            EvtRenderBookmark=4,
+            EvtQuery=lambda channel, _flags, _query: channel,
+            EvtNext=lambda channel, _count, _timeout: events.get(channel, [])[-1:],
+            EvtCreateBookmark=create_bookmark,
+            EvtUpdateBookmark=update_bookmark,
+            EvtRender=render,
+            EvtSubscribe=subscribe,
+        )
+        monkeypatch.setitem(sys.modules, "win32evtlog", api)
+        monkeypatch.setitem(sys.modules, "pywintypes", SimpleNamespace(error=FakeWinError))
+        return api, subscriptions
+
+    def test_empty_sibling_restarts_at_oldest_after_partial_drain_dm_15(self, monkeypatch):
+        """[DM-15] An empty channel gets a durable replay boundary, so its
+        first undrained event cannot disappear when another channel drains."""
+        api, subscriptions = self._api(
+            monkeypatch, {"System": ["bookmark:S0"], "Application": []}
+        )
+        src = WindowsEventSource()
+        src.start(None)
+        _records, initial = src.drain(now=0.0, max_items=0)
+        assert json.loads(initial) == {
+            "System": "bookmark:S0",
+            "Application": "ftmon:oldest",
+        }
+
+        with src._lock:
+            src._offer_locked("System", "bookmark:S1", _fields(message="system"))
+            src._offer_locked("Application", "bookmark:A1", _fields(message="application"))
+        _records, partial = src.drain(now=0.0, max_items=1)
+        assert json.loads(partial) == {
+            "System": "bookmark:S1",
+            "Application": "ftmon:oldest",
+        }
+
+        subscriptions.clear()
+        resumed = WindowsEventSource()
+        resumed.start(partial)
+        app = next(item for item in subscriptions if item[0] == "Application")
+        assert app[1] == api.EvtSubscribeStartAtOldestRecord
+        assert app[2] is None
+
+    def test_new_nonempty_channel_snapshots_tail_before_subscribe_dm_15(self, monkeypatch):
+        """[DM-15][DM-19] A newly configured channel absent from an older
+        composite cursor starts after a persisted tail, never from future."""
+        api, subscriptions = self._api(
+            monkeypatch,
+            {"System": ["bookmark:S10"], "Application": ["bookmark:A20"]},
+        )
+        src = WindowsEventSource()
+        src.start(json.dumps({"System": "bookmark:S10"}))
+        _records, cursor = src.drain(now=0.0, max_items=0)
+        assert json.loads(cursor) == {
+            "System": "bookmark:S10",
+            "Application": "bookmark:A20",
+        }
+        app = next(item for item in subscriptions if item[0] == "Application")
+        assert app[1] == api.EvtSubscribeStartAfterBookmark
+        assert app[2]["xml"] == "bookmark:A20"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="win32evtlog is Windows-only")
+class TestWindowsEventSourceLive:
+    """Fast, deterministic checks against the real Win32 Event Log API (no
+    waiting for live event delivery -- that's covered by manual smoke
+    testing per PLAN's two-tier testing philosophy, not the unit gate)."""
+
+    def test_start_stop_against_real_application_channel(self):
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(None)
+            assert src.alive() is True
+        finally:
+            src.stop()
+        assert src.alive() is False
+
+    def test_malformed_cursor_json_is_counted_not_fatal(self):
+        """[SA-08][PL-03] A corrupt/foreign persisted cursor degrades
+        gracefully instead of crashing the daemon."""
+        src = WindowsEventSource(channels=())  # no real subscriptions needed
+        src.start("not valid json{{{")
+        assert src.malformed == 1
+
+    def test_stale_channel_bookmark_is_counted_not_fatal(self):
+        """A well-formed but bogus bookmark for a channel starts that
+        channel fresh rather than raising (EvtCreateBookmark rejects
+        non-well-formed XML with a catchable pywintypes.error)."""
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(json.dumps({"Application": "not valid bookmark xml"}))
+            assert src.malformed == 1
+            assert src.alive() is True  # still subscribed, just from now
+        finally:
+            src.stop()
+
+    def test_restart_resumes_from_partial_drain_cursor_dm_15(self):
+        """[DM-15] Crash/restart: the cursor produced by a *partial* drain
+        must be exactly what a fresh instance resumes from -- real
+        EvtCreateBookmark/EvtSubscribe accept it and the channel comes back
+        alive from that committed point, not from whatever the callback
+        last saw arrive."""
+        import win32evtlog
+
+        # EvtCreateBookmark(None) + EvtRender is the same round trip the
+        # callback performs per event; it's synchronous and needs no live
+        # event to produce valid bookmark XML.
+        real_bookmark_xml = win32evtlog.EvtRender(
+            win32evtlog.EvtCreateBookmark(None), win32evtlog.EvtRenderBookmark
+        )
+
+        src = WindowsEventSource(channels=("Application",))
+        with src._lock:
+            src._offer_locked(
+                "Application", real_bookmark_xml,
+                _fields(event_id="1", message="drained"),
+            )
+            src._offer_locked(
+                "Application", "still in flight, never drained",
+                _fields(ts=2.0, event_id="2", message="undrained"),
+            )
+        records, cursor = src.drain(now=0.0, max_items=1)  # partial: 1 of 2
+        assert len(records) == 1
+        assert json.loads(cursor) == {"Application": real_bookmark_xml}
+
+        resumed = WindowsEventSource(channels=("Application",))
+        try:
+            resumed.start(cursor)  # simulates the post-crash restart
+            assert resumed.malformed == 0  # the committed bookmark is well-formed
+            assert resumed.alive() is True
+        finally:
+            resumed.stop()
+
+    def test_committed_seeded_from_prior_survives_partial_drain_of_sibling_channel_dm_15(self):
+        """[DM-15] Prior cursor {System: S10, Application: A10}; draining a
+        new Application event (A11) must return {System: S10,
+        Application: A11} -- System's valid prior position must not be
+        dropped just because only Application produced a new event this
+        epoch.
+
+        Only Application is a real EvtSubscribe here (proving start()
+        genuinely seeds _committed from a validated prior bookmark);
+        System's prior seed is injected directly to stand in for a second
+        validated channel without opening two simultaneous
+        EvtSubscribeStartAfterBookmark subscriptions on a degenerate empty
+        bookmark, which pywin32 was observed to hang tearing down together
+        -- a native-library rough edge orthogonal to this invariant, never
+        hit with real per-record bookmarks (see the Phase 4 native run)."""
+        import win32evtlog
+
+        real_bookmark_xml = win32evtlog.EvtRender(
+            win32evtlog.EvtCreateBookmark(None), win32evtlog.EvtRenderBookmark
+        )
+        prior = json.dumps({"Application": real_bookmark_xml})
+
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(prior)
+            assert src.malformed == 0
+            with src._lock:
+                assert src._committed == {"Application": real_bookmark_xml}
+                src._committed["System"] = "S10"  # stands in for a second validated channel
+                src._offer_locked(
+                    "Application", "A11", _fields(event_id="new", message="a11"),
+                )
+            records, cursor = src.drain(now=0.0, max_items=10)
+            assert len(records) == 1
+            assert json.loads(cursor) == {"System": "S10", "Application": "A11"}
+        finally:
+            src.stop()
+
+    def test_drain_zero_after_restart_returns_unchanged_prior_cursor_dm_15(self):
+        """[DM-15] drain(max_items=0) immediately after a successful
+        restart must return the prior composite cursor exactly -- nothing
+        has been drained yet, so nothing should appear to have changed.
+        Same single-real-subscription-plus-injected-sibling shape as above,
+        for the same native-teardown reason."""
+        import win32evtlog
+
+        real_bookmark_xml = win32evtlog.EvtRender(
+            win32evtlog.EvtCreateBookmark(None), win32evtlog.EvtRenderBookmark
+        )
+        prior = json.dumps({"Application": real_bookmark_xml})
+
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(prior)
+            with src._lock:
+                src._committed["System"] = "S10"
+            records, cursor = src.drain(now=0.0, max_items=0)
+            assert records == []
+            assert json.loads(cursor) == {"System": "S10", "Application": real_bookmark_xml}
+        finally:
+            src.stop()
+
+    def test_stale_channel_bookmark_omitted_without_dropping_sibling_dm_15(self):
+        """[DM-15] A stale/foreign bookmark is replaced by a fresh tail
+        boundary without discarding another channel's valid prior bookmark.
+
+        Application carries the *stale* bookmark here (the real
+        EvtCreateBookmark call that must reject it), and the untouched
+        sibling is injected as "System" rather than really subscribed --
+        same single-real-subscription rationale as the two tests above:
+        two real System+Application subscriptions opened together were
+        observed to occasionally stall the whole suite on teardown."""
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(json.dumps({"Application": "not valid bookmark xml"}))
+            assert src.malformed == 1  # Application's stale bookmark, counted
+            with src._lock:
+                assert set(src._committed) == {"Application"}
+                src._committed["System"] = "S10"  # stands in for a sibling's valid seed
+            records, cursor = src.drain(now=0.0, max_items=0)
+            assert records == []
+            committed = json.loads(cursor)
+            assert committed["System"] == "S10"
+            assert committed["Application"]
+        finally:
+            src.stop()
+
+    def test_restart_clears_undrained_queue_from_prior_epoch_dm_15(self):
+        """[DM-15] Restarting the same instance (e.g. a reconnect) must
+        discard undrained entries from the old epoch before subscribing --
+        they belong to a subscription that no longer exists, and replaying
+        them against the new one would be a duplicate, not a recovery."""
+        src = WindowsEventSource(channels=("Application",))
+        with src._lock:
+            src._offer_locked(
+                "Application", "stale-1", _fields(event_id="stale", message="old-epoch"),
+            )
+        assert src.queue_depth() == 1
+
+        try:
+            src.start(None)
+            assert src.queue_depth() == 0
+        finally:
+            src.stop()
+
+    def test_callback_cannot_observe_unseeded_committed_cursor_dm_15(self):
+        """[DM-15] EvtSubscribe may start delivering on a callback thread
+        the instant it's called -- this channel's committed cursor must
+        already carry its valid prior bookmark *before* that call, not
+        after, or a concurrent drain(max_items=0) could momentarily see it
+        missing."""
+        import unittest.mock
+
+        import win32evtlog
+
+        real_bookmark_xml = win32evtlog.EvtRender(
+            win32evtlog.EvtCreateBookmark(None), win32evtlog.EvtRenderBookmark
+        )
+        prior = json.dumps({"Application": real_bookmark_xml})
+
+        src = WindowsEventSource(channels=("Application",))
+        observed: dict[str, dict] = {}
+        real_subscribe = win32evtlog.EvtSubscribe
+
+        def spy(channel, flags, **kwargs):
+            with src._lock:
+                observed[channel] = dict(src._committed)
+            return real_subscribe(channel, flags, **kwargs)
+
+        try:
+            with unittest.mock.patch("win32evtlog.EvtSubscribe", side_effect=spy):
+                src.start(prior)
+            assert observed["Application"] == {"Application": real_bookmark_xml}
+        finally:
+            src.stop()
+
+    def test_bad_channel_isolated_from_good_channel_sa_10(self):
+        """[SA-10] A nonexistent channel fails EvtSubscribe with a catchable
+        pywintypes.error; it must not abort subscription setup for the rest
+        -- the good channel still comes up, and the bad one is recorded in
+        subscribe_errors rather than raising."""
+        src = WindowsEventSource(
+            channels=("Application", "ThisChannelDoesNotExist12345"))
+        try:
+            src.start(None)
+            assert src.alive() is True  # Application still subscribed
+            assert src._channel_ok["Application"] is True
+            assert src._channel_ok["ThisChannelDoesNotExist12345"] is False
+            assert "ThisChannelDoesNotExist12345" in src.subscribe_errors
+        finally:
+            src.stop()
+
+    def test_configure_before_start_changes_channels(self):
+        """[DM-19] configure() overrides the constructed channel list before
+        the first start() -- the pre-start hook daemon.py's _start_events()
+        uses once source_options.channels are known."""
+        src = WindowsEventSource(channels=("Application",))
+        src.configure((ChannelSpec(path="Application"), ChannelSpec(path="System")))
+        try:
+            src.start(None)
+            assert src._channel_ok == {"Application": True, "System": True}
+        finally:
+            src.stop()
+
+    def test_configure_after_start_is_a_noop(self):
+        """[DM-19] Changing channels after subscriptions exist needs a
+        restart, not a hot reconfigure -- configure() silently ignores the
+        attempt rather than tearing down live subscriptions."""
+        src = WindowsEventSource(channels=("Application",))
+        try:
+            src.start(None)
+            src.configure((ChannelSpec(path="System"),))
+            assert set(src._channel_ok) == {"Application"}  # unchanged
+        finally:
+            src.stop()
+
+    def test_query_filter_passthrough_valid_xpath_subscribes_cleanly(self):
+        """[DM-19] A syntactically valid XPath Query narrows the subscription
+        without raising -- delivery semantics aren't asserted here (no
+        live event wait, per this class's docstring), just that
+        EvtSubscribe accepts a Query and still comes up healthy."""
+        src = WindowsEventSource()
+        src.configure((ChannelSpec(
+            path="Application", query="*[System[(Level=1 or Level=2)]]"),))
+        try:
+            src.start(None)
+            assert src._channel_ok["Application"] is True
+            assert "Application" not in src.subscribe_errors
+        finally:
+            src.stop()
+
+    def test_malformed_query_isolated_like_bad_channel(self):
+        """[SA-10] A syntactically invalid XPath Query fails EvtSubscribe for
+        that channel only -- same per-channel isolation as a bad channel
+        name."""
+        src = WindowsEventSource()
+        src.configure((
+            ChannelSpec(path="Application", query="not valid xpath((("),
+            ChannelSpec(path="System"),
+        ))
+        try:
+            src.start(None)
+            assert src._channel_ok["Application"] is False
+            assert "Application" in src.subscribe_errors
+            assert src._channel_ok["System"] is True
+            assert src.alive() is True  # System still came up
+        finally:
+            src.stop()
+
+    def test_configure_extends_defaults_rather_than_replacing_them(self):
+        """A monitor declaring channels = [{path="Windows PowerShell"}] must
+        gain that channel, not lose the constructor's default System/
+        Application (and whatever built-in rules -- e.g. events.toml's
+        unexpected-shutdown rule -- depend on them still being subscribed)."""
+        src = WindowsEventSource()  # constructor default: System, Application
+        src.configure((ChannelSpec(path="Windows PowerShell"),))
+        try:
+            src.start(None)
+            assert set(src._channel_ok) == {"System", "Application", "Windows PowerShell"}
+            assert all(src._channel_ok.values())
+        finally:
+            src.stop()
+
+    def test_configure_replaces_only_the_matching_default_path(self):
+        """An explicit query for a path that's already a default (e.g.
+        System) narrows that one channel in place -- it doesn't duplicate
+        it or drop the other default."""
+        src = WindowsEventSource()
+        src.configure((ChannelSpec(path="System", query="*[System[(Level=1 or Level=2)]]"),))
+        try:
+            src.start(None)
+            assert set(src._channel_ok) == {"System", "Application"}
+            assert all(src._channel_ok.values())
+        finally:
+            src.stop()
+
+    def test_async_subscribe_error_callback_populates_subscribe_errors(self):
+        """[SA-10] Async EvtSubscribeActionError callbacks (a channel that
+        becomes unavailable after a successful initial EvtSubscribe) land
+        in subscribe_errors too, not just synchronous EvtSubscribe()
+        failures -- alive() only goes False when every channel is down, so
+        if another channel stays healthy this is the only signal a
+        post-subscribe failure on this one ever gets."""
+        import win32evtlog
+
+        src = WindowsEventSource(channels=("Application",))
+        callback = src._make_callback("Application")
+        callback(win32evtlog.EvtSubscribeActionError, None, 5)
+        assert src._channel_ok["Application"] is False
+        assert "Application" in src.subscribe_errors
+        assert "5" in src.subscribe_errors["Application"]

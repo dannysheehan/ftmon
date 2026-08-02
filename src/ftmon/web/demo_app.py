@@ -17,6 +17,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
+from ftmon.checks.trust import writable_beyond_owner
 from ftmon.paths import get_paths
 from ftmon.store.query import Query
 from ftmon.web.app import (
@@ -97,7 +98,7 @@ def _open_demo_database(db_path: Path) -> tuple[sqlite3.Connection, float]:
         raise ValueError(f"demo database is unavailable: {exc}") from exc
     if not os.path.isfile(path) or db_path.expanduser().is_symlink():
         raise ValueError("demo database must be a regular, non-symlink file")
-    if stat.st_mode & 0o022:
+    if writable_beyond_owner(path, stat):
         raise ValueError("demo database must not be group/world writable")
     if path == get_paths().db_file.expanduser().resolve():
         raise ValueError("the operational FTMON database cannot be used as a demo")

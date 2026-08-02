@@ -17,6 +17,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from ftmon.definitions import loader
+from ftmon.paths import fsync_directory, replace_with_readonly_file
 from ftmon.store.db import connect, migrate
 from ftmon.store.retention import Retention
 
@@ -226,15 +227,10 @@ def build(output: Path) -> Path:
             conn.execute("VACUUM")
         finally:
             conn.close()
-        os.chmod(temporary, 0o444)
-        with temporary.open("rb") as stream:
+        with temporary.open("r+b") as stream:
             os.fsync(stream.fileno())
-        os.replace(temporary, output)
-        directory_fd = os.open(output.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        replace_with_readonly_file(temporary, output)
+        fsync_directory(output.parent)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise

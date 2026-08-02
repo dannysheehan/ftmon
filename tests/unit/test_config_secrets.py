@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ftmon.config import SecretRef, load_config
+from tests.platform_permissions import make_broadly_writable, make_private, symlink_or_skip
 
 
 def test_secret_value_is_redacted_and_env_resolution_is_explicit():
@@ -18,28 +19,33 @@ def test_secret_value_is_redacted_and_env_resolution_is_explicit():
 def test_secret_file_requires_private_regular_owned_file(tmp_path):
     secret = tmp_path / "token"
     secret.write_text("  token-value\n")
-    secret.chmod(0o600)
+    make_private(secret, 0o600)
     assert SecretRef(file=secret).resolve()._reveal() == "token-value"
 
-    secret.chmod(0o640)
+    make_broadly_writable(secret, 0o640)
     with pytest.raises(ValueError, match="group/world"):
         SecretRef(file=secret).resolve()
 
-    secret.chmod(0o600)
+    make_private(secret, 0o600)
     secret.write_text("x" * 8193)
     with pytest.raises(ValueError, match="8 KiB"):
         SecretRef(file=secret).resolve()
 
 
-def test_secret_file_rejects_symlink_and_embedded_controls(tmp_path):
+def test_secret_file_rejects_symlink(tmp_path):
     target = tmp_path / "target"
     target.write_text("secret")
-    target.chmod(0o600)
+    make_private(target, 0o600)
     link = tmp_path / "link"
-    link.symlink_to(target)
+    symlink_or_skip(link, target)
     with pytest.raises(ValueError, match="opened safely"):
         SecretRef(file=link).resolve()
 
+
+def test_secret_file_rejects_embedded_controls(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("secret")
+    make_private(target, 0o600)
     target.write_text("one\ntwo")
     with pytest.raises(ValueError, match="embedded newline"):
         SecretRef(file=target).resolve()

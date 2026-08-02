@@ -1,0 +1,39 @@
+# FTMON built-in: system-wide pressure (SPEC 7.7.5)
+# "Why is the whole desktop sluggish" — as opposed to blaming one process.
+# PSI metrics are None on kernels without CONFIG_PSI; those rules stay silent
+# (EX-06 three-valued logic) rather than firing wrongly.
+schema = 1
+
+[monitor]
+name = "load"
+description = "System-wide memory pressure"
+version = 2
+enabled = true
+platforms = ["darwin"]
+interval = "60s"
+source = "system"
+
+[parameters]
+mem_avail_pct_warn = { value = 5, doc = "Warn when available memory drops below this percent of total" }
+
+# CPU PSI is the primary load signal: it reports time runnable work was stalled,
+# unlike load average whose meaning varies with CPU count.
+[glance]
+metric = "mem_avail_pct"
+unit = "percent"
+aggregate = "min"
+thresholds = [
+  { label = "warn", parameter = "mem_avail_pct_warn" },
+]
+
+[[rule]]
+id = "pressure-warn"
+group = "pressure"
+when = 'pct(mem_available_bytes, mem_total_bytes) < mem_avail_pct_warn'
+severity = "warning"
+confirm_cycles = 5
+message = "System under pressure: {mem_avail_pct:.0f}% memory available"
+
+[[derived]]
+name = "mem_avail_pct"
+expr = 'pct(mem_available_bytes, mem_total_bytes)'

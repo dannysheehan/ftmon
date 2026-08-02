@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.14**. Companion to `SPEC.md` v0.29 — every design element
+Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.38 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -252,9 +252,21 @@ owned by the service account and not group/world-readable, and has surrounding
 ASCII whitespace stripped. Environment and file forms are mutually exclusive.
 Literal `token`, `password`, or webhook `url` keys are rejected rather than
 deprecated, because silently accepting them would defeat SE-05. The generated
-desktop profile writes desktop enabled; the server profile writes it disabled.
-Profile effects are visible text in the generated file and disappear as a
-runtime concept after initialization.
+desktop variants write desktop enabled; server variants write it disabled.
+Before that scaffold is written, generic `desktop`/`server` aliases resolve to
+`windesktop`/`winserver` on Windows and `macdesktop`/`macserver` on Darwin;
+omitting the option is the generic desktop case.
+`cli.py::_PROFILE_CALIBRATED_DIRS` then maps profile name to calibrated-tree
+subdirectory: Linux `desktop` → `profile/desktop` (real
+GNOME host-tuning data, `docs/tuning-desktop-xps15.md`); `windesktop` and
+`winserver` both → `profile/windows`, one shared tree since the fixes it
+carries are OS-semantic (dead rules removed because the metrics they key on
+can never exist on Windows), not a desktop-vs-server tuning distinction —
+there is no Windows tuning data to justify two separate trees. The remaining
+Linux `server` profile falls through to the normative, Linux-only uncalibrated
+`design/builtins` set. Profile effects are visible
+text in the generated file and disappear as a runtime concept after
+initialization.
 
 M9 provides `Paths.check_registry_file`. It defaults to private
 `config_dir/checks.toml` for the desktop/single-user trust model. The hardened
@@ -281,13 +293,48 @@ category. The registry object, not raw TOML, is passed to `ExternalSampler`.
 Config reload swaps the complete object only after validation; failure retains
 the previous object (EC-01/06/08, SE-07).
 
+`checks/trust.py` is the single evaluator behind all of this — ownership
+(`trusted_owner`/`owned_by_self`) and writability
+(`writable_beyond_owner`/`accessible_beyond_owner`) each have one
+implementation shared by the registry loader, the external-check runner's
+pre-launch revalidation, config.py's SE-04 secret-credential-file check, and
+web/demo_app.py's SE-06 demo-database check — a second copy of the predicate
+anywhere would let one caller's notion of "trusted" drift from another's,
+exactly the TOCTOU-adjacent failure SE-07 calls out. On POSIX this is the
+familiar `uid in {0, os.geteuid()}` plus `st_mode & (S_IWGRP|S_IWOTH)`. On
+Windows, which has neither a real uid (`os.stat().st_uid` is always 0 there)
+nor meaningful mode bits (`st_mode`'s write bits are a fixed synthesized
+value, not real permissions), the same two questions are answered with the
+Win32 security APIs instead: `trusted_owner` compares the file's owner SID
+(`GetFileSecurity` + `GetSecurityDescriptorOwner`) against the current
+process token's user SID (`OpenProcessToken` + `GetTokenInformation`,
+`TokenUser`), treating the well-known SYSTEM and Administrators SIDs
+(`CreateWellKnownSid`) as the Windows analogue of POSIX root; the
+writability checks walk the file's DACL (`GetSecurityDescriptorDacl`/
+`GetAce`) and fail if any `ACCESS_ALLOWED` entry grants a write-capable (or,
+for the stricter secrets check, any) right to a trustee outside that same
+owner/SYSTEM/Administrators set. An unreadable, absent, or NULL DACL fails
+closed; Windows grants everyone full access when no DACL restricts it. Secret
+credential checks obtain the same descriptor with `GetSecurityInfo` from the
+CRT fd's already-open OS handle, so the safe open is not undone by a second
+path lookup. The Linux-only `masked_system_executable` escape hatch (NoNewPrivileges masking
+distro plugin ownership to an overflow uid) has no Windows counterpart —
+it is a narrow systemd sandboxing workaround, not a general rule.
+
 There is deliberately no environment table. A generic secret-to-environment
 feature would make process output, diagnostics and third-party behavior part of
 FTMON's secret boundary. A plugin that needs credentials receives the path to
 its own administrator-managed protected file as a non-secret argv value; its
 format, ownership and lifecycle remain that plugin's responsibility (EC-07).
 
-Atomic write helper `paths.atomic_write(path, bytes)` (tmp + fsync + rename, 0600) is the only function that writes into the config tree (PM-06a/b); loader rejects symlinks (PM-06c).
+Atomic write helper `paths.atomic_write(path, bytes)` (tmp + fsync + rename,
+0600) is the only function that writes into the config tree (PM-06a/b); loader
+rejects symlinks (PM-06c). On Windows, private permission setup opens the
+file/directory itself with `FILE_FLAG_OPEN_REPARSE_POINT` (and
+`FILE_FLAG_BACKUP_SEMANTICS` for directory support), rejects the reparse
+attribute, and calls `SetSecurityInfo` on that handle. `Paths.ensure` and
+`atomic_write` therefore stop before a junction can redirect their DACL or
+content mutation.
 
 ---
 
@@ -378,8 +425,9 @@ class EvalContext(Protocol):
 # incident engine — pure (IN-06)
 def step_group(cfg: GroupConfig, st: GroupState, evals: Mapping[str, TriBool],
                now: float) -> tuple[GroupState, tuple[Effect, ...]]
-def step_episode(cfg: EpisodeConfig, st: GroupState, matches: Sequence[EventRecord],
-                 now: float) -> tuple[GroupState, tuple[Effect, ...]]           # IN-08
+def step_episode(cfg: EpisodeConfig, st: EpisodeState,
+                 matches: Sequence[tuple[float, str] | tuple[float, str, int]],
+                 now: float) -> tuple[EpisodeState, tuple[Effect, ...]]         # IN-08/DM-20
 
 # storage facade (all non-daemon processes use only Query + SmallWrites)
 class Query:      # DM-06; shared by CLI/MCP/web
@@ -397,7 +445,17 @@ class SmallWrites:
     def ack(self, incident_id, by, note) -> None    # PM-03 short txn
 ```
 
-`ControlledClock` (tests): listens on `$FTMON_CLOCK_SOCK` (unix socket, line-JSON `{"op":"step","s":5}` / `{"op":"set","wall":…,"mono":…}`); `sleep_until` blocks on the socket; the daemon replies `{"ok":true,"tick":N}` **after** completing the tick, so harness steps are synchronous (TS-05 determinism).
+`ControlledClock` is test-only and available only when the daemon is explicitly
+started with `--clock controlled`. On Linux/macOS it preserves the
+`$FTMON_CLOCK_SOCK` Unix socket; the harness creates a short temporary socket
+directory and removes it during teardown. Windows uses `$FTMON_CLOCK_PORT` and
+AF_INET bound strictly to `127.0.0.1`, with the harness reserving an ephemeral
+loopback port. Neither transport is opened in normal daemon mode, so PM-05 and
+SE-01's production listener boundary remains the loopback web UI alone. Both
+transports use the identical line-JSON `{"op":"step","s":5}` /
+`{"op":"set","wall":…,"mono":…}` protocol: `sleep_until` blocks on the
+endpoint and the daemon replies `{"ok":true,"tick":N}` **after** completing
+the tick, so harness steps remain synchronous (TS-05 determinism).
 
 ---
 
@@ -430,6 +488,8 @@ class SmallWrites:
 | `source_options.check` | registered alias | external |
 | `source_options.entity` | stable non-empty string ≤ 256 | external |
 | `source_options.perfdata[]` | `{label, metric, plugin_uom, unit, kind, scale?}`; ≤32, unique labels/metrics | external |
+| `source_options.channels[]` | `{path, query?}`; path required + unique ≤256, query optional ≤2048 (MD-13, DM-19) | events |
+| `source_options.store_min_severity` | severity name or int 0-4 (default notice, DM-09) | events |
 | `parameters.*` | `{value: num, doc: str}` | all |
 | `promotion.expr` | expression (bool) — SA-05(c) heuristic | process |
 | `derived[].name/expr` | metric name / expression | sampler sources |
@@ -643,6 +703,16 @@ Desktop readiness is validated before rows are created; a runtime `notify-send`
 timeout is retryable and other non-zero exits are permanent. These rules avoid
 an absent desktop session creating an endless queue on a server.
 
+The Darwin desktop adapter launches `/usr/bin/osascript` with a
+`display notification` expression and a bounded timeout. It needs no FTMON app
+bundle or code signature, but Notification Center attributes it to
+`com.apple.ScriptEditor2`; adapter documentation and doctor output must name
+that identity. A zero exit is delivery success for NO-04 purposes even when
+Notification Center or Focus suppresses presentation. The adapter does not
+read the private `com.apple.ncprefs.plist` bit field: it is undocumented, does
+not cleanly represent Focus/global suppression, and supplies no FTMON-specific
+authorization state.
+
 The ntfy adapter POSTs the rendered title/body to
 `{base_url}/{urlquoted_topic}` with a fixed, control-free `FTMON <severity>` title,
 priority (`info=2, notice=3, warning=4, error|critical=5`), tags
@@ -674,7 +744,12 @@ invalid channel fails closed while the other channels reload (NO-10).
 flag on `DaemonCore` and the top of the next tick consumes it — the handler
 itself never touches the filesystem or database, so it cannot race the tick
 loop or block in a signal context. The packaged daemon units map it to
-`ExecReload=`.
+`ExecReload=`. A Darwin LaunchAgent uses absolute `ProgramArguments`, explicit
+FTMON path environment, `RunAtLoad`, and `KeepAlive` in the user
+`gui/<uid>` domain. launchd passes SIGHUP to the managed process unchanged, so
+the service wrapper signals the current PID and retains the existing PM-11
+handler. `launchctl kickstart -k` is reserved for an explicit restart because
+it replaces the PID.
 
 ### 10.8 External check execution and projection (EC-*, MD-11, SE-07)
 
@@ -714,8 +789,13 @@ class PerfMapping:
 `subprocess.run` so timeout can send TERM then KILL to the new session/process
 group. It supplies `stdin=DEVNULL`, captured pipes, `start_new_session=True`,
 `close_fds=True`, `cwd=state_dir`, and exactly `PATH=os.defpath` plus fixed
-non-secret identity fields (`FTMON_CHECK_ALIAS`, `FTMON_CHECK_TIMEOUT`). A pair
-of bounded readers drains stdout/stderr to prevent pipe deadlock while retaining
+non-secret identity fields (`FTMON_CHECK_ALIAS`, `FTMON_CHECK_TIMEOUT`). On
+Windows, the same paths/process seam additionally copies only `SystemRoot`,
+`SystemDrive`, `windir`, `TEMP`, `TMP`, and `PATHEXT` from the service
+environment (`SystemRoot` alone has a documented `C:\Windows` fallback); this
+is minimum runtime support, not general environment inheritance. Windows
+termination gives `taskkill /T /F` a bounded deadline and falls back to bounded
+direct-child kill/waits. A pair of bounded readers drains stdout/stderr to prevent pipe deadlock while retaining
 at most 64 KiB/8 KiB; adapter input over the protocol cap fails closed. Stderr
 is discarded after categorization. No DB transaction spans launch or wait.
 Immediately before `Popen`, the runner repeats executable `lstat`, resolved-path,
@@ -847,9 +927,68 @@ adapters in ignored/personal locations, never separately committed skills.
 
 ---
 
-## 11. Event pipeline (SA-03/08, DM-07..10, DM-15)
+## 11. Event pipeline (SA-03/08, DM-07..10, DM-15/20)
 
 `journald.py`: spawns `journalctl -f -o json --output-fields=MESSAGE,PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,__CURSOR [--after-cursor=C]`. Reader thread appends raw lines to deque. `drain()` (main thread): parse JSON (malformed → count, skip), normalize → `EventRecord` (severity map: PRIORITY 0–2→critical, 3→error, 4→warning, 5→notice, 6–7→info; provider = `_SYSTEMD_UNIT` else `SYSLOG_IDENTIFIER`), return last `__CURSOR`. Cursor is persisted in the tick's write txn (DM-15). Storm counter per (source, provider) sliding minute (DM-10); store-filter per amended DM-09; matching against loaded event rules uses the same compiled `when` expressions with the event-field NameEnv. Reader death → `alive()` false → scheduler restarts with backoff (SA-03).
+
+`win_evtlog.py` keeps one subscription and bookmark per configured channel.
+On first use of a channel absent from the durable composite cursor, a reverse
+filtered query snapshots its tail and seeds that bookmark before subscription;
+an empty result seeds an internal oldest-record marker and subscribes from the
+oldest record. This preserves first-run “now” behavior for populated logs while
+making the first event in an empty log replayable after a sibling-only partial
+drain. Callback bookmarks remain queue evidence only; `drain()` advances each
+channel independently as represented entries are removed (DM-15/DM-19).
+
+All three platform adapters call the same adjacent-repeat reducer before queue
+admission. It compares the complete canonical origin/message signature and
+mutates only the current tail run, replacing its opaque cursor/bookmark or
+macOS identity with the newest one. Restricting the reducer to contiguous runs
+is a durability decision: a per-key LRU could merge across an intervening
+record, then commit a later opaque checkpoint before that intervening record
+was drained. Aggregate attrs preserve count and first/last source timestamps;
+the episode engine consumes the count directly rather than expanding a large
+storm back into memory. Adapter `received` and `repeated` counters feed a
+60-second rolling raw arrival-rate gauge in the event engine (DM-20).
+
+`oslog.py` first replays `/usr/bin/log show --style ndjson` from
+several seconds before its persisted wall-time watermark, then starts
+`/usr/bin/log stream --style ndjson` with the same fixed operational predicate.
+That source-side allowlist accepts fault-level events from third-party
+executable roots and explicit kernel storage-integrity text;
+ambient debug ingestion is forbidden because downstream rules cannot protect
+the reader queue. Both outputs are
+line-framed but not pure event NDJSON: the reader ignores human filter text,
+blank lines, and terminal `{"count": ..., "finished": 1}` objects, accepting
+only `eventType == "logEvent"`. Records are sparse; normalization uses
+`timestamp`, `eventMessage`, `subsystem`, `category`, `processImagePath`,
+`processID`, and `messageType` when present.
+
+The replay overlap is deduplicated against bounded pending and durable identity
+windows. A coalesced run shares the one global pending window rather than
+allocating an identity list per queue entry; draining transfers only identities
+from represented runs into the durable checkpoint, while overflow-dropped runs
+cannot advance it. Both windows are capped at `IDENTITY_MAX`.
+The preferred identity is `(bootUUID, machTimestamp, traceID, processID,
+senderProgramCounter)` plus a normalized-payload hash fallback. The set covers
+at least the replay/handoff overlap and is committed with the watermark only
+after events are accepted. This is deliberately at-least-once: Monterey
+accepts only second-resolution `--start` values, the boundary is inclusive,
+and the same event's stream and archived timestamps differed by milliseconds
+on real hardware. If the requested boundary predates retained unified-log
+data, the source records a retention-gap self-event before tailing current
+events.
+
+The macOS profile does not turn unified-log severity alone into actionability:
+routine Apple components emit `error` and even `fault` during normal operation,
+and an `osascript` notification itself can produce TCC/RunningBoard errors.
+Events therefore ship enabled only because admission is restricted before the
+queue. The adapter assigns stable event classes (`third-party-fault` and
+`storage-integrity`) and the profile rules match those classes;
+its store threshold is canonical `critical`. Disk rules exclude read-only and
+`nobrowse` mounts (including mounted application images), omit APFS inode
+thresholds, and retain capacity rules only for writable visible volumes.
+Network rules are watchlist-only.
 
 ---
 
@@ -1020,7 +1159,7 @@ Their semantics remain deliberately separate. `/metrics` selects one persisted `
 
 `GET /api/series?monitor=…&entity=…&metric=…&range=…&statistic=…` returns `{monitor, entity, metric, unit, statistic, resolution, points, lower, upper, incidents, summary, matching_trends}`. Raw metric units come from `SourceDecl`; derived units come from explicit trend-profile use when available, otherwise the neutral label `value`. Server-side Query remains authoritative for tier selection, envelopes, incident filtering, and the 2 000-point cap.
 
-### 15.3 Dashboard health tiles (M7.3, UI-14/UI-17)
+### 15.3 Dashboard health tiles (M7.3, UI-14/UI-17/UI-18)
 
 The dashboard composition root builds a `MonitorTile` view model rather than embedding policy in Jinja: `{name, description, state, icon, label, incident_count, max_severity, trend_profiles, glance?}`. State precedence is evaluated once in Python as `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`; templates only render it. Centralizing precedence prevents a CSS class or loop ordering change from silently turning a broken monitor green.
 
@@ -1052,6 +1191,11 @@ optional tile value; Jinja never aggregates, checks freshness or guesses a
 unit. Unknown, disabled, config-error and globally stale tiles omit glance, so
 UI-14 remains the sole health-state contract (UI-17). This adds no database
 migration, daemon write, tick-path computation or incident-state transition.
+
+The Events source has no sampled entity of its own, so its fixed operational
+glance reads the fresh `self/ftmon/event_rate_per_min` series and labels it
+`ingest … events/min`. It has no threshold meter and cannot change tile state;
+the same freshness and trustworthy-state gates apply (UI-18).
 
 Reference definitions deliberately choose like-for-like signals: disk maximum
 used percent; load five-minute CPU PSI; hog maximum five-minute CPU; leak

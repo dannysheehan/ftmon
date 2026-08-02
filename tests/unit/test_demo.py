@@ -67,4 +67,5 @@ def test_builder_is_byte_deterministic_and_atomically_replaceable_ui_16(tmp_path
     target = tmp_path / "demo.db"
     target.write_text("old visitor state must not survive")
     second = build(target).read_bytes()
-    assert first == second
+    third = build(target).read_bytes()  # replace the prior read-only build too
+    assert first == second == third

@@ -7,6 +7,13 @@ import sqlite3
 from ftmon.clock import FakeClock
 from ftmon.daemon import DaemonCore
 from ftmon.paths import get_paths
+from tests.platform_permissions import (
+    make_private,
+    toml_path,
+    trusted_python_executable,
+)
+
+_PYTHON = trusted_python_executable()
 
 EXTERNAL_DEF = """
 schema = 1
@@ -63,24 +70,27 @@ def test_registered_json_metric_reaches_history_derived_rule_and_trend(tmp_path)
     paths.ensure()
     admin = tmp_path / "admin"
     admin.mkdir(mode=0o700)
-    check = admin / "check_growth"
+    check = admin / "check_growth.py"
     check.write_text(
-        "#!/bin/sh\n"
-        "n=0; test ! -f external-count || n=$(cat external-count)\n"
-        "n=$((n + 1)); printf '%s' \"$n\" > external-count\n"
-        "printf '{\"schema\":1,\"state\":0,\"message\":\"growing\",'\n"
-        "printf '\"metrics\":{\"size\":{\"value\":%s,\"uom\":\"B\"}}}' \"$n\"\n"
+        "import json\n"
+        "from pathlib import Path\n"
+        "counter = Path('external-count')\n"
+        "n = int(counter.read_text()) if counter.exists() else 0\n"
+        "n += 1\n"
+        "counter.write_text(str(n))\n"
+        "print(json.dumps({'schema': 1, 'state': 0, 'message': 'growing', "
+        "'metrics': {'size': {'value': n, 'uom': 'B'}}}))\n"
     )
-    check.chmod(0o700)
     paths.check_registry_file.write_text(
-        f'[check.growing_value]\nargv=["{check}"]\n'
+        f'[check.growing_value]\nargv=["{toml_path(_PYTHON)}", '
+        f'"{toml_path(check)}"]\n'
         'protocol="ftmon-json"\ntimeout="2s"\n'
     )
-    paths.check_registry_file.chmod(0o600)
+    make_private(paths.check_registry_file, 0o600)
     (paths.monitors_dir / "custom_growth.toml").write_text(EXTERNAL_DEF)
 
     clock = FakeClock(wall=1_700_000_000, mono=1000)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     try:
         assert "custom_growth" in core.monitors
         for _ in range(8):
@@ -88,7 +98,7 @@ def test_registered_json_metric_reaches_history_derived_rule_and_trend(tmp_path)
             clock.advance(15)
         previous_registry = core.check_registry
         paths.check_registry_file.write_text("[check.growing_value]\nprotocol='nagios'\n")
-        paths.check_registry_file.chmod(0o600)
+        make_private(paths.check_registry_file, 0o600)
         clock.advance(31)
         core.on_tick(clock.now(), clock.monotonic(), 0)
         # An invalid hand edit cannot partially revoke or replace the last

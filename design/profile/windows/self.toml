@@ -1,0 +1,93 @@
+# FTMON built-in: self-monitoring (SPEC 7.7 / RB-02)
+# The monitor must not become the hog; if it does, it tells on itself.
+# Always installed; tunable, not deletable.
+#
+# cpu_budget_pct is recalibrated here, not left at the generic RB-01-aligned
+# default (platforms narrowed to windows-only accordingly -- a Windows-
+# loosened threshold must never silently apply on Linux/macOS). Measured on
+# a real ~14h overnight Windows run: ProcessSampler costs ~16ms/process
+# (vs. Linux's much cheaper /proc reads), and with 543 real processes
+# sampled every 60s that alone is ~8.7s of CPU-bound work per tick --
+# consistent with the observed steady-state cpu_10m of ~15-16%, peaking to
+# 59.6%. RB-01's <=1% target is a real, normative, cross-platform budget,
+# not just this warning threshold, and this file does NOT change RB-01
+# itself or claim Windows meets it -- it stops a correctly-firing watchdog
+# from being permanently stuck open over a gap that needs a real
+# ProcessSampler optimization pass to close, tracked separately
+# (WIN-BACKLOG.md), not a silenced alarm pretending the gap doesn't exist.
+#
+# stall_s is also recalibrated here (600 -> 5400), root-caused the same way:
+# WindowsEventSource (win_evtlog.py) only watches the System and Application
+# channels by default, and on a real desktop those channels genuinely go
+# quiet for extended stretches during normal idle use -- this is a push
+# subscription (EvtSubscribe), so silence means "nothing logged", not "reader
+# stuck". Measured directly from 23 non-sleep event-stall incidents over 48h
+# (last_activity gap = stall_s + incident duration_s): gaps ranged ~12-58 min,
+# comfortably under the old 600s (10 min) threshold, which fired on almost
+# every idle lull and produced ~60-70 renotify/open/clear notifications for
+# behavior that was never a fault. 5400s (90 min) sits well above the
+# observed max (58 min) so ordinary idle periods stop paging, while still
+# catching a genuinely dead reader (e.g. an exception silently killing the
+# subscription thread) inside a normal work session -- the failure mode this
+# rule exists to catch, not the idle-desktop case. Excluded one ~14h
+# overnight outlier (sleep/hibernate) from this analysis; that gap is a
+# separate, expected case, not evidence for the threshold.
+schema = 1
+
+[monitor]
+name = "self"
+description = "FTMON watches its own resource budget and pipeline health"
+version = 3
+enabled = true
+platforms = ["windows"]
+interval = "60s"
+source = "self"
+
+[parameters]
+cpu_budget_pct = { value = 30, doc = "Warn when daemon CPU%% (10m avg) exceeds this -- recalibrated for measured Windows ProcessSampler overhead, RB-01's cross-platform target is 1.0" }
+rss_budget_mb = { value = 100, doc = "Warn when daemon RSS exceeds this (MB)" }
+db_budget_mb = { value = 200, doc = "Warn when database exceeds this (MB)" }
+stall_s = { value = 5400, doc = "Warn when the event reader has been silent this long (s) -- recalibrated from the generic 600s default for Windows System/Application channels' observed idle gaps (up to 58 min over 48h)" }
+
+[[rule]]
+id = "cpu-budget"
+group = "budget"
+when = 'avg(cpu_pct, "10m") > cpu_budget_pct'
+severity = "warning"
+confirm_cycles = 3
+message = "FTMON over CPU budget: {cpu_10m:.1f}% (10m avg)"
+
+[[rule]]
+id = "rss-budget"
+group = "budget"
+when = 'rss_bytes > rss_budget_mb * MB'
+severity = "warning"
+confirm_cycles = 5
+message = "FTMON over memory budget: {rss_mb:.0f} MB RSS"
+
+[[rule]]
+id = "db-budget"
+group = "budget"
+when = 'db_bytes > db_budget_mb * MB'
+severity = "warning"
+confirm_cycles = 3
+message = "FTMON database over budget: {db_mb:.0f} MB (pruning should engage)"
+
+[[rule]]
+id = "event-stall"
+when = 'source_activity_age_s > stall_s'
+severity = "warning"
+confirm_cycles = 2
+message = "Event reader silent for {source_activity_age_s:.0f}s"
+
+[[derived]]
+name = "cpu_10m"
+expr = 'avg(cpu_pct, "10m")'
+
+[[derived]]
+name = "rss_mb"
+expr = 'rss_bytes / MB'
+
+[[derived]]
+name = "db_mb"
+expr = 'db_bytes / MB'

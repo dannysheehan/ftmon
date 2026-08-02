@@ -299,6 +299,35 @@ def test_dashboard_glance_is_omitted_for_disabled_tile_ui_17_ts_12(tmp_path):
     assert page.index("<h2>Disabled</h2>") < page.index('data-monitor="disk"')
 
 
+def test_events_tile_shows_raw_ingest_rate_ui_18_dm_20(tmp_path):
+    """[UI-18][DM-20] The Events tile distinguishes quiet from a coalesced storm."""
+    client, paths = _client(tmp_path)
+    profile = (
+        Path(__file__).parents[2]
+        / "src/ftmon/definitions/profile/macos/events.toml"
+    )
+    (paths.monitors_dir / "events.toml").write_text(profile.read_text())
+    conn = connect(paths.db_file)
+    conn.execute(
+        "INSERT INTO cursors(source,cursor,updated_ts) VALUES('oslog','cursor',999)"
+    )
+    conn.execute(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,attrs) "
+        "VALUES('self','ftmon',900,999,NULL)"
+    )
+    conn.execute(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES(99,'self','ftmon','event_rate_per_min',1)"
+    )
+    conn.execute("INSERT INTO samples(series_id,ts,value) VALUES(99,999,842)")
+    conn.commit()
+    conn.close()
+
+    page = client.get("/", headers={"host": "localhost:8420"}).text
+    assert 'data-monitor="events" data-state="clear"' in page
+    assert "<strong>ingest</strong> 842 events/min" in page
+
+
 def test_ui_ack_requires_origin_and_reuses_small_writes_ui_03_ui_08(tmp_path):
     """[UI-03][UI-08] Ack POST requires Origin and hits the same path as CLI."""
     client, paths = _client(tmp_path)
@@ -352,6 +381,11 @@ def test_metrics_explorer_uses_cascading_catalog_selectors_ui_02(tmp_path):
     conn.commit()
     conn.close()
     headers = {"host": "localhost:8420"}
+    default_page = client.get("/metrics", headers=headers)
+    assert ">disk</option>" in default_page.text
+    assert "No persisted metric observations are available" not in default_page.text
+    assert "<option selected>6h</option>" in default_page.text
+
     page = client.get(
         "/metrics?monitor=disk&entity=/home&metric=used_pct&range=6h&statistic=last",
         headers=headers,

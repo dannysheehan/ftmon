@@ -44,3 +44,36 @@ jobs:
           for name, marker in expected.items():
               assert marker in _guide_text(name)
           PY
+
+  windows:
+    name: windows (3.12)
+    runs-on: windows-latest
+    env:
+      # Keep Unicode diagnostics (including gen_reqindex's check mark) stable
+      # under the Windows runner's legacy console code page.
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run ruff check src tests tools
+      - run: uv run python tools/gen_reqindex.py --check
+      - run: uv run pytest -q
+      - run: uv build --clear
+      - name: Verify packaged authoring guides
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem dist/ftmon-*.whl | Select-Object -First 1).FullName
+          @'
+          from ftmon.mcp_server import _guide_text
+
+          expected = {
+              "definitions": "complete reference",
+              "check-authoring": "Writing an external check",
+              "external-checks": "privileged exporter pattern",
+          }
+          for name, marker in expected.items():
+              assert marker in _guide_text(name)
+          '@ | uv run --isolated --no-project --with $wheel python -

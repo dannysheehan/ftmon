@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-spike/
 .pytest_cache/
 .ruff_cache/
 dist/

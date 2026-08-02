@@ -15,7 +15,7 @@ from ftmon.engine.incidents import GroupConfig, RungConfig, RungEval, step_group
 from ftmon.engine.rings import RingStore
 from ftmon.expr.tribool import TriBool
 from ftmon.model import EventRecord, GroupState, IncidentCore, RungState, SourceDecl
-from ftmon.paths import get_paths
+from ftmon.paths import current_platform, get_paths
 from ftmon.store.db import connect, migrate
 from ftmon.store.retention import Retention
 
@@ -133,7 +133,7 @@ def test_editing_enabled_definition_supersedes_open_incidents_md_06(tmp_path):
     paths.ensure()
     (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     sampler = ScriptedSampler()
     for i in range(8):
         sampler.push(grower(i))
@@ -146,7 +146,7 @@ def test_editing_enabled_definition_supersedes_open_incidents_md_06(tmp_path):
         "SELECT state FROM incidents WHERE state='open'"
     ).fetchone() is not None
     conn.close()
-    text = (paths.monitors_dir / "leak.toml").read_text()
+    text = (paths.monitors_dir / "leak.toml").read_text(encoding="utf-8")
     (paths.monitors_dir / "leak.toml").write_text(text.replace("version = 1", "version = 2"))
     clock.advance(31)
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
@@ -198,7 +198,7 @@ def test_removed_monitor_group_supersedes_incidents_md_09(tmp_path):
         "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
     })
     paths.ensure()
-    leak = (REPO / "src/ftmon/definitions/builtins/leak.toml").read_text()
+    leak = (REPO / "src/ftmon/definitions/builtins/leak.toml").read_text(encoding="utf-8")
     (paths.monitors_dir / "leak.toml").write_text(leak)
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
     DaemonCore(paths=paths, clock=clock)
@@ -226,7 +226,7 @@ def test_platform_conditionals_only_behind_four_seams_pl_01():
         "sources/process.py", "sources/disk.py", "sources/system.py",
         "sources/net.py", "sources/unit.py", "sources/journald.py",
         "sources/fixtures.py", "sources/base.py", "notify/desktop.py",
-        "paths.py", "cli.py", "definitions/schema.py",
+        "paths.py", "cli.py", "definitions/schema.py", "checks/trust.py",
     }
     pattern = re.compile(r"\b(sys\.platform|platform\.system|darwin|win32|nt\b)")
     offenders = []
@@ -234,9 +234,41 @@ def test_platform_conditionals_only_behind_four_seams_pl_01():
         rel = py.relative_to(SRC).as_posix()
         if rel in allowed or rel.startswith("sources/") or rel.startswith("notify/"):
             continue
-        if pattern.search(py.read_text()):
+        if pattern.search(py.read_text(encoding="utf-8")):
             offenders.append(rel)
     assert offenders == []
+
+
+def test_daemon_skips_monitor_not_declared_for_running_platform_pl_01(tmp_path):
+    """[PL-01][PL-02] monitor.platforms gates loading, not just its shape."""
+    from ftmon.clock import FakeClock
+    from ftmon.daemon import DaemonCore
+
+    paths = get_paths({
+        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+        "FTMON_DATA_DIR": str(tmp_path / "data"),
+        "FTMON_STATE_DIR": str(tmp_path / "state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
+    })
+    paths.ensure()
+    excluded_platform = "linux" if current_platform() == "windows" else "windows"
+    (paths.monitors_dir / "foreign.toml").write_text(f"""
+schema = 1
+[monitor]
+name = "foreign"
+description = "probe for a different platform"
+version = 1
+platforms = ["{excluded_platform}"]
+interval = "60s"
+source = "system"
+[[rule]]
+id = "r1"
+when = "load1 > 1"
+severity = "warning"
+message = "busy"
+""")
+    core = DaemonCore(paths=paths, clock=FakeClock(wall=1_700_000_000.0, mono=1000.0))
+    assert "foreign" not in core.monitors
 
 
 def test_event_id_is_optional_string_pl_02():
@@ -271,7 +303,7 @@ def test_attack_surface_listeners_are_loopback_or_stdio_pm_05_se_01(tmp_path):
     from ftmon.mcp_server import build_server
     from ftmon.web import app as web_app
 
-    text = Path(web_app.__file__).read_text()
+    text = Path(web_app.__file__).read_text(encoding="utf-8")
     assert 'host="127.0.0.1"' in text or "host='127.0.0.1'" in text
     paths = get_paths({
         "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
@@ -286,7 +318,7 @@ def test_attack_surface_listeners_are_loopback_or_stdio_pm_05_se_01(tmp_path):
 
 def test_self_builtin_encodes_rb_01_budgets_rb_01():
     """[RB-01] Built-in self monitor encodes daemon CPU/RSS/DB budgets."""
-    text = (REPO / "design/builtins/self.toml").read_text()
+    text = (REPO / "design/builtins/self.toml").read_text(encoding="utf-8")
     assert "rss_budget_mb" in text and "100" in text
     assert "db_budget_mb" in text and "200" in text
     assert "cpu_budget_pct" in text
@@ -294,14 +326,14 @@ def test_self_builtin_encodes_rb_01_budgets_rb_01():
 
 def test_config_has_no_legacy_cipher_fields_se_03():
     """[SE-03] No CipherSaber or password storage keys ship in v2 config."""
-    sample = (REPO / "src/ftmon/config.py").read_text()
+    sample = (REPO / "src/ftmon/config.py").read_text(encoding="utf-8")
     assert "CipherSaber" not in sample
     assert "password" not in sample.lower() or "SecretRef" in sample
 
 
 def test_repository_uses_tests_first_work_packages_ts_02():
     """[TS-02] Milestone work is specified with frozen tests in DESIGN.md."""
-    design = (REPO / "DESIGN.md").read_text()
+    design = (REPO / "DESIGN.md").read_text(encoding="utf-8")
     assert "tests-first" in design or "WP" in design
     assert (REPO / "tests/unit/test_traceability.py").is_file()
 
@@ -344,7 +376,7 @@ def test_web_ui_uses_vendored_uplot_without_spa_build_ui_06():
     assert (static / "vendor/uPlot.iife.min.js").is_file()
     assert (static / "ftmon.js").is_file()
     assert any(
-        p.read_text().startswith("{%")
+        p.read_text(encoding="utf-8").startswith("{%")
         for p in (REPO / "src/ftmon/web/templates").glob("*.html")
     )
 
@@ -441,7 +473,7 @@ message = "hi"
 
 def test_recipe_readme_documents_original_script_policy_xr_05():
     """[XR-05] Recipes document separately licensed upstream checks."""
-    readme = (REPO / "extra-monitors/README.md").read_text()
+    readme = (REPO / "extra-monitors/README.md").read_text(encoding="utf-8")
     assert "Third-party" in readme or "third-party" in readme
     assert "licence" in readme.lower() or "license" in readme.lower()
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 
 import pytest
@@ -31,7 +32,7 @@ def populated(core_env):  # noqa: F811 - pytest fixture injection
     an open incident with history and delivered outbox rows."""
     paths = core_env
     clock = FakeClock(wall=WALL0, mono=1000.0)
-    core = DaemonCore(paths=paths, clock=clock)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
     sampler = ScriptedSampler()
     for i in range(30):
         # calm is tiny so top_consumers must rank leaky first
@@ -692,12 +693,14 @@ class TestDiscoverability:
         assert res["check"]["registered"] is False
         assert res["last_result"] is None
 
-        exe = tmp_path / "gpu_probe.sh"
+        exe = tmp_path / ("gpu_probe.exe" if os.name == "nt" else "gpu_probe.sh")
         exe.write_text("#!/bin/sh\nexit 0\n")
-        exe.chmod(0o700)
+        from tests.platform_permissions import make_private, toml_path
+
+        make_private(exe, 0o700)
         paths.check_registry_file.write_text(
-            f'[check.gpu_probe]\nargv=["{exe}"]\nprotocol="ftmon-json"\n')
-        paths.check_registry_file.chmod(0o600)
+            f'[check.gpu_probe]\nargv=["{toml_path(exe)}"]\nprotocol="ftmon-json"\n')
+        make_private(paths.check_registry_file, 0o600)
         res = api.diagnose_monitor("gpu_ext")
         assert res["check"]["registered"] is True
         assert res["check"]["executable_trusted"] is True

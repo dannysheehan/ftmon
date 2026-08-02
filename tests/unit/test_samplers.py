@@ -270,6 +270,21 @@ def test_process_access_denied_omits_metric_not_entity(monkeypatch):
     assert "num_threads" in entity.metrics
 
 
+def test_process_missing_io_counters_omits_metrics_not_entity_macos(monkeypatch):
+    """[PL-01][PL-03] macOS psutil may omit Process.io_counters entirely."""
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(123, "darwin-process")
+    del proc.io_counters
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    (entity,) = sampler.sample(1609459200.0, 2000.0, {}).entities
+    assert entity.entity_id == "darwin-process:123:1609459200"
+    assert "io_read_bytes" not in entity.metrics
+    assert "io_write_bytes" not in entity.metrics
+    assert entity.metrics["rss_bytes"] == 1000.0
+
+
 def test_process_no_such_process_skips_entity(monkeypatch):
     """[PL-03, SA-05] NoSuchProcess -> entity skipped."""
     clock = FakeClock()
@@ -347,6 +362,17 @@ def test_process_deadline_stops_iteration(monkeypatch):
 # --- DiskSampler tests ---
 
 
+def test_disk_inode_omitted_when_statvfs_unavailable(monkeypatch):
+    """[SA-04, DM-02, PL-01] os.statvfs doesn't exist on Windows at all
+    (AttributeError, not OSError) -- the guard must return None rather than
+    crash the sampler. delattr(raising=False) exercises the same "absent"
+    path on POSIX too, so this runs on every platform, not just Windows."""
+    clock = FakeClock()
+    sampler = DiskSampler(clock)
+    monkeypatch.delattr("os.statvfs", raising=False)
+    assert sampler._get_inode_usage_pct("/mnt") is None
+
+
 def test_disk_inode_used_pct_computation(monkeypatch):
     """[SA-04, DM-02] Inode usage % computed from statvfs."""
     clock = FakeClock()
@@ -372,7 +398,7 @@ def test_disk_inode_used_pct_computation(monkeypatch):
     # Fake statvfs: 10000 total inodes, 7000 used, 3000 free
     fake_statvfs = types.SimpleNamespace(f_files=10000, f_ffree=3000)
     monkeypatch.setattr(
-        "os.statvfs", lambda *a, **k: fake_statvfs
+        "os.statvfs", lambda *a, **k: fake_statvfs, raising=False
     )
 
     snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
@@ -380,6 +406,30 @@ def test_disk_inode_used_pct_computation(monkeypatch):
     entity = snapshot.entities[0]
     # Inode usage = (10000 - 3000) / 10000 * 100 = 70%
     assert entity.metrics["inode_used_pct"] == 70.0
+
+
+def test_disk_mount_options_expose_readonly_and_nobrowse_macos(monkeypatch):
+    """[PL-01][SA-04] Darwin profiles can exclude mounted app disk images."""
+    sampler = DiskSampler(FakeClock())
+    partition = types.SimpleNamespace(
+        device="/dev/disk2s1",
+        mountpoint="/Volumes/VS Code",
+        fstype="hfs",
+        opts="ro,nobrowse,local",
+    )
+    usage = types.SimpleNamespace(total=100, used=95, free=5, percent=95.0)
+    monkeypatch.setattr("psutil.disk_partitions", lambda *a, **k: [partition])
+    monkeypatch.setattr("psutil.disk_usage", lambda *a, **k: usage)
+    monkeypatch.setattr(
+        "os.statvfs",
+        lambda *a, **k: types.SimpleNamespace(f_files=0, f_ffree=0),
+        raising=False,
+    )
+
+    (entity,) = sampler.sample(1.0, 2000.0, {}).entities
+    assert entity.attrs["readonly"] == "true"
+    assert entity.attrs["mountpoint"] == "/Volumes/VS Code"
+    assert entity.attrs["mount_options"] == "local,nobrowse,ro"
 
 
 def test_disk_inode_omitted_when_f_files_zero(monkeypatch):
@@ -407,7 +457,7 @@ def test_disk_inode_omitted_when_f_files_zero(monkeypatch):
     # Fake statvfs with f_files == 0 (no inode support)
     fake_statvfs = types.SimpleNamespace(f_files=0, f_ffree=0)
     monkeypatch.setattr(
-        "os.statvfs", lambda *a, **k: fake_statvfs
+        "os.statvfs", lambda *a, **k: fake_statvfs, raising=False
     )
 
     snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
@@ -479,7 +529,7 @@ def test_disk_deadline_stops_iteration(monkeypatch):
     )
 
     fake_statvfs = types.SimpleNamespace(f_files=0, f_ffree=0)
-    monkeypatch.setattr("os.statvfs", lambda *a, **k: fake_statvfs)
+    monkeypatch.setattr("os.statvfs", lambda *a, **k: fake_statvfs, raising=False)
 
     snapshot = sampler.sample(
         now=1609459200.0, deadline_mono=1002.0, options={}
@@ -497,7 +547,7 @@ def test_system_single_entity_hostname(monkeypatch):
     sampler = SystemSampler(clock)
 
     monkeypatch.setattr("socket.gethostname", lambda: "testhost")
-    monkeypatch.setattr("os.getloadavg", lambda: (1.0, 2.0, 3.0))
+    monkeypatch.setattr("psutil.getloadavg", lambda: (1.0, 2.0, 3.0))
     monkeypatch.setattr(
         "psutil.cpu_percent", lambda interval: 25.0
     )
@@ -540,7 +590,7 @@ def test_system_psi_metrics_parsed(monkeypatch):
     sampler = SystemSampler(clock)
 
     monkeypatch.setattr("socket.gethostname", lambda: "testhost")
-    monkeypatch.setattr("os.getloadavg", lambda: (0.0, 0.0, 0.0))
+    monkeypatch.setattr("psutil.getloadavg", lambda: (0.0, 0.0, 0.0))
     monkeypatch.setattr("psutil.cpu_percent", lambda interval: 0.0)
     monkeypatch.setattr(
         "psutil.virtual_memory",

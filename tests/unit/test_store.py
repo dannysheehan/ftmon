@@ -7,6 +7,8 @@ import math
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from ftmon.model import EventRecord
 from ftmon.store import db
 from ftmon.store.query import Query, SeriesPoint, lttb
@@ -398,6 +400,26 @@ def test_cursor_roundtrip(tmp_path):
     w.set_cursor("journald", "cursor-def", NOW + 60)
     w.commit_tick()
     assert q.cursor("journald") == "cursor-def"
+
+
+def test_event_and_cursor_commit_or_rollback_together_dm_15(tmp_path):
+    """[DM-15] A crash-equivalent cursor write failure cannot retain its event."""
+    conn = _fresh(tmp_path)
+    conn.execute(
+        "CREATE TRIGGER fail_cursor BEFORE INSERT ON cursors "
+        "BEGIN SELECT RAISE(ABORT, 'injected cursor failure'); END"
+    )
+    writer = TickWriter(conn)
+    writer.add_event(
+        EventRecord(NOW, NOW, "eventlog", "test", "1", 2, "must roll back")
+    )
+    writer.set_cursor("eventlog", '{"Application":"bookmark:A1"}', NOW)
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected cursor failure"):
+        writer.commit_tick()
+
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    assert Query(conn).cursor("eventlog") is None
 
 
 def test_events_insert_and_filter(tmp_path):

@@ -14,6 +14,7 @@ last-activity age exposed for the `self` monitor's stall rule (SA-08).
 
 from __future__ import annotations
 
+import collections
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -107,14 +108,27 @@ class EventEngine:
     last_activity_age_s: float = 0.0  # -> SelfStats.source_activity_age_s
     queue_depth: int = 0
     dropped: int = 0
+    _last_dropped: int = 0
+    _overflow_start_total: int | None = None
+    _rate_samples: collections.deque[tuple[float, int]] = field(
+        default_factory=lambda: collections.deque(maxlen=64)
+    )
+    _fallback_received: int = 0
+    received: int = 0
+    repeated: int = 0
+    event_rate_per_min: float = 0.0
+    _reported_channel_errors: set[str] = field(default_factory=set)
 
     def start(self, cursor: str | None) -> None:
         self._last_cursor = cursor
         self.source.start(cursor)
+        self._last_dropped = int(getattr(self.source, "dropped", 0))
+        self._overflow_start_total = None
         self._started = True
 
     def stop(self) -> None:
         self.source.stop()
+        self._started = False
 
     def tick(self, monitors: list[MonitorDef], now: float, mono: float, writer) -> None:
         if not self._started:
@@ -132,9 +146,12 @@ class EventEngine:
         )
         self.queue_depth = getattr(self.source, "queue_depth", lambda: 0)()
         self.dropped = getattr(self.source, "dropped", 0)
+        self._observe_rate(records, mono)
+        self._observe_overflow(now, writer)
+        self._report_channel_errors(now, writer)
 
         # 1) rules against the live stream; matches keyed by episode identity
-        matches: dict[EpisodeKey, list[tuple[float, str]]] = {}
+        matches: dict[EpisodeKey, list[tuple]] = {}
         matched_records: set[int] = set()
         for mdef in monitors:
             for i, rec in enumerate(records):
@@ -145,7 +162,7 @@ class EventEngine:
                     matched_records.add(i)
                     key = (mdef.name, rule.id, _entity_key(rec))
                     matches.setdefault(key, []).append(
-                        (rec.ingest_ts, self._render(rule, rec)))
+                        (rec.ingest_ts, self._render(rule, rec), _occurrence_count(rec)))
 
         # 2) store-filter (DM-09) + storm guard (DM-10) on what gets stored
         for i, rec in enumerate(records):
@@ -180,7 +197,95 @@ class EventEngine:
             else:
                 self._states[key] = st
 
+    # -- per-channel subscribe errors --------------------------------------
+
+    def _report_channel_errors(self, now: float, writer) -> None:
+        """A bad channel name or filter query fails that one EvtSubscribe
+        call (win_evtlog.py isolates it per channel) but never recovers on
+        its own -- unlike SA-03's death/restart, there is nothing to retry.
+        Surface each failing channel once per daemon lifetime so "why isn't
+        X showing up" is answered from `ftmon events`, not silently."""
+        errors: Mapping[str, str] = getattr(self.source, "subscribe_errors", {})
+        for channel, reason in errors.items():
+            if channel in self._reported_channel_errors:
+                continue
+            self._reported_channel_errors.add(channel)
+            writer.add_event(EventRecord(
+                ts=now, ingest_ts=now, source="self", provider="ftmon.events",
+                event_id=None, severity=2,
+                message=(
+                    f"channel {channel!r} subscribe failed, looks like a config "
+                    f"problem (not transient, will not retry itself): {reason}"
+                ),
+            ))
+
     # -- supervision (SA-03) ---------------------------------------------
+
+    def _observe_rate(self, records: list[EventRecord], mono: float) -> None:
+        """Expose a rolling raw arrival rate without hiding coalesced repeats."""
+        source_received = getattr(self.source, "received", None)
+        if source_received is None:
+            self._fallback_received += sum(_occurrence_count(record) for record in records)
+            self.received = self._fallback_received
+        else:
+            self.received = int(source_received)
+        self.repeated = int(getattr(self.source, "repeated", 0))
+
+        self._rate_samples.append((mono, self.received))
+        while len(self._rate_samples) > 2 and mono - self._rate_samples[0][0] > 60.0:
+            self._rate_samples.popleft()
+        first_mono, first_count = self._rate_samples[0]
+        elapsed = mono - first_mono
+        delta = self.received - first_count
+        self.event_rate_per_min = (
+            max(0.0, float(delta) * 60.0 / elapsed) if elapsed > 0 else 0.0
+        )
+
+    def _observe_overflow(self, now: float, writer) -> None:
+        """Record one start and one final summary for a queue-overflow episode."""
+        if self.dropped < self._last_dropped:
+            # A replacement source may reset its cumulative counter. Treat it
+            # as a new observation epoch rather than producing a negative sum.
+            self._last_dropped = self.dropped
+            self._overflow_start_total = None
+            return
+
+        newly_dropped = self.dropped - self._last_dropped
+        if newly_dropped and self._overflow_start_total is None:
+            self._overflow_start_total = self._last_dropped
+            writer.add_event(EventRecord(
+                ts=now,
+                ingest_ts=now,
+                source="self",
+                provider=f"ftmon.{self.cursor_name}",
+                event_id="event-overflow",
+                severity=2,
+                message=(
+                    f"event_overflow: {self.cursor_name} queue saturated; "
+                    f"dropped {newly_dropped} oldest events "
+                    f"(cumulative {self.dropped})"
+                ),
+            ))
+
+        capacity_fn = getattr(self.source, "queue_capacity", None)
+        capacity = capacity_fn() if callable(capacity_fn) else 0
+        recovered = self.queue_depth < capacity if capacity else self.queue_depth == 0
+        if not newly_dropped and self._overflow_start_total is not None and recovered:
+            episode_dropped = self.dropped - self._overflow_start_total
+            writer.add_event(EventRecord(
+                ts=now,
+                ingest_ts=now,
+                source="self",
+                provider=f"ftmon.{self.cursor_name}",
+                event_id="event-overflow-clear",
+                severity=1,
+                message=(
+                    f"event_overflow over: {self.cursor_name} queue recovered; "
+                    f"{episode_dropped} events dropped"
+                ),
+            ))
+            self._overflow_start_total = None
+        self._last_dropped = self.dropped
 
     def _supervise(self, now: float, mono: float, writer) -> None:
         if self.source.alive():
@@ -215,13 +320,22 @@ class EventEngine:
 
     @staticmethod
     def _store_min(monitors: list[MonitorDef]) -> int:
+        """The lowest (most permissive) store_min_severity declared by any
+        loaded event monitor -- there is one shared store-filter for the
+        whole daemon, not one per monitor (same reasoning as
+        _union_event_channels), so a stricter setting on one monitor must
+        never silently override a looser one another monitor actually
+        needs; the most-inclusive request always wins."""
+        best: int | None = None
         for mdef in monitors:
             v = mdef.source_options.get("store_min_severity")
             if isinstance(v, str) and v in SEVERITIES:
-                return SEVERITIES.index(v)
-            if isinstance(v, int) and 0 <= v <= 4:
-                return v
-        return 1  # notice
+                v = SEVERITIES.index(v)
+            elif not (isinstance(v, int) and 0 <= v <= 4):
+                continue
+            if best is None or v < best:
+                best = v
+        return 1 if best is None else best  # notice
 
     def _storm_suppressed(self, rec: EventRecord, now: float, writer) -> bool:
         """DM-10 per (source, provider): >100 stored/min collapses into one
@@ -362,3 +476,11 @@ def _entity_key(rec: EventRecord) -> str:
     the rule is in the EpisodeKey; this is the entity part."""
     tail = rec.event_id if rec.event_id else ep.msg_hash(rec.message)
     return f"{rec.provider}:{tail}"
+
+
+def _occurrence_count(rec: EventRecord) -> int:
+    try:
+        count = int(rec.attrs.get("repeat_count", "1"))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, count)

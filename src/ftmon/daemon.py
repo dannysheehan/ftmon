@@ -13,10 +13,12 @@ milestone plan, not oversight.
 
 from __future__ import annotations
 
-import fcntl
+import logging
 import sqlite3
 import sys
 from dataclasses import dataclass, field
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from queue import SimpleQueue
 
 from ftmon import definitions
@@ -37,7 +39,7 @@ from ftmon.engine.scheduler import DueTable, Scheduler
 from ftmon.model import EventRecord, GroupState, IncidentCore, RungState
 from ftmon.notify import FileNotifier, NtfyNotifier, SmtpNotifier, WebhookNotifier
 from ftmon.notify.base import DeliveryError, Notifier
-from ftmon.paths import Paths, get_paths
+from ftmon.paths import Paths, current_platform, get_paths, set_private_permissions
 from ftmon.selfmon import SelfSampler, SelfStats
 from ftmon.sources.base import EventSource
 from ftmon.sources.disk import DiskSampler
@@ -52,8 +54,40 @@ from ftmon.store.writer import TickWriter
 
 _RESCAN_EVERY_S = 30.0  # PM-04
 _RETENTION_EVERY_S = 60.0  # DM-04: incremental; a minute cadence keeps passes tiny
+_LOG_MAX_BYTES = 10 * 1024 * 1024
+_LOG_BACKUPS = 3
+_DAEMON_LOG = logging.getLogger("ftmon.daemon.file")
+_DAEMON_LOG.propagate = False
 
 IncidentKey = tuple[str, str, str]  # (monitor, entity_id, group)
+
+
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    def _open(self):
+        stream = super()._open()
+        set_private_permissions(Path(self.baseFilename), 0o600)
+        return stream
+
+
+def _configure_daemon_log(path: Path) -> RotatingFileHandler:
+    """Write the PM-06 daemon log independently of a service wrapper's stderr."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    set_private_permissions(path.parent, 0o700)
+    for existing in tuple(_DAEMON_LOG.handlers):
+        _DAEMON_LOG.removeHandler(existing)
+        existing.close()
+    handler = _PrivateRotatingFileHandler(
+        path, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUPS, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    _DAEMON_LOG.addHandler(handler)
+    _DAEMON_LOG.setLevel(logging.INFO)
+    return handler
+
+
+def _daemon_message(message: str) -> None:
+    print(message, file=sys.stderr)
+    _DAEMON_LOG.info(message)
 
 
 @dataclass
@@ -73,15 +107,21 @@ class DaemonCore:
     event_source: EventSource | None = None
     background_dispatch: bool = False
     stop: bool = False
+    # None = current_platform() (production). Tests for a monitor.platforms
+    # set that excludes the host running the suite (e.g. Windows-only
+    # profiles, exercised on Linux CI) override this the same way they
+    # override Clock, rather than the host OS gating what's testable.
+    platform: str | None = None
 
     def __post_init__(self) -> None:
+        self.platform = self.platform or current_platform()
         self.stats = SelfStats()
         self._delivery_failures: SimpleQueue[tuple[str, str, float]] = SimpleQueue()
         self._reload_global_config = self.config is None
         if self._reload_global_config:
             self.config, config_warnings = load_config(self.paths.config_file)
             for w in config_warnings:
-                print(f"config warning: {w}", file=sys.stderr)
+                _daemon_message(f"config warning: {w}")
         self._config_stamp = self._config_file_stamp()
         self._notifier_override = tuple(self.notifiers) if self.notifiers is not None else None
         self.conn = store_db.connect(self.paths.db_file)
@@ -141,8 +181,12 @@ class DaemonCore:
         # started lazily once an events-source monitor is actually loaded.
         self.event_monitors: dict[str, MonitorDef] = {}
         self.events_engine = (
-            EventEngine(source=self.event_source, executor=self.executor,
-                        counter=self.stats.count)
+            EventEngine(
+                source=self.event_source,
+                executor=self.executor,
+                counter=self.stats.count,
+                cursor_name=getattr(self.event_source, "cursor_name", "journald"),
+            )
             if self.event_source is not None else None
         )
         self._load_definitions(initial=True)
@@ -169,14 +213,15 @@ class DaemonCore:
         notifiers: list[Notifier] = [FileNotifier(self.paths.notifications_file)]
         desktop = config.channel("desktop")
         if desktop is not None and desktop.enabled:
-            from ftmon.notify import DesktopNotifier
+            from ftmon.notify import desktop_notifier_for_platform
 
-            desktop_notifier = DesktopNotifier()
-            if desktop_notifier.available:
+            desktop_notifier = desktop_notifier_for_platform()
+            if desktop_notifier is not None and desktop_notifier.available:
                 notifiers.append(desktop_notifier)
             else:
-                print("config warning: [notify.desktop] desktop_unavailable; "
-                      "channel disabled", file=sys.stderr)
+                _daemon_message(
+                    "config warning: [notify.desktop] desktop_unavailable; channel disabled"
+                )
                 self.stats.count("config_errors")
         remote_types = {
             "ntfy": NtfyNotifier,
@@ -192,8 +237,9 @@ class DaemonCore:
             except DeliveryError as exc:
                 # Loading normally catches readiness first. Constructor failure
                 # remains isolated if a secret rotates between validation/use.
-                print(f"config warning: [notify.{name}] {exc}; channel disabled",
-                      file=sys.stderr)
+                _daemon_message(
+                    f"config warning: [notify.{name}] {exc}; channel disabled"
+                )
                 self.stats.count("config_errors")
         return notifiers
 
@@ -236,7 +282,7 @@ class DaemonCore:
         try:
             registry = load_check_registry(self.paths.check_registry_file, paths=self.paths)
         except RegistryError as exc:
-            print(f"config_error: checks.toml: {exc.category}", file=sys.stderr)
+            _daemon_message(f"config_error: checks.toml: {exc.category}")
             self.stats.count("config_errors")
             if not initial:
                 self.writer.add_event(EventRecord(
@@ -258,12 +304,11 @@ class DaemonCore:
             return
         self._config_stamp = stamp
         if stamp is None:
-            print("config warning: config.toml removed; keeping loaded channels",
-                  file=sys.stderr)
+            _daemon_message("config warning: config.toml removed; keeping loaded channels")
             return
         config, warnings = load_config(self.paths.config_file)
         for warning in warnings:
-            print(f"config warning: {warning}", file=sys.stderr)
+            _daemon_message(f"config warning: {warning}")
         if any(warning.startswith("config.toml unreadable") for warning in warnings):
             # A half-written/manual syntax error must not replace working remote
             # delivery with desktop defaults. Atomic writers avoid this, but
@@ -281,19 +326,89 @@ class DaemonCore:
         self.outbox = self._new_outbox(notifiers, config.quiet)
         self.config = config
 
+    def _union_event_channels(self) -> tuple[dict[str, dict], dict[str, str]]:
+        """Union channels across every loaded event-sourced monitor -- there
+        is one shared EvtSubscribe pass for the whole daemon, not one per
+        monitor (win_evtlog.py). A `query=None` request (everything on that
+        channel) is a superset of any filtered request, so it always wins
+        regardless of which monitor loads first or last -- that is not a
+        conflict, just the union of "everything" and "a subset of it". Only
+        two differing *non-empty* queries for the same path are a genuine,
+        unresolvable conflict; that keeps the first-seen query and reports
+        it (via the caller merging into subscribe_errors) rather than
+        silently picking one. A no-op on Linux/macOS: JournaldEventSource
+        monitors never populate source_options.channels."""
+        by_path: dict[str, dict] = {}
+        conflicts: dict[str, str] = {}
+        for mdef in self.event_monitors.values():
+            for entry in mdef.source_options.get("channels", ()):
+                path, query = entry["path"], entry.get("query")
+                existing = by_path.get(path)
+                if existing is None:
+                    by_path[path] = {"path": path, "query": query}
+                    continue
+                if existing["query"] == query:
+                    continue
+                if existing["query"] is None or query is None:
+                    by_path[path] = {"path": path, "query": None}  # unfiltered wins
+                    continue
+                conflicts[path] = (
+                    f"channel {path!r} requested with conflicting queries "
+                    f"across monitors; kept {existing['query']!r}, ignored "
+                    f"{query!r} from monitor {mdef.name!r}"
+                )
+        return by_path, conflicts
+
     def _start_events(self) -> None:
         """DM-15: resume from the persisted cursor; rebuild open episodes so
         a restart cannot re-open (and re-notify) a live one."""
         assert self.events_engine is not None
+        by_path, conflicts = self._union_event_channels()
+        configure = getattr(self.event_source, "configure", None)
+        if configure is not None and by_path:
+            from ftmon.sources.win_evtlog import ChannelSpec
+
+            configure(tuple(ChannelSpec(**c) for c in by_path.values()))
         row = self.conn.execute(
             "SELECT cursor FROM cursors WHERE source = ?",
             (self.events_engine.cursor_name,),
         ).fetchone()
         self.events_engine.start(row["cursor"] if row else None)
+        if conflicts:
+            # start() just reset subscribe_errors; merge conflicts in after,
+            # not before -- a real EvtSubscribe failure for the same channel
+            # takes priority over the conflict note.
+            errors = getattr(self.event_source, "subscribe_errors", None)
+            if errors is not None:
+                for path, msg in conflicts.items():
+                    errors.setdefault(path, msg)
         rows = self.conn.execute(
             "SELECT * FROM incidents WHERE state IN ('open', 'acked')"
         ).fetchall()
         self.events_engine.rebuild(rows, list(self.event_monitors.values()))
+
+    def _warn_on_unapplied_event_channels(self) -> None:
+        """Once the event reader has started, its subscribed channels are
+        fixed for the daemon's lifetime (win_evtlog.py: one EvtSubscribe
+        pass, not a hot-reconfigure path) -- a monitor loaded afterward
+        (e.g. a newly-approved draft) requesting a channel nobody
+        subscribed to yet would otherwise sit there silently, never
+        receiving anything. Surfaced the same way a bad EvtSubscribe query
+        is surfaced (EventEngine._report_channel_errors)."""
+        errors = getattr(self.event_source, "subscribe_errors", None)
+        configured_fn = getattr(self.event_source, "configured_paths", None)
+        if errors is None or configured_fn is None:
+            return
+        configured = configured_fn()
+        by_path, _conflicts = self._union_event_channels()
+        for path in by_path:
+            if path in configured or path in errors:
+                continue
+            errors[path] = (
+                f"channel {path!r} requested by a monitor loaded after the "
+                "event reader already started; restart the daemon to "
+                "subscribe to it"
+            )
 
     def _load_definitions(self, initial: bool = False) -> None:
         """PM-04: apply adds/changes/removes; an invalid file keeps the
@@ -309,13 +424,24 @@ class DaemonCore:
         for path, err in errors:
             # Surfaced as a self-event so status/CLI can report it; the
             # daemon itself must keep running (PM-04).
-            print(f"config_error: {path}: {err}", file=sys.stderr)
+            _daemon_message(f"config_error: {path}: {err}")
             self.stats.count("config_errors")
         seen = set()
         for mdef in defs:
+            if self.platform not in mdef.platforms:
+                # PL-01/PL-02: declared but unenforced was the actual gap —
+                # a monitor's platforms list must gate loading, not just
+                # validate as a well-formed subset of schema.PLATFORMS.
+                if initial:
+                    _daemon_message(
+                        f"monitor {mdef.name}: not applicable on platform "
+                        f"{self.platform!r} (declares {sorted(mdef.platforms)}); skipped"
+                    )
+                continue
             # MD-05: enabled=false stays on disk for one-line re-enable / git
-            # history, but must not be scheduled. Omitting it from `seen`
-            # also drops a previously-enabled monitor on the next rescan.
+            # history, but contributes no sampling, event ingestion, or rule
+            # evaluation. Omitting it from `seen` also drops a previously
+            # enabled monitor on the next rescan.
             if not mdef.enabled:
                 continue
             seen.add(mdef.name)
@@ -333,10 +459,9 @@ class DaemonCore:
                 continue
             if mdef.source not in self.samplers:
                 if initial:
-                    print(
+                    _daemon_message(
                         f"monitor {mdef.name}: source {mdef.source!r} not available "
-                        "in this milestone; skipped",
-                        file=sys.stderr,
+                        "in this milestone; skipped"
                     )
                 continue
             current = self.monitors.get(mdef.name)
@@ -364,6 +489,12 @@ class DaemonCore:
             if self.events_engine is not None:
                 self.events_engine.supersede(name, now)  # MD-09
             del self.event_monitors[name]
+        if (
+            self.events_engine is not None
+            and self.events_engine._started
+            and not self.event_monitors
+        ):
+            self.events_engine.stop()
 
     def _index_groups(self, mdef: MonitorDef) -> None:
         """Rung configs per (monitor, group), severity-descending — the
@@ -530,10 +661,15 @@ class DaemonCore:
         if self.events_engine is not None and self.event_monitors:
             if not self.events_engine._started:
                 self._start_events()  # an events monitor appeared on rescan
+            else:
+                self._warn_on_unapplied_event_channels()
             self.events_engine.tick(list(self.event_monitors.values()), wall,
                                     mono, self.writer)
             self.stats.event_queue_depth = self.events_engine.queue_depth
             self.stats.events_dropped = self.events_engine.dropped
+            self.stats.events_received = self.events_engine.received
+            self.stats.events_repeated = self.events_engine.repeated
+            self.stats.event_rate_per_min = self.events_engine.event_rate_per_min
             self.stats.source_activity_age_s = self.events_engine.last_activity_age_s
         for monitor, entity_id in self.pipeline.drain_gone():
             self._clear_gone(monitor, entity_id, wall)
@@ -644,12 +780,13 @@ def run(args) -> int:
 
     paths = get_paths()
     paths.ensure()
+    _configure_daemon_log(paths.log_file)
+
+    from ftmon.paths import try_lock_exclusive
 
     lock_file = open(paths.lock_file, "w")  # noqa: SIM115 - held for process lifetime
-    try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        print("ftmon daemon already running (lock held); exiting", file=sys.stderr)
+    if not try_lock_exclusive(lock_file):
+        _daemon_message("ftmon daemon already running (lock held); exiting")
         return 1
     # CL-07: `ftmon monitor rescan` signals this pid. The flock, not the pid
     # text, remains the single-instance authority (PM-02).
@@ -660,7 +797,7 @@ def run(args) -> int:
 
     clock: Clock
     if getattr(args, "clock", "system") == "controlled":
-        clock = ControlledClock()  # test harness drives via FTMON_CLOCK_SOCK (TS-05)
+        clock = ControlledClock()  # platform endpoint selected by paths (TS-05/PL-01)
     else:
         clock = SystemClock()
 
@@ -674,15 +811,19 @@ def run(args) -> int:
         event_source: EventSource | None = (
             fixtures.FixtureEventSource(scn) if scn.events else None)
     else:
-        from ftmon.sources.journald import JournaldEventSource
+        from ftmon.sources import event_source_for_platform
 
-        event_source = JournaldEventSource()
+        event_source = event_source_for_platform()
 
     core = DaemonCore(
         paths=paths,
         clock=clock,
         event_source=event_source,
         background_dispatch=not isinstance(clock, ControlledClock),
+        # The checked-in deterministic scenarios model the Linux fixture
+        # definitions (including systemd units).  Keep TS-04/TS-05 replay
+        # host-independent when the harness itself runs on macOS or Windows.
+        platform="linux" if scn is not None else None,
     )
 
     if scn is not None:
@@ -691,8 +832,7 @@ def run(args) -> int:
         from ftmon.sources import fixtures
 
         core.samplers.update(fixtures.fixture_samplers(scn))
-        print(f"fixtures: {args.fixtures} ({', '.join(sorted(scn.sources()))})",
-              file=sys.stderr)
+        _daemon_message(f"fixtures: {args.fixtures} ({', '.join(sorted(scn.sources()))})")
 
     def _stop(_sig, _frame):
         core.stop = True
@@ -704,13 +844,23 @@ def run(args) -> int:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    signal.signal(signal.SIGHUP, _reload)
+    if hasattr(signal, "SIGBREAK"):  # Windows console graceful-stop equivalent
+        signal.signal(signal.SIGBREAK, _stop)
+    if hasattr(signal, "SIGHUP"):  # POSIX only; no reload signal on Windows
+        signal.signal(signal.SIGHUP, _reload)
+
+    from ftmon.paths import start_reload_watcher
+
+    start_reload_watcher(core.request_reload)  # PM-11 equivalent on Windows; no-op on POSIX
 
     tick_s = core.config.tick_seconds if core.config else 5.0
     total = len(core.monitors) + len(core.event_monitors)
-    print(f"ftmon daemon started ({total} monitors)", file=sys.stderr)
+    _daemon_message(f"ftmon daemon started ({total} monitors)")
     try:
         core.run_loop(tick_s)
+    except BaseException:
+        _DAEMON_LOG.exception("ftmon daemon crashed")
+        raise
     finally:
         # Network and journal readers own OS resources; an unexpected sampler
         # error must not leave either background boundary alive during teardown.
@@ -718,5 +868,5 @@ def run(args) -> int:
             core.dispatch_worker.stop()
         if core.events_engine is not None:
             core.events_engine.stop()  # reap the journalctl reader
-    print("ftmon daemon stopped", file=sys.stderr)
+    _daemon_message("ftmon daemon stopped")
     return 0

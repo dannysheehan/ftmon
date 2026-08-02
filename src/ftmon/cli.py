@@ -19,18 +19,44 @@ from pathlib import Path
 import ftmon
 from ftmon.paths import get_paths
 
+# Profile -> calibrated-tree subdirectory under profile/. desktop's is real
+# host-tuning data (docs/tuning-desktop-xps15.md); platform profile pairs share
+# one Windows tree that fixes OS-semantic dead rules (no PSI/inodes/journald
+# on Windows) rather than tuning thresholds -- there is no Windows tuning
+# data yet. After host alias resolution, Linux server has no tree of its own
+# and falls through to the Linux-only generic design/builtins defaults below.
+_PROFILE_CALIBRATED_DIRS = {
+    "desktop": "desktop",
+    "windesktop": "windows",
+    "winserver": "windows",
+    "macdesktop": "macos",
+    "macserver": "macos",
+}
+
+
+def _resolve_init_profile(profile: str | None, platform_name: str | None = None) -> str:
+    """Resolve generic desktop/server names to the host's calibrated tree."""
+    from ftmon.paths import current_platform
+
+    selected = profile or "desktop"
+    host = current_platform() if platform_name is None else platform_name
+    aliases = {
+        ("windows", "desktop"): "windesktop",
+        ("windows", "server"): "winserver",
+        ("darwin", "desktop"): "macdesktop",
+        ("darwin", "server"): "macserver",
+    }
+    return aliases.get((host, selected), selected)
+
 
 def _builtin_monitors_source(profile: str):
-    """Return a Path or Traversable directory of monitor TOML to install (FS-02).
-
-    Desktop profile installs calibrated copies from profile/desktop; server
-    profile keeps the normative design/builtins defaults.
-    """
-    if profile == "desktop":
+    """Return a Path or Traversable directory of monitor TOML to install (FS-02)."""
+    subdir = _PROFILE_CALIBRATED_DIRS.get(profile)
+    if subdir:
         try:
             import importlib.resources
 
-            resources = importlib.resources.files("ftmon.definitions") / "profile" / "desktop"
+            resources = importlib.resources.files("ftmon.definitions") / "profile" / subdir
             try:
                 for item in resources.iterdir():
                     if item.is_file() and item.name.endswith(".toml"):
@@ -39,7 +65,7 @@ def _builtin_monitors_source(profile: str):
                 pass
         except ImportError:
             pass
-        fallback = Path(__file__).resolve().parents[2] / "design" / "profile" / "desktop"
+        fallback = Path(__file__).resolve().parents[2] / "design" / "profile" / subdir
         if fallback.is_dir():
             return fallback
 
@@ -59,9 +85,70 @@ def _builtin_monitors_source(profile: str):
     return fallback if fallback.is_dir() else None
 
 
+def _draft_monitors_source(profile: str):
+    """Curated monitors that ship as drafts, not enabled builtins (MD-05) --
+    e.g. Windows Security-Auditing/PowerShell visibility, which is sensitive
+    and depends on audit policy that's off by default, so a human must
+    review and approve it rather than it silently starting to run. Returns
+    None for profiles with no curated drafts (most of them, today)."""
+    subdir = _PROFILE_CALIBRATED_DIRS.get(profile)
+    if not subdir:
+        return None
+    try:
+        import importlib.resources
+
+        resources = importlib.resources.files("ftmon.definitions") / "profile" / subdir / "drafts"
+        try:
+            for item in resources.iterdir():
+                if item.is_file() and item.name.endswith(".toml"):
+                    return resources
+        except (FileNotFoundError, AttributeError, TypeError):
+            pass
+    except ImportError:
+        pass
+    fallback = Path(__file__).resolve().parents[2] / "design" / "profile" / subdir / "drafts"
+    return fallback if fallback.is_dir() else None
+
+
+def _copy_toml_files(src_dir, dst_dir: Path, force: bool) -> tuple[list[str], list[str]]:
+    """Copy every *.toml from src_dir (a Path or importlib.resources
+    Traversable, or None) into dst_dir; skip a name that already exists
+    unless force. Shared by cmd_init's builtins and curated-drafts install
+    (FS-02: never touch user config, so skip-unless-force applies to both)."""
+    from ftmon.paths import atomic_write
+
+    installed: list[str] = []
+    skipped: list[str] = []
+    if not src_dir:
+        return installed, skipped
+    if isinstance(src_dir, Path):
+        src_files = sorted(src_dir.glob("*.toml"))
+    else:
+        try:
+            src_files = sorted(item for item in src_dir.iterdir() if item.name.endswith(".toml"))
+        except (AttributeError, TypeError):
+            src_files = []
+
+    for src in src_files:
+        dst = dst_dir / src.name
+        if dst.exists() and not force:
+            skipped.append(src.name)
+            continue
+        try:
+            content = src.read_bytes()
+        except (AttributeError, TypeError):
+            skipped.append(src.name)
+            continue
+        atomic_write(dst, content)
+        installed.append(src.name)
+    return installed, skipped
+
+
 def _default_config_toml(profile: str = "desktop") -> str:
     """Explicit profile scaffold (PM-08); no runtime profile switch remains."""
-    desktop_enabled = "true" if profile == "desktop" else "false"
+    desktop_enabled = (
+        "true" if profile in ("desktop", "windesktop", "macdesktop") else "false"
+    )
     return f"""\
 # FTMON v2 configuration
 # See docs/definitions.md for monitor setup; this file covers daemon behavior.
@@ -131,17 +218,22 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     - Creates all dirs (0700)
     - Writes config.toml only if absent (unless --force)
-    - Installs 8 builtin *.toml files (desktop profile uses calibrated monitors)
+    - Installs 8 builtin *.toml files (platform desktop/server profiles
+      use calibrated monitors)
+    - Installs any curated drafts for the profile into monitors/drafts/
+      (MD-05 -- never loaded until a human approves them)
     - Prints summary of what was installed
     """
     from ftmon.paths import atomic_write
+
+    profile = _resolve_init_profile(args.profile)
 
     paths = get_paths()
     paths.ensure()
 
     # Write config.toml only if absent (FS-02: never touch user config)
     if not paths.config_file.exists():
-        atomic_write(paths.config_file, _default_config_toml(args.profile).encode())
+        atomic_write(paths.config_file, _default_config_toml(profile).encode())
         print(f"wrote: {paths.config_file}")
     else:
         print(f"kept: {paths.config_file} (unchanged)")
@@ -160,40 +252,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"wrote: {paths.check_registry_file}")
 
     # Install builtin monitors for the selected profile.
-    installed = []
-    skipped = []
-
-    builtins_dir = _builtin_monitors_source(args.profile)
-
-    if builtins_dir:
-        # Iterate builtins and copy
-        if isinstance(builtins_dir, Path):
-            # Path object: use iterdir
-            builtin_files = sorted(builtins_dir.glob("*.toml"))
-        else:
-            # Traversable object: use iterdir then filter
-            try:
-                builtin_files = sorted(
-                    [item for item in builtins_dir.iterdir()
-                     if item.name.endswith(".toml")]
-                )
-            except (AttributeError, TypeError):
-                builtin_files = []
-
-        for src in builtin_files:
-            dst = paths.monitors_dir / src.name
-            if dst.exists() and not args.force:
-                skipped.append(src.name)
-            else:
-                # Read source and write atomically
-                try:
-                    content = src.read_bytes() if isinstance(src, Path) else src.read_bytes()
-                except (AttributeError, TypeError):
-                    # If src is a Traversable without read_bytes, skip
-                    skipped.append(src.name)
-                    continue
-                atomic_write(dst, content)
-                installed.append(src.name)
+    builtins_dir = _builtin_monitors_source(profile)
+    installed, skipped = _copy_toml_files(builtins_dir, paths.monitors_dir, args.force)
 
     # Print summary
     if installed:
@@ -203,6 +263,17 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"skipped {len(skipped)} existing file(s): {', '.join(skipped)}")
     if not installed and not skipped:
         print("no builtin definitions found")
+
+    # Curated drafts (MD-05): never loaded until a human approves them --
+    # e.g. Windows Security-Auditing visibility, sensitive and dependent on
+    # audit policy this tool does not configure on your behalf.
+    drafts_dir = _draft_monitors_source(profile)
+    d_installed, d_skipped = _copy_toml_files(drafts_dir, paths.drafts_dir, args.force)
+    if d_installed:
+        print(f"installed {len(d_installed)} draft monitor(s) pending approval "
+              f"(`ftmon monitor approve <name>`): {', '.join(d_installed)}")
+    if d_skipped:
+        print(f"skipped {len(d_skipped)} existing draft file(s): {', '.join(d_skipped)}")
 
     return 0
 
@@ -589,38 +660,36 @@ def cmd_paths(args: argparse.Namespace) -> int:
 
 
 def _monitor_rescan(paths) -> int:
-    """CL-07: SIGHUP the daemon recorded in the PM-02 lock file. Acquiring
-    the flock proves no daemon holds it — never signal a stale pid."""
-    import fcntl
-    import os
-    import signal
+    """CL-07: signal the daemon recorded in the PM-02 lock file to reload
+    (SIGHUP on POSIX, a named Event on Windows — paths.signal_reload).
+    Acquiring the lock proves no daemon holds it — never signal a stale pid."""
+    from ftmon.paths import signal_reload, try_lock_exclusive
 
     try:
-        f = open(paths.lock_file)
+        # "r+": msvcrt.locking (Windows side of try_lock_exclusive) needs a
+        # write-permitted mode or it fails with EACCES regardless of whether
+        # anyone else holds the lock — plain "r" would misreport as busy.
+        f = open(paths.lock_file, "r+")
     except OSError:
         print("daemon not running (no lock file); start it with `ftmon daemon`",
               file=sys.stderr)
         return 1
     with f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if try_lock_exclusive(f):
             print("daemon not running (lock not held); start it with "
                   "`ftmon daemon`", file=sys.stderr)
             return 1
-        except BlockingIOError:
-            pass
         pid_text = f.read().strip()
     if not pid_text.isdigit():
         print("daemon lock held but no pid recorded — daemon predates "
               "CL-07; send SIGHUP manually or restart it", file=sys.stderr)
         return 1
     try:
-        os.kill(int(pid_text), signal.SIGHUP)
+        signal_reload(int(pid_text))
     except (ProcessLookupError, PermissionError) as exc:
         print(f"cannot signal daemon pid {pid_text}: {exc}", file=sys.stderr)
         return 1
-    print(f"reload requested (SIGHUP to pid {pid_text}); "
-          "applied at the next tick")
+    print(f"reload requested (pid {pid_text}); applied at the next tick")
     return 0
 
 
@@ -754,9 +823,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             else "ready" if channel.enabled else "disabled"
         )
         if name == "desktop" and status == "ready":
-            from ftmon.notify import DesktopNotifier
+            from ftmon.notify import desktop_notifier_for_platform
 
-            if not DesktopNotifier().available:
+            notifier = desktop_notifier_for_platform()
+            if notifier is None or not notifier.available:
                 status = "error (desktop_unavailable)"
         print(f"Notification {name}: {status}")
     for error in config_errors:
@@ -861,8 +931,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Re-install builtins (does not touch user config)"
     )
     init_parser.add_argument(
-        "--profile", choices=("desktop", "server"), default="desktop",
-        help="Write explicit desktop or server defaults (default: desktop)",
+        "--profile",
+        choices=("desktop", "server", "windesktop", "winserver", "macdesktop", "macserver"),
+        default=None,
+        help=("Write desktop/server defaults calibrated for this host, or an explicit "
+              "Windows/macOS profile (default: host desktop)"),
     )
 
     # check
@@ -912,7 +985,10 @@ def main(argv: list[str] | None = None) -> int:
         "--clock",
         choices=["system", "controlled"],
         default="system",
-        help="controlled = test-harness clock via FTMON_CLOCK_SOCK (TS-05)",
+        help=(
+            "controlled = test harness via FTMON_CLOCK_SOCK (POSIX) or "
+            "FTMON_CLOCK_PORT (Windows) (TS-05)"
+        ),
     )
     daemon_parser.add_argument(
         "--fixtures",

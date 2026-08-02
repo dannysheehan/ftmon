@@ -54,7 +54,15 @@ class DiskSampler:
                 # Skip inaccessible mountpoints [PL-03]
                 continue
 
-            attrs = {"fstype": partition.fstype, "device": partition.device}
+            raw_options = getattr(partition, "opts", "")
+            options = {item.strip() for item in raw_options.split(",") if item.strip()}
+            attrs = {
+                "fstype": partition.fstype,
+                "device": partition.device,
+                "mountpoint": partition.mountpoint,
+                "readonly": "true" if "ro" in options else "false",
+                "mount_options": ",".join(sorted(options)),
+            }
 
             metrics: dict[str, float] = {
                 "total_bytes": float(usage.total),
@@ -81,9 +89,12 @@ class DiskSampler:
         """Calculate inode usage percentage for a mount.
 
         Uses os.statvfs to get inode counts. Returns None if:
+        - os.statvfs doesn't exist (Windows/NTFS has no POSIX inode concept)
         - os.statvfs fails
         - f_files is 0 (filesystem doesn't support inode counting)
         """
+        if not hasattr(os, "statvfs"):
+            return None
         try:
             stat = os.statvfs(mountpoint)
             if stat.f_files == 0:

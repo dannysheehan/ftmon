@@ -6,6 +6,7 @@ from ftmon.cli import main
 from ftmon.paths import get_paths
 from ftmon.store.db import connect, migrate
 from ftmon.store.doctor import backup, inspect
+from tests.platform_permissions import assert_private
 
 
 def test_doctor_clean_database_cl_05(tmp_path):
@@ -42,7 +43,7 @@ def test_backup_uses_sqlite_snapshot_vc_03(tmp_path):
     assert snap.execute("SELECT value FROM meta WHERE key='live'").fetchone()[0] == "wal-data"
     assert snap.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     snap.close()
-    assert destination.stat().st_mode & 0o777 == 0o600
+    assert_private(destination, 0o600)
     conn.close()
 
 

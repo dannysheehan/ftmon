@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -39,6 +39,14 @@ DOC_HEADINGS = {
     "## Upstream and licence",
 }
 PRIVILEGE_CLASSES = {"none", "service-socket", "sudo-wrapper"}
+
+
+def _is_absolute_for_declared_platforms(raw: str, platforms: list[str]) -> bool:
+    """Validate recipe argv with the target OS path grammar, not the CI host's."""
+    return (
+        ({"linux", "darwin"} & set(platforms) and PurePosixPath(raw).is_absolute())
+        or ("windows" in platforms and PureWindowsPath(raw).is_absolute())
+    )
 
 
 def recipe_dirs() -> list[Path]:
@@ -113,7 +121,9 @@ def test_recipe_registry_and_monitor_agree_without_granting_authority(recipe):
     alias, entry = next(iter(registry["check"].items()))
     assert set(entry) == {"argv", "protocol", "timeout"}
     assert entry["protocol"] == manifest["recipe"]["kind"]
-    assert entry["argv"] and Path(entry["argv"][0]).is_absolute()
+    assert entry["argv"] and _is_absolute_for_declared_platforms(
+        entry["argv"][0], manifest["recipe"]["platforms"]
+    )
     assert all(isinstance(argument, str) and argument for argument in entry["argv"])
     if manifest["recipe"]["privilege"] == "sudo-wrapper":
         assert entry["argv"][:2] == ["/usr/bin/sudo", "-n"]

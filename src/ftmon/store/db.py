@@ -5,9 +5,10 @@ No direct clock reads here (TS-03) — this module only touches sqlite3/os/pathl
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from pathlib import Path
+
+from ftmon.paths import set_private_permissions
 
 __all__ = ["connect", "migrate"]
 
@@ -29,11 +30,12 @@ def connect(db_path: Path, readonly: bool = False) -> sqlite3.Connection:
         conn = sqlite3.connect(uri, uri=True)
     else:
         db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        set_private_permissions(db_path.parent, 0o700)
         is_new = not db_path.exists()
         conn = sqlite3.connect(str(db_path))
         if is_new:
             conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
-            os.chmod(db_path, 0o600)
+            set_private_permissions(db_path, 0o600)
 
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import mimetypes
 import sqlite3
 import tomllib
 from contextlib import contextmanager
@@ -30,6 +31,10 @@ from ftmon.paths import Paths, get_paths
 from ftmon.sources.base import SOURCE_DECLS
 from ftmon.store.db import connect
 from ftmon.store.query import Query
+
+# macOS 12's stdlib maps .ico to image/x-icon while Linux maps it to the
+# registered IANA spelling. Keep the offline response contract deterministic.
+mimetypes.add_type("image/vnd.microsoft.icon", ".ico", strict=True)
 
 _CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
@@ -330,7 +335,7 @@ def _demo_monitor_tiles(definitions, q: Query | None, now: float) -> list[Monito
     for mdef in definitions:
         state = summaries.get(mdef.name, "unknown")
         icon, label = presentation.get(state, ("?", "unknown"))
-        glance = _compose_glance(mdef, q, state, now)
+        glance = _compose_tile_glance(mdef, q, state, now)
         incident_count, maximum = live.get(mdef.name, (0, None))
         tiles.append(MonitorTile(
             mdef.name, mdef.description, mdef.enabled,
@@ -375,7 +380,7 @@ def _monitor_tiles(
             state, icon, label = "warning", "▲", "warning"
         else:
             state, icon, label = "clear", "✓", "clear"
-        glance = _compose_glance(mdef, q, state, now)
+        glance = _compose_tile_glance(mdef, q, state, now)
         tiles.append(MonitorTile(
             mdef.name, mdef.description, mdef.enabled, state, icon, label,
             len(live), maximum, mdef.trends, glance,
@@ -517,6 +522,25 @@ def _compose_glance(mdef, q: Query | None, state: str, now: float) -> TileGlance
     )
 
 
+def _compose_tile_glance(mdef, q: Query | None, state: str, now: float) -> TileGlance | None:
+    """Use declared glance metadata, plus the fixed Events ingest-rate readout."""
+    declared = _compose_glance(mdef, q, state, now)
+    if declared is not None or mdef.source != "events":
+        return declared
+    if q is None or state not in {"clear", "warning", "error"}:
+        return None
+    samples = q.glance_samples("self", "event_rate_per_min", not_before=now - 120.0)
+    if not samples:
+        return None
+    latest = max(samples, key=lambda sample: sample.ts)
+    return TileGlance(
+        entity_id="ingest",
+        value=f"{format(latest.value, '.3g')} events/min",
+        thresholds=(),
+        meter=None,
+    )
+
+
 async def incidents(request: Request):
     state = request.query_params.get("state") or None
     monitor = request.query_params.get("monitor")
@@ -586,7 +610,10 @@ async def metrics(request: Request):
             seconds = float(p["hours"]) * 3600
             range_text = f"{p['hours']}h"
         else:
-            range_text = p.get("range", "24h")
+            # Fresh installs have raw samples immediately but no completed
+            # five-minute rollups yet. Six hours selects the raw tier, so the
+            # default explorer never looks empty while data is arriving.
+            range_text = p.get("range", "6h")
             seconds = parse_duration(range_text)
     except (ValueError, ExprError):
         return Response("Invalid range; use values such as 6h, 7d, or 30d", status_code=400)
