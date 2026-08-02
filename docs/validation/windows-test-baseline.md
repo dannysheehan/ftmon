@@ -58,6 +58,7 @@ failures.
 | Native private-permission fixtures and process execution | B, D | 26 failed, 761 passed, 3 skipped, 5 deselected |
 | Portable controlled-clock transport and reload signaling | A, G | 14 failed, 773 passed, 3 skipped, 5 deselected |
 | Unelevated symlink-fixture isolation | C | 8 failed, 777 passed, 9 skipped, 5 deselected |
+| Optional inode-API fixtures | E | 4 failed, 781 passed, 9 skipped, 5 deselected |
 
 ## Methodology
 

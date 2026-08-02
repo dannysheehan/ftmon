@@ -398,7 +398,7 @@ def test_disk_inode_used_pct_computation(monkeypatch):
     # Fake statvfs: 10000 total inodes, 7000 used, 3000 free
     fake_statvfs = types.SimpleNamespace(f_files=10000, f_ffree=3000)
     monkeypatch.setattr(
-        "os.statvfs", lambda *a, **k: fake_statvfs
+        "os.statvfs", lambda *a, **k: fake_statvfs, raising=False
     )
 
     snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
@@ -420,9 +420,11 @@ def test_disk_mount_options_expose_readonly_and_nobrowse_macos(monkeypatch):
     usage = types.SimpleNamespace(total=100, used=95, free=5, percent=95.0)
     monkeypatch.setattr("psutil.disk_partitions", lambda *a, **k: [partition])
     monkeypatch.setattr("psutil.disk_usage", lambda *a, **k: usage)
-    monkeypatch.setattr("os.statvfs", lambda *a, **k: types.SimpleNamespace(
-        f_files=0, f_ffree=0
-    ))
+    monkeypatch.setattr(
+        "os.statvfs",
+        lambda *a, **k: types.SimpleNamespace(f_files=0, f_ffree=0),
+        raising=False,
+    )
 
     (entity,) = sampler.sample(1.0, 2000.0, {}).entities
     assert entity.attrs["readonly"] == "true"
@@ -455,7 +457,7 @@ def test_disk_inode_omitted_when_f_files_zero(monkeypatch):
     # Fake statvfs with f_files == 0 (no inode support)
     fake_statvfs = types.SimpleNamespace(f_files=0, f_ffree=0)
     monkeypatch.setattr(
-        "os.statvfs", lambda *a, **k: fake_statvfs
+        "os.statvfs", lambda *a, **k: fake_statvfs, raising=False
     )
 
     snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
@@ -527,7 +529,7 @@ def test_disk_deadline_stops_iteration(monkeypatch):
     )
 
     fake_statvfs = types.SimpleNamespace(f_files=0, f_ffree=0)
-    monkeypatch.setattr("os.statvfs", lambda *a, **k: fake_statvfs)
+    monkeypatch.setattr("os.statvfs", lambda *a, **k: fake_statvfs, raising=False)
 
     snapshot = sampler.sample(
         now=1609459200.0, deadline_mono=1002.0, options={}
