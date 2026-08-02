@@ -28,7 +28,11 @@ _APP = "ftmon"
 # cli.py rendezvous through this well-known named Event instead. Session-
 # local ("Local\") since ftmon is single-user; spiked and confirmed on
 # feature/windows-support (spikes/windows-support/reload_signal_spike.py).
-_RELOAD_EVENT_NAME = "Local\\ftmon-reload-signal"
+_RELOAD_EVENT_PREFIX = "Local\\ftmon-reload-signal-"
+
+
+def _reload_event_name(pid: int) -> str:
+    return f"{_RELOAD_EVENT_PREFIX}{pid}"
 
 
 def current_platform() -> str:
@@ -168,7 +172,7 @@ def start_reload_watcher(on_reload: Callable[[], None]) -> None:
 
     import win32event
 
-    handle = win32event.CreateEvent(None, False, False, _RELOAD_EVENT_NAME)
+    handle = win32event.CreateEvent(None, False, False, _reload_event_name(os.getpid()))
 
     def _watch() -> None:
         while True:
@@ -193,7 +197,7 @@ def signal_reload(pid: int) -> None:
 
         try:
             handle = win32event.OpenEvent(
-                win32event.EVENT_MODIFY_STATE, False, _RELOAD_EVENT_NAME
+                win32event.EVENT_MODIFY_STATE, False, _reload_event_name(pid)
             )
         except pywintypes.error as exc:
             raise ProcessLookupError(str(exc)) from exc

@@ -1,7 +1,7 @@
 """Clock abstraction (TS-03). The ONLY module allowed to touch the time module.
 
 SystemClock: production. ControlledClock: tier-1 e2e determinism (TS-05) -
-a unix-socket server the test harness drives with line-JSON commands:
+a loopback TCP server the test harness drives with line-JSON commands:
 
     {"op": "step", "s": 5}                  advance both clocks by s seconds
     {"op": "set", "wall": W, "mono": M}     absolute set (suspend simulation)
@@ -69,16 +69,13 @@ class FakeClock:
 
 
 class ControlledClock:
-    """Socket-driven clock for the e2e harness (DESIGN section 5)."""
+    """Loopback-socket-driven clock for the e2e harness (DESIGN section 5)."""
 
-    def __init__(self, sock_path: str | None = None):
-        path = sock_path or os.environ["FTMON_CLOCK_SOCK"]
-        self._srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-        self._srv.bind(path)
+    def __init__(self, port: int | None = None):
+        listen_port = port or int(os.environ["FTMON_CLOCK_PORT"])
+        self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._srv.bind(("127.0.0.1", listen_port))
         self._srv.listen(1)
         self._conn: socket.socket | None = None
         self._buf = b""

@@ -797,7 +797,7 @@ def run(args) -> int:
 
     clock: Clock
     if getattr(args, "clock", "system") == "controlled":
-        clock = ControlledClock()  # test harness drives via FTMON_CLOCK_SOCK (TS-05)
+        clock = ControlledClock()  # test harness drives via FTMON_CLOCK_PORT (TS-05)
     else:
         clock = SystemClock()
 
@@ -844,6 +844,8 @@ def run(args) -> int:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    if hasattr(signal, "SIGBREAK"):  # Windows console graceful-stop equivalent
+        signal.signal(signal.SIGBREAK, _stop)
     if hasattr(signal, "SIGHUP"):  # POSIX only; no reload signal on Windows
         signal.signal(signal.SIGHUP, _reload)
 

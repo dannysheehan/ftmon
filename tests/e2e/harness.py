@@ -1,5 +1,5 @@
 """[TS-05] Tier-1 e2e harness: the real `ftmon daemon` binary as a
-subprocess, deterministic via ControlledClock over a unix socket.
+subprocess, deterministic via ControlledClock over a loopback TCP socket.
 
 Why a subprocess and not DaemonCore-in-process (which test_fixtures already
 covers): TS-05 exists to test what only a real process can — argv/env
@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -30,17 +30,19 @@ class DaemonHarness:
     def __init__(self, root: Path, monitor_defs: dict[str, str], fixtures: str):
         self.root = root
         self.fixtures = fixtures
-        # AF_UNIX paths are limited to ~108 bytes; pytest tmp paths routinely
-        # exceed that, so the socket lives in a short mkdtemp dir instead.
-        self._sockdir = tempfile.mkdtemp(prefix="ftmon-e2e-")
-        self.sock_path = os.path.join(self._sockdir, "clock.sock")
+        # Reserve a native loopback endpoint before launching the daemon. TCP
+        # keeps the real-process harness portable without changing its wire
+        # protocol or reducing its coverage to an in-process fake.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            self.clock_port = reservation.getsockname()[1]
         self.env = {
             **os.environ,
             "FTMON_CONFIG_DIR": str(root / "cfg"),
             "FTMON_DATA_DIR": str(root / "data"),
             "FTMON_STATE_DIR": str(root / "state"),
             "FTMON_RUNTIME_DIR": str(root / "run"),
-            "FTMON_CLOCK_SOCK": self.sock_path,
+            "FTMON_CLOCK_PORT": str(self.clock_port),
         }
         self.paths = get_paths(self.env)
         self.paths.ensure()
@@ -57,6 +59,9 @@ class DaemonHarness:
             [sys.executable, "-m", "ftmon", "daemon",
              "--clock", "controlled", "--fixtures", self.fixtures],
             env=self.env, stdout=log, stderr=log,
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            ),
         )
         log.close()
         self._connect()
@@ -65,16 +70,16 @@ class DaemonHarness:
         deadline = time.monotonic() + 20.0
         while True:
             try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.connect(self.sock_path)
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect(("127.0.0.1", self.clock_port))
                 break
-            except (FileNotFoundError, ConnectionRefusedError):
+            except ConnectionRefusedError:
                 s.close()
                 assert self.proc and self.proc.poll() is None, (
                     f"daemon exited rc={self.proc.returncode}; log:\n"
                     + self.log.read_text()
                 )
-                assert time.monotonic() < deadline, "daemon never bound clock socket"
+                assert time.monotonic() < deadline, "daemon never bound clock endpoint"
                 time.sleep(0.05)
         s.settimeout(15.0)
         self._sock = s
@@ -126,6 +131,14 @@ class DaemonHarness:
         if self._sock is not None:
             self._sock.close()
             self._sock = None
+
+    def request_graceful_stop(self) -> None:
+        """Send the host's process-level graceful termination request."""
+        assert self.proc is not None
+        if os.name == "nt":
+            self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            self.proc.send_signal(signal.SIGTERM)
 
     def stop(self) -> None:
         """Graceful-if-possible teardown. A controlled-clock daemon blocks in

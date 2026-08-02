@@ -788,26 +788,20 @@ class TestMonitorRescan:
 
     def test_rescan_signals_lock_holder_cl_07(self, tmp_path, monkeypatch,
                                               capsys):
-        """[CL-07] SIGHUP goes to the pid recorded by the flock holder; this
-        test holds the lock itself so it must receive the signal."""
-        import fcntl
-        import os
-        import signal as sig
+        """[CL-07] rescan signals the pid recorded by the lock holder."""
+        from ftmon.paths import try_lock_exclusive
 
         setup_env(tmp_path, monkeypatch)
         run_dir = tmp_path / "run"
         run_dir.mkdir(parents=True, exist_ok=True)
-        got: list[bool] = []
-        old = sig.signal(sig.SIGHUP, lambda *_: got.append(True))
-        try:
-            with open(run_dir / "daemon.lock", "w") as holder:
-                fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                holder.write(str(os.getpid()))
-                holder.flush()
-                assert main(["monitor", "rescan"]) == 0
-        finally:
-            sig.signal(sig.SIGHUP, old)
-        assert got == [True]
+        got: list[int] = []
+        monkeypatch.setattr("ftmon.paths.signal_reload", got.append)
+        with open(run_dir / "daemon.lock", "w") as holder:
+            assert try_lock_exclusive(holder)
+            holder.write("12345")
+            holder.flush()
+            assert main(["monitor", "rescan"]) == 0
+        assert got == [12345]
 
     def test_monitor_actions_require_name(self, tmp_path, monkeypatch, capsys):
         """[CL-01] rescan made the name optional; the others still need it."""

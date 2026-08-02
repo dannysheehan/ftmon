@@ -967,7 +967,7 @@ def main(argv: list[str] | None = None) -> int:
         "--clock",
         choices=["system", "controlled"],
         default="system",
-        help="controlled = test-harness clock via FTMON_CLOCK_SOCK (TS-05)",
+        help="controlled = test-harness clock via FTMON_CLOCK_PORT (TS-05)",
     )
     daemon_parser.add_argument(
         "--fixtures",

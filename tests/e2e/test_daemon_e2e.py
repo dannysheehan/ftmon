@@ -5,7 +5,7 @@ exists: the at-most-one-duplicate delivery bound cannot be shown in-process.
 
 from __future__ import annotations
 
-import signal
+import os
 import sqlite3
 import subprocess
 import sys
@@ -188,11 +188,11 @@ def test_quiet_hours_digest_e2e(tmp_path):
 
 
 def test_sigterm_stops_cleanly(harness):
-    """Graceful shutdown: SIGTERM + one step lets the loop exit 0."""
+    """Host-native graceful termination plus one step lets the loop exit 0."""
     h = harness
     h.start()
     h.step()
-    h.proc.send_signal(signal.SIGTERM)
+    h.request_graceful_stop()
     try:
         h._sock.sendall(b'{"op": "step", "s": 5}\n')
     except OSError:
@@ -207,10 +207,18 @@ def test_action_runs_through_real_daemon_once_e2e_ac_02(tmp_path):
         'message = "{entity} leaking"',
         'message = "{entity} leaking"\naction = "capture"',
     )
+    if os.name == "nt":
+        action_def = action_def.replace('action = "capture"', 'action = "capture.cmd"')
     h = DaemonHarness(tmp_path, {"leak": action_def}, "firefox-leak-2mb-min")
-    script = h.paths.actions_dir / "capture"
-    script.write_text("#!/bin/sh\nprintf '%s' \"$FTMON_INCIDENT_ID\" > action-ran\n")
-    script.chmod(0o700)  # the test supplies the user-owned executable (AC-03)
+    if os.name == "nt":
+        script = h.paths.actions_dir / "capture.cmd"
+        script.write_text(
+            "@echo off\n>action-ran <nul set /p =%FTMON_INCIDENT_ID%\nexit /b 0\n"
+        )
+    else:
+        script = h.paths.actions_dir / "capture"
+        script.write_text("#!/bin/sh\nprintf '%s' \"$FTMON_INCIDENT_ID\" > action-ran\n")
+        script.chmod(0o700)  # the test supplies the user-owned executable (AC-03)
     try:
         h.start()
         marker = h.paths.state_dir / "action-ran"
@@ -317,7 +325,9 @@ def test_sighup_reloads_without_exit_pm_11(harness):
 
     before = load_hashes()
     assert before
-    h.proc.send_signal(signal.SIGHUP)
+    from ftmon.paths import signal_reload
+
+    signal_reload(int(h.paths.lock_file.read_text()))
     # Four 5 s steps keep total sim time inside the 30 s PM-04 window, so a
     # new load hash here can only be the SIGHUP-driven rescan.
     h.step_until(lambda: len(load_hashes() - before) == 1, max_steps=4)
@@ -347,6 +357,6 @@ def test_monitor_rescan_reloads_daemon_cl_07(harness):
         [sys.executable, "-m", "ftmon", "monitor", "rescan"],
         env=h.env, capture_output=True, text=True)
     assert rescan.returncode == 0, rescan.stderr
-    assert str(h.proc.pid) in rescan.stdout  # signalled the real daemon pid
+    assert h.paths.lock_file.read_text() in rescan.stdout
     h.step_until(lambda: len(load_hashes() - before) == 1, max_steps=4)
     assert h.proc.poll() is None
