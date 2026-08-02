@@ -28,12 +28,14 @@ if sys.platform == "win32":
 
     from ftmon.checks.trust import (
         accessible_beyond_owner,
+        accessible_beyond_owner_open_file,
         owned_by_self,
+        owned_by_self_open_file,
         trust_failures,
         trusted_owner,
         writable_beyond_owner,
     )
-    from ftmon.paths import set_private_permissions
+    from ftmon.paths import open_readonly_nofollow, set_private_permissions
 
 
 def _protected_file(tmp_path: Path, name: str, extra_aces=()) -> Path:
@@ -131,10 +133,30 @@ class TestOwnershipAndWritability:
         assert owned_by_self(path, info) is True
         assert writable_beyond_owner(path, info) is True
         assert accessible_beyond_owner(path, info) is True
+        fd = open_readonly_nofollow(path)
+        try:
+            open_info = os.fstat(fd)
+            assert owned_by_self_open_file(fd, open_info) is True
+            assert accessible_beyond_owner_open_file(fd, open_info) is True
+        finally:
+            os.close(fd)
         assert any(
             failure.startswith("group_or_other_writable:")
             for failure in trust_failures(str(path))
         )
+
+    def test_open_handle_checks_do_not_requery_secret_by_path(self, tmp_path, monkeypatch):
+        """[SE-04] Post-open secret trust stays anchored to the file handle."""
+        from ftmon.config import SecretRef
+
+        path = _protected_file(tmp_path, "secret.txt")
+        path.write_text("secret")
+
+        def path_requery_forbidden(*_args, **_kwargs):
+            raise AssertionError("secret validation re-queried its path")
+
+        monkeypatch.setattr(win32security, "GetFileSecurity", path_requery_forbidden)
+        assert SecretRef(file=path).resolve()._reveal() == "secret"
 
     def test_real_system_file_is_not_a_trusted_owner(self):
         """cmd.exe is owned by TrustedInstaller on a stock install -- neither

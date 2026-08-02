@@ -107,7 +107,17 @@ def _win_grants_beyond_owner(path: Path, mask_filter: int | None) -> bool:
         )
     except pywintypes.error:
         return True
-    owner = win32security.ConvertSidToStringSid(sd.GetSecurityDescriptorOwner())
+    return _win_descriptor_grants_beyond_owner(sd, mask_filter)
+
+
+def _win_descriptor_grants_beyond_owner(sd, mask_filter: int | None) -> bool:
+    """Evaluate a path- or handle-derived Windows security descriptor."""
+    import win32security
+
+    owner_sid = sd.GetSecurityDescriptorOwner()
+    if owner_sid is None:
+        return True
+    owner = win32security.ConvertSidToStringSid(owner_sid)
     trusted = _win_root_equivalent_sids() | {owner}
     dacl = sd.GetSecurityDescriptorDacl()
     if dacl is None:
@@ -124,6 +134,25 @@ def _win_grants_beyond_owner(path: Path, mask_filter: int | None) -> bool:
         if win32security.ConvertSidToStringSid(sid) not in trusted:
             return True
     return False
+
+
+def _win_handle_security_descriptor(fd: int):
+    """Read owner+DACL from the already-open CRT file descriptor."""
+    import msvcrt
+
+    import pywintypes
+    import win32security
+
+    try:
+        handle = msvcrt.get_osfhandle(fd)
+        return win32security.GetSecurityInfo(
+            handle,
+            win32security.SE_FILE_OBJECT,
+            win32security.OWNER_SECURITY_INFORMATION
+            | win32security.DACL_SECURITY_INFORMATION,
+        )
+    except (OSError, pywintypes.error):
+        return None
 
 
 def writable_beyond_owner(path: Path, info: os.stat_result) -> bool:
@@ -152,6 +181,14 @@ def accessible_beyond_owner(path: Path, info: os.stat_result) -> bool:
     return bool(stat.S_IMODE(info.st_mode) & 0o077)
 
 
+def accessible_beyond_owner_open_file(fd: int, info: os.stat_result) -> bool:
+    """SE-04 access check anchored to an already-open credential file."""
+    if os.name == "nt":
+        descriptor = _win_handle_security_descriptor(fd)
+        return descriptor is None or _win_descriptor_grants_beyond_owner(descriptor, None)
+    return bool(stat.S_IMODE(info.st_mode) & 0o077)
+
+
 def owned_by_self(path: Path, info: os.stat_result) -> bool:
     """Stricter than trusted_owner: True only if owned by exactly the
     current identity -- no root/SYSTEM/Administrators exception, since SE-04
@@ -159,6 +196,22 @@ def owned_by_self(path: Path, info: os.stat_result) -> bool:
     if os.name == "nt":
         owner = _win_owner_sid(path)
         return owner is not None and owner == _win_current_user_sid()
+    return info.st_uid == os.geteuid()
+
+
+def owned_by_self_open_file(fd: int, info: os.stat_result) -> bool:
+    """SE-04 ownership check anchored to an already-open credential file."""
+    if os.name == "nt":
+        import win32security
+
+        descriptor = _win_handle_security_descriptor(fd)
+        if descriptor is None:
+            return False
+        owner = descriptor.GetSecurityDescriptorOwner()
+        return (
+            owner is not None
+            and win32security.ConvertSidToStringSid(owner) == _win_current_user_sid()
+        )
     return info.st_uid == os.geteuid()
 
 

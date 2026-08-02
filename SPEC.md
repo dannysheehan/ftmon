@@ -1,6 +1,7 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.37** — v0.37 makes generic init profiles select the
+Status: **DRAFT v0.38** — v0.38 hardens Windows managed paths, secret-file
+handle validation, and the minimal external-check environment. v0.37 makes generic init profiles select the
 current host's calibrated monitor tree and closes Windows multi-channel
 checkpoint gaps at first subscription. v0.36 integrates Windows Event Log channel
 selection and per-channel subscribe-time filtering configurability (MD-13,
@@ -204,6 +205,10 @@ support policy and packaging must be resolved before macOS is advertised.
 - **PM-04** The daemon MUST re-scan monitor definition files for changes every 30 s (mtime + content-hash) and apply add/change/remove without restart. An invalid changed file MUST NOT take down the daemon: keep the currently loaded version, record a `config_error` self-event, surface it in CLI/web/MCP status. **After a daemon restart**, an invalid file on disk means that monitor is simply not loaded (config_error) — the persisted copy (PM-07) is for diagnostics and history, never silent resurrection.
 - **PM-05** MCP transport is **stdio only** in v1. The web UI binds **127.0.0.1** only, default port 8420, configurable. No other sockets are opened.
 - **PM-06** Definition-file coordination rules, binding on every process that writes to the config tree: (a) all writes are atomic — write to a temp file in the same directory, fsync, `rename()`; (b) directories 0700, files 0600 at creation; (c) symlinked definition files are rejected at load with a config_error; (d) approval (`drafts/x.toml` → `monitors/x.toml`) re-validates then renames atomically, and fails if the target exists; (e) concurrent writers are resolved last-write-wins — acceptable for a single-user tool — but every load path re-validates, so a torn outcome is at worst a config_error, never a partial load.
+  On Windows, every managed-directory permission mutation MUST open the final
+  component with reparse traversal disabled, reject any reparse point, and
+  apply its protected DACL through that verified handle; initialization and
+  `atomic_write` MUST fail before mutating a junction target.
 - **PM-07** On each successful load, the daemon persists the monitor's normalized definition, content hash, and load timestamp in the DB. This is the substrate for change detection (PM-04), `get_monitor` history, and MD-06 — not a fallback config store (see PM-04).
 - **PM-08** `ftmon init --profile desktop|server|windesktop|winserver|macdesktop|macserver`
   writes
@@ -530,7 +535,9 @@ rate_threshold_params = ["latency_growth_sph"]
   group/other; every parent from the selected trust root must reject
   group/other writes.
 - **EC-02** The runner invokes `argv` directly—never through a shell—with no
-  stdin, a minimal fixed `PATH`, no inherited environment, closed file
+  stdin, a minimal fixed `PATH`, no inherited environment except the explicit
+  Windows runtime allowlist `SystemRoot`, `SystemDrive`, `windir`, `TEMP`,
+  `TMP`, and `PATHEXT`, closed file
   descriptors, a private process group, a state-directory working directory,
   and capped stdout/stderr. The daemon MUST run unprivileged. Timeout kills the
   complete process group and returns an unknown check result; subprocess work
@@ -1077,7 +1084,10 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   variables or service-account-readable credential files, never literal
   tokens/passwords in `config.toml`, CLI arguments, URLs, database rows, logs,
   errors, `doctor`, MCP, or web output. Missing references fail that channel
-  closed. Error redaction removes credential values and URL user-info.
+  closed. Error redaction removes credential values and URL user-info. A
+  credential file is opened without following its final component; on Windows,
+  ownership and DACL validation MUST query that same open handle rather than
+  resolving the path again.
 - **SE-06** A reverse proxy is the public TLS and rate-limiting boundary for
   demo mode. The backend still enforces the exact configured Host, existing CSP
   and output escaping, a maximum request-target length, and read-only routing.
@@ -1318,6 +1328,18 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.38 (2026-08-02)** — closes the second PR #80 Windows hardening review.
+External checks retain only the small set of host-root/temp variables required
+by ordinary Windows runtimes while arbitrary parent environment remains
+scrubbed (EC-02). Managed directory DACL writes now reject final-component
+reparse points and operate on a verified handle, preventing an unelevated NTFS
+junction from redirecting initialization or atomic writes (PM-06/FS-02).
+Secret credential owner/DACL validation likewise stays anchored to the
+already-open no-follow handle (SE-04/SE-05). Native tests cover junctions,
+runtime environment, NULL-DACL handle checks, and descendant process reaping;
+DM-15 storage coverage injects a cursor-write failure to prove events and their
+checkpoint roll back atomically.
 
 **v0.37 (2026-08-02)** — resolves PR #80's cross-platform review blockers.
 Generic `desktop`/`server` initialization now selects the Windows or macOS

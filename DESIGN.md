@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.22**. Companion to `SPEC.md` v0.37 — every design element
+Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.38 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -314,8 +314,10 @@ writability checks walk the file's DACL (`GetSecurityDescriptorDacl`/
 `GetAce`) and fail if any `ACCESS_ALLOWED` entry grants a write-capable (or,
 for the stricter secrets check, any) right to a trustee outside that same
 owner/SYSTEM/Administrators set. An unreadable, absent, or NULL DACL fails
-closed; Windows grants everyone full access when no DACL restricts it. The
-Linux-only `masked_system_executable` escape hatch (NoNewPrivileges masking
+closed; Windows grants everyone full access when no DACL restricts it. Secret
+credential checks obtain the same descriptor with `GetSecurityInfo` from the
+CRT fd's already-open OS handle, so the safe open is not undone by a second
+path lookup. The Linux-only `masked_system_executable` escape hatch (NoNewPrivileges masking
 distro plugin ownership to an overflow uid) has no Windows counterpart —
 it is a narrow systemd sandboxing workaround, not a general rule.
 
@@ -325,7 +327,14 @@ FTMON's secret boundary. A plugin that needs credentials receives the path to
 its own administrator-managed protected file as a non-secret argv value; its
 format, ownership and lifecycle remain that plugin's responsibility (EC-07).
 
-Atomic write helper `paths.atomic_write(path, bytes)` (tmp + fsync + rename, 0600) is the only function that writes into the config tree (PM-06a/b); loader rejects symlinks (PM-06c).
+Atomic write helper `paths.atomic_write(path, bytes)` (tmp + fsync + rename,
+0600) is the only function that writes into the config tree (PM-06a/b); loader
+rejects symlinks (PM-06c). On Windows, private permission setup opens the
+file/directory itself with `FILE_FLAG_OPEN_REPARSE_POINT` (and
+`FILE_FLAG_BACKUP_SEMANTICS` for directory support), rejects the reparse
+attribute, and calls `SetSecurityInfo` on that handle. `Paths.ensure` and
+`atomic_write` therefore stop before a junction can redirect their DACL or
+content mutation.
 
 ---
 
@@ -416,8 +425,9 @@ class EvalContext(Protocol):
 # incident engine — pure (IN-06)
 def step_group(cfg: GroupConfig, st: GroupState, evals: Mapping[str, TriBool],
                now: float) -> tuple[GroupState, tuple[Effect, ...]]
-def step_episode(cfg: EpisodeConfig, st: GroupState, matches: Sequence[EventRecord],
-                 now: float) -> tuple[GroupState, tuple[Effect, ...]]           # IN-08
+def step_episode(cfg: EpisodeConfig, st: EpisodeState,
+                 matches: Sequence[tuple[float, str] | tuple[float, str, int]],
+                 now: float) -> tuple[EpisodeState, tuple[Effect, ...]]         # IN-08/DM-20
 
 # storage facade (all non-daemon processes use only Query + SmallWrites)
 class Query:      # DM-06; shared by CLI/MCP/web
@@ -779,8 +789,13 @@ class PerfMapping:
 `subprocess.run` so timeout can send TERM then KILL to the new session/process
 group. It supplies `stdin=DEVNULL`, captured pipes, `start_new_session=True`,
 `close_fds=True`, `cwd=state_dir`, and exactly `PATH=os.defpath` plus fixed
-non-secret identity fields (`FTMON_CHECK_ALIAS`, `FTMON_CHECK_TIMEOUT`). A pair
-of bounded readers drains stdout/stderr to prevent pipe deadlock while retaining
+non-secret identity fields (`FTMON_CHECK_ALIAS`, `FTMON_CHECK_TIMEOUT`). On
+Windows, the same paths/process seam additionally copies only `SystemRoot`,
+`SystemDrive`, `windir`, `TEMP`, `TMP`, and `PATHEXT` from the service
+environment (`SystemRoot` alone has a documented `C:\Windows` fallback); this
+is minimum runtime support, not general environment inheritance. Windows
+termination gives `taskkill /T /F` a bounded deadline and falls back to bounded
+direct-child kill/waits. A pair of bounded readers drains stdout/stderr to prevent pipe deadlock while retaining
 at most 64 KiB/8 KiB; adapter input over the protocol cap fails closed. Stderr
 is discarded after categorization. No DB transaction spans launch or wait.
 Immediately before `Popen`, the runner repeats executable `lstat`, resolved-path,

@@ -187,3 +187,12 @@ condition was met, per DO-09 (review artifacts are maintainer-facing
 records, not user documentation, and don't need their own `docs/REVIEW-N.md`
 for a scoped single-module pass — that convention is for whole-repository
 milestone audits).
+
+**PR #80 follow-up review (2026-08-02):** accepted three further Windows
+hardening findings before merge: the scrubbed external-check environment was
+too POSIX-shaped for ordinary Windows runtimes; managed-directory DACL writes
+followed junctions; and secret files were safely opened but then re-queried by
+path for owner/DACL validation. SPEC v0.38 records the dispositions. The fixes
+use a small Windows environment allowlist, no-follow handles for DACL mutation,
+and handle-derived secret security descriptors, with unelevated junction and
+process-tree tests assigned to the native Windows gate/test machine.

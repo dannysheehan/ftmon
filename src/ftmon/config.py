@@ -21,7 +21,10 @@ from datetime import datetime, tzinfo
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from ftmon.checks.trust import accessible_beyond_owner, owned_by_self
+from ftmon.checks.trust import (
+    accessible_beyond_owner_open_file,
+    owned_by_self_open_file,
+)
 from ftmon.paths import open_readonly_nofollow
 
 __all__ = [
@@ -92,9 +95,9 @@ class SecretRef:
                 raise ValueError(f"secret credential file is not a regular file: {path}")
             if info.st_size > 8192:
                 raise ValueError(f"secret credential file exceeds 8 KiB: {path}")
-            if not owned_by_self(path, info):
+            if not owned_by_self_open_file(fd, info):
                 raise ValueError(f"secret credential file is not owned by this account: {path}")
-            if accessible_beyond_owner(path, info):
+            if accessible_beyond_owner_open_file(fd, info):
                 raise ValueError(
                     f"secret credential file must not be group/world accessible: {path}"
                 )

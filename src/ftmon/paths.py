@@ -96,6 +96,7 @@ def set_private_permissions(path: Path, mode: int) -> None:
 
     import ntsecuritycon
     import win32api
+    import win32con
     import win32security
 
     token = win32security.OpenProcessToken(
@@ -104,41 +105,92 @@ def set_private_permissions(path: Path, mode: int) -> None:
     owner_sid, _attrs = win32security.GetTokenInformation(
         token, win32security.TokenUser
     )
-    existing_owner_sid = win32security.GetFileSecurity(
-        str(path), win32security.OWNER_SECURITY_INFORMATION
-    ).GetSecurityDescriptorOwner()
     trusted_sids = (
         owner_sid,
         win32security.CreateWellKnownSid(win32security.WinLocalSystemSid),
         win32security.CreateWellKnownSid(win32security.WinBuiltinAdministratorsSid),
     )
-    inheritance = 0
-    if path.is_dir():
-        inheritance = (
-            win32security.OBJECT_INHERIT_ACE | win32security.CONTAINER_INHERIT_ACE
-        )
-    dacl = win32security.ACL()
-    for sid in trusted_sids:
-        dacl.AddAccessAllowedAceEx(
-            win32security.ACL_REVISION,
-            inheritance,
-            ntsecuritycon.FILE_ALL_ACCESS,
-            sid,
-        )
-    descriptor = win32security.SECURITY_DESCRIPTOR()
-    descriptor.SetSecurityDescriptorDacl(1, dacl, 0)
-    security_information = (
-        win32security.DACL_SECURITY_INFORMATION
-        | win32security.PROTECTED_DACL_SECURITY_INFORMATION
-    )
+    access = ntsecuritycon.READ_CONTROL | ntsecuritycon.WRITE_DAC
+    handle, attributes = _open_windows_path_nofollow(path, access)
+    try:
+        existing_owner_sid = win32security.GetSecurityInfo(
+            handle,
+            win32security.SE_FILE_OBJECT,
+            win32security.OWNER_SECURITY_INFORMATION,
+        ).GetSecurityDescriptorOwner()
+    finally:
+        handle.Close()
+
+    # WRITE_OWNER is not implied merely by owning an object. Request it only
+    # when the legacy behavior genuinely needs to replace a foreign owner,
+    # then re-open/revalidate so no pathname race enters the mutation.
     if existing_owner_sid != owner_sid:
-        descriptor.SetSecurityDescriptorOwner(owner_sid, False)
-        security_information |= win32security.OWNER_SECURITY_INFORMATION
-    win32security.SetFileSecurity(
+        access |= ntsecuritycon.WRITE_OWNER
+    handle, attributes = _open_windows_path_nofollow(path, access)
+    try:
+        verified_owner_sid = win32security.GetSecurityInfo(
+            handle,
+            win32security.SE_FILE_OBJECT,
+            win32security.OWNER_SECURITY_INFORMATION,
+        ).GetSecurityDescriptorOwner()
+        if verified_owner_sid != existing_owner_sid:
+            raise OSError(errno.ESTALE, "managed path changed during permission setup", str(path))
+        inheritance = 0
+        if attributes & win32con.FILE_ATTRIBUTE_DIRECTORY:
+            inheritance = (
+                win32security.OBJECT_INHERIT_ACE | win32security.CONTAINER_INHERIT_ACE
+            )
+        dacl = win32security.ACL()
+        for sid in trusted_sids:
+            dacl.AddAccessAllowedAceEx(
+                win32security.ACL_REVISION,
+                inheritance,
+                ntsecuritycon.FILE_ALL_ACCESS,
+                sid,
+            )
+        security_information = (
+            win32security.DACL_SECURITY_INFORMATION
+            | win32security.PROTECTED_DACL_SECURITY_INFORMATION
+        )
+        replacement_owner = None
+        if existing_owner_sid != owner_sid:
+            replacement_owner = owner_sid
+            security_information |= win32security.OWNER_SECURITY_INFORMATION
+        win32security.SetSecurityInfo(
+            handle,
+            win32security.SE_FILE_OBJECT,
+            security_information,
+            replacement_owner,
+            None,
+            dacl,
+            None,
+        )
+    finally:
+        handle.Close()
+
+
+def _open_windows_path_nofollow(path: Path, desired_access: int):
+    """Open a file/directory itself and reject every final reparse point."""
+    import win32con
+    import win32file
+
+    handle = win32file.CreateFile(
         str(path),
-        security_information,
-        descriptor,
+        desired_access,
+        win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE | win32file.FILE_SHARE_DELETE,
+        None,
+        win32file.OPEN_EXISTING,
+        win32file.FILE_FLAG_BACKUP_SEMANTICS | win32file.FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
     )
+    try:
+        attributes = win32file.GetFileInformationByHandle(handle)[0]
+        if attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise OSError(errno.ELOOP, "refusing to modify a reparse point", str(path))
+        return handle, attributes
+    except BaseException:
+        handle.Close()
+        raise
 
 
 def open_readonly_nofollow(path: Path) -> int:
@@ -176,6 +228,50 @@ def external_process_group_options() -> dict[str, object]:
     if os.name == "nt":
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     return {"start_new_session": True}
+
+
+def external_check_environment(
+    alias: str,
+    timeout_s: float,
+    environ: Mapping[str, str] | None = None,
+    *,
+    platform_name: str | None = None,
+) -> dict[str, str]:
+    """Build the intentionally small environment for an external check.
+
+    Windows runtimes commonly require a handful of OS-root/temp variables
+    even when launched by absolute path. Preserve only that explicit set;
+    arbitrary daemon environment does not cross the check boundary (EC-02).
+    """
+    source = os.environ if environ is None else environ
+    host = current_platform() if platform_name is None else platform_name
+    result = {
+        "PATH": os.defpath,
+        "FTMON_CHECK_ALIAS": alias,
+        "FTMON_CHECK_TIMEOUT": str(timeout_s),
+    }
+    if host != "windows":
+        return result
+
+    # Environment keys are case-insensitive on Windows, but an injected test
+    # mapping need not be. Emit stable canonical spellings to child processes.
+    folded = {key.casefold(): value for key, value in source.items()}
+    essentials = (
+        ("SystemRoot", "systemroot"),
+        ("SystemDrive", "systemdrive"),
+        ("windir", "windir"),
+        ("TEMP", "temp"),
+        ("TMP", "tmp"),
+        ("PATHEXT", "pathext"),
+    )
+    for output_key, folded_key in essentials:
+        value = folded.get(folded_key)
+        if value:
+            result[output_key] = value
+    # SystemRoot is the one documented fallback: taskkill and core Windows
+    # runtime discovery both depend on it even in a stripped service account.
+    result.setdefault("SystemRoot", r"C:\Windows")
+    return result
 
 
 def terminate_external_process(process: subprocess.Popen) -> None:
