@@ -201,18 +201,28 @@ def open_readonly_nofollow(path: Path) -> int:
 
     import msvcrt
 
+    import pywintypes
     import win32con
     import win32file
 
-    handle = win32file.CreateFile(
-        str(path),
-        win32file.GENERIC_READ,
-        win32file.FILE_SHARE_READ,
-        None,
-        win32file.OPEN_EXISTING,
-        win32file.FILE_FLAG_OPEN_REPARSE_POINT,
-        None,
-    )
+    try:
+        handle = win32file.CreateFile(
+            str(path),
+            win32file.GENERIC_READ,
+            win32file.FILE_SHARE_READ,
+            None,
+            win32file.OPEN_EXISTING,
+            win32file.FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+    except pywintypes.error as exc:
+        # Keep the paths seam's documented OSError contract even when the
+        # native API refuses a directory/junction before attributes can be
+        # inspected (commonly ERROR_ACCESS_DENIED for a directory handle).
+        winerror = getattr(exc, "winerror", exc.args[0] if exc.args else errno.EACCES)
+        raise OSError(
+            winerror, "cannot open path without following reparse point", str(path)
+        ) from exc
     try:
         attributes = win32file.GetFileInformationByHandle(handle)[0]
         if attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT:
