@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 import pytest
@@ -14,9 +13,13 @@ import pytest
 from ftmon.checks import CheckRunner, CheckSpec
 from ftmon.checks.jsoncheck import parse as parse_json
 from ftmon.checks.nagios import parse as parse_nagios
-from tests.platform_permissions import make_broadly_writable, make_private
+from tests.platform_permissions import (
+    make_broadly_writable,
+    make_private,
+    trusted_python_executable,
+)
 
-_PYTHON = str(Path(sys.executable).resolve())
+_PYTHON = trusted_python_executable()
 
 
 def test_windows_check_environment_is_essential_but_still_scrubbed():

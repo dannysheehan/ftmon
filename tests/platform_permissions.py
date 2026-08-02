@@ -4,11 +4,38 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
 
 from ftmon.paths import set_private_permissions
+
+
+def trusted_python_executable() -> str:
+    """Return an interpreter that satisfies the real external-check trust gate.
+
+    uv may copy ``python.exe`` into an isolated Windows environment with an
+    owner inherited from the tool cache rather than the current account. The
+    base interpreter remains the executable that actually backs that venv and
+    is the appropriate fixture for tests of registered external commands.
+    """
+    from ftmon.checks.trust import trust_failures, trusted_executable_path
+
+    candidates = []
+    for raw in (getattr(sys, "_base_executable", None), sys.executable):
+        if not raw:
+            continue
+        path = Path(raw)
+        for candidate in (path.resolve(), path):
+            rendered = str(candidate)
+            if rendered not in candidates:
+                candidates.append(rendered)
+    for candidate in candidates:
+        if trusted_executable_path(candidate):
+            return candidate
+    failures = {candidate: trust_failures(candidate) for candidate in candidates}
+    raise AssertionError(f"no trusted Python executable available for test fixture: {failures}")
 
 
 def make_private(path: Path, mode: int) -> Path:

@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import sqlite3
-import sys
-from pathlib import Path
 
 from ftmon.clock import FakeClock
 from ftmon.daemon import DaemonCore
 from ftmon.paths import get_paths
-from tests.platform_permissions import make_private, toml_path
+from tests.platform_permissions import (
+    make_private,
+    toml_path,
+    trusted_python_executable,
+)
 
-_PYTHON = str(Path(sys.executable).resolve())
+_PYTHON = trusted_python_executable()
 
 EXTERNAL_DEF = """
 schema = 1
