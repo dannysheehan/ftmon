@@ -62,6 +62,8 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("num_fds", "count", "gauge",
                "Open file descriptors (None if unprivileged, or unsupported -- no Windows "
                "equivalent exists)"),
+            _m("fd_limit_soft", "count", "gauge",
+               "Soft RLIMIT_NOFILE (None if denied, unsupported, zero, or infinite)"),
             _m("num_threads", "count", "gauge", "Thread count"),
             _m("io_read_bytes", "bytes", "counter", "Cumulative bytes read (may be None)"),
             _m("io_write_bytes", "bytes", "counter", "Cumulative bytes written (may be None)"),

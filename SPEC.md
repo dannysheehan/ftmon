@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.38** — v0.38 hardens Windows managed paths, secret-file
+Status: **DRAFT v0.39** — v0.39 extends the process sampler with per-PID soft
+`RLIMIT_NOFILE` (`fd_limit_soft`) so fd-utilization monitors can key off each
+process's real limit rather than a single host-wide parameter (SA-04/PL-05,
+issue #60). v0.38 hardens Windows managed paths, secret-file
 handle validation, and the minimal external-check environment. v0.37 makes generic init profiles select the
 current host's calibrated monitor tree and closes Windows multi-channel
 checkpoint gaps at first subscription. v0.36 integrates Windows Event Log channel
@@ -426,7 +429,7 @@ sources due? → each needed source runs ONCE → immutable snapshot (single ts)
   channel is reported once per daemon lifetime as a self-event — not a
   spam-guarded renotify, since nothing about a permanently invalid
   channel/query self-heals the way SA-03's death/restart does.
-- **SA-04** Built-in samplers v1: `process` (per-process cpu%, rss, and — where available without elevated rights — open fds, threads, io counters), `disk` (per-mount total/used/free bytes, inodes where supported), `system` (load1/5/15, cpu% total, mem available/used, swap, PSI where present), `net` (per-listen-socket presence, per-proto/state connection counts; **no per-process attribution in v1**, NG-06), `unit` (systemd unit active-state + NRestarts via `systemctl show`).
+- **SA-04** Built-in samplers v1: `process` (per-process cpu%, rss, and — where available without elevated rights — open fds, soft `RLIMIT_NOFILE` (`fd_limit_soft`; omitted when denied, unsupported, zero, or infinite), threads, io counters), `disk` (per-mount total/used/free bytes, inodes where supported), `system` (load1/5/15, cpu% total, mem available/used, swap, PSI where present), `net` (per-listen-socket presence, per-proto/state connection counts; **no per-process attribution in v1**, NG-06), `unit` (systemd unit active-state + NRestarts via `systemctl show`).
 - **SA-05** The `process` source implements **track-all + promote**: every process is sampled into a bounded in-memory window (last 15 of its samples) each tick it's due; long-term persistence happens only for entities that are (a) on a monitor's watchlist, (b) in the top-N (default 15) by cpu or rss that cycle, or (c) **promoted** by a trend heuristic (§7.6.1). Promotion/demotion transitions are recorded as self-events. This keeps DM-05/DM-16 achievable with hundreds of processes.
 
 ### 6.4 Administrator-registered external checks
@@ -1328,6 +1331,16 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.39 (2026-08-03)** — process sampler emits per-PID `fd_limit_soft` from
+`RLIMIT_NOFILE` soft limit where available (SA-04/PL-05, issue #60). The
+metric is omitted on `AccessDenied`, unsupported platforms (missing `rlimit`
+or `RLIMIT_NOFILE`), zero, or infinite limits so fd-utilization expressions
+never see a silent bogus ratio. The value is re-read each sample (not
+lifetime-cached on the Process handle) because a process may `setrlimit()`
+after startup. Docs list the new process metric; no package `fds.toml` is
+added — operator monitors re-key `fd_pct` to `num_fds / fd_limit_soft` after
+upgrade.
 
 **v0.38 (2026-08-02)** — closes the second PR #80 Windows hardening review.
 External checks retain only the small set of host-root/temp variables required
