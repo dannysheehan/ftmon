@@ -80,6 +80,7 @@ def test_process_entity_id_format(monkeypatch):
         obj.memory_info = lambda: types.SimpleNamespace(rss=123456)
         obj.num_fds = lambda: 42
         obj.num_threads = lambda: 5
+        obj.rlimit = lambda resource: (1024, 4096)
         obj.io_counters = lambda: types.SimpleNamespace(
             read_bytes=1000, write_bytes=2000
         )
@@ -113,6 +114,7 @@ def test_process_cmdline_truncation_to_256(monkeypatch):
         obj.memory_info = lambda: types.SimpleNamespace(rss=100000)
         obj.num_fds = lambda: 10
         obj.num_threads = lambda: 1
+        obj.rlimit = lambda resource: (1024, 4096)
         obj.io_counters = lambda: types.SimpleNamespace(
             read_bytes=0, write_bytes=0
         )
@@ -146,9 +148,17 @@ def _fake_proc(pid, name, create_time=1609459200.0, exe=None, cmdline=None):
     proc.memory_info = lambda: types.SimpleNamespace(rss=1000)
     proc.num_fds = lambda: 1
     proc.num_threads = lambda: 1
+    proc.rlimit = lambda resource: (1024, 4096)
     proc.io_counters = lambda: types.SimpleNamespace(read_bytes=0, write_bytes=0)
     proc.cpu_percent = lambda interval: 0.0
     return proc
+
+
+def _ensure_rlimit_nofile(monkeypatch, resource: int = 7) -> None:
+    """Stub psutil.RLIMIT_NOFILE when absent (Windows) so rlimit paths are exercised."""
+    import psutil as _psutil
+
+    monkeypatch.setattr(_psutil, "RLIMIT_NOFILE", resource, raising=False)
 
 
 def test_process_display_identity_from_exe_basename_sa_09(monkeypatch):
@@ -250,6 +260,7 @@ def test_process_access_denied_omits_metric_not_entity(monkeypatch):
             __import__("psutil").AccessDenied()
         )
         obj.num_threads = lambda: 3
+        obj.rlimit = lambda resource: (1024, 4096)
         obj.io_counters = lambda: types.SimpleNamespace(
             read_bytes=100, write_bytes=200
         )
@@ -268,6 +279,149 @@ def test_process_access_denied_omits_metric_not_entity(monkeypatch):
     assert "cpu_pct" in entity.metrics
     assert "rss_bytes" in entity.metrics
     assert "num_threads" in entity.metrics
+
+
+def test_process_fd_limit_soft_emits_soft_rlimit(monkeypatch):
+    """[SA-04][PL-05] Finite soft RLIMIT_NOFILE is emitted as fd_limit_soft."""
+    _ensure_rlimit_nofile(monkeypatch)
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(10, "svc")
+    proc.rlimit = lambda resource: (4096, 8192)
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
+    assert snapshot.entities[0].metrics["fd_limit_soft"] == 4096.0
+
+
+def test_process_fd_limit_soft_access_denied_omits_metric(monkeypatch):
+    """[PL-03] AccessDenied on rlimit omits fd_limit_soft but keeps the entity."""
+    import psutil as _psutil
+
+    _ensure_rlimit_nofile(monkeypatch)
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(11, "other-user")
+    proc.rlimit = lambda resource: (_ for _ in ()).throw(_psutil.AccessDenied())
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
+    assert len(snapshot.entities) == 1
+    assert "fd_limit_soft" not in snapshot.entities[0].metrics
+    assert "num_fds" in snapshot.entities[0].metrics
+
+
+def test_process_fd_limit_soft_nosuchprocess_omits_metric(monkeypatch):
+    """[PL-03] NoSuchProcess during rlimit omits fd_limit_soft; entity kept."""
+    import psutil as _psutil
+
+    _ensure_rlimit_nofile(monkeypatch)
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(12, "vanishing")
+    proc.rlimit = lambda resource: (_ for _ in ()).throw(_psutil.NoSuchProcess(12))
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
+    assert len(snapshot.entities) == 1
+    assert snapshot.entities[0].entity_id == "vanishing:12:1609459200"
+    assert "fd_limit_soft" not in snapshot.entities[0].metrics
+
+
+def test_process_missing_rlimit_omits_fd_limit_soft(monkeypatch):
+    """[PL-01] Platforms without Process.rlimit omit fd_limit_soft."""
+    _ensure_rlimit_nofile(monkeypatch)
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(13, "no-rlimit")
+    del proc.rlimit
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
+    assert len(snapshot.entities) == 1
+    assert "fd_limit_soft" not in snapshot.entities[0].metrics
+
+
+def test_process_missing_rlimit_nofile_constant_omits_fd_limit_soft(monkeypatch):
+    """[PL-01] Missing psutil.RLIMIT_NOFILE omits the metric without AttributeError."""
+    import psutil as _psutil
+
+    # Ensure the constant exists first so delattr is meaningful on Windows too,
+    # where stock psutil has no RLIMIT_NOFILE.
+    _ensure_rlimit_nofile(monkeypatch)
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(14, "no-constant")
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+    monkeypatch.delattr(_psutil, "RLIMIT_NOFILE", raising=False)
+
+    snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
+    assert len(snapshot.entities) == 1
+    assert "fd_limit_soft" not in snapshot.entities[0].metrics
+
+
+def test_process_fd_limit_soft_zero_omitted(monkeypatch):
+    """[SA-04] Soft limit 0 is omitted so fd_pct cannot divide by zero."""
+    _ensure_rlimit_nofile(monkeypatch)
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(15, "zero-limit")
+    proc.rlimit = lambda resource: (0, 0)
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
+    assert "fd_limit_soft" not in snapshot.entities[0].metrics
+
+
+def test_process_fd_limit_soft_native_infinity_omitted(monkeypatch):
+    """[SA-04] Soft -1 (Linux RLIM_INFINITY) is omitted, not emitted as a ratio."""
+    _ensure_rlimit_nofile(monkeypatch)
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(16, "unlimited")
+    proc.rlimit = lambda resource: (-1, -1)
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
+    assert "fd_limit_soft" not in snapshot.entities[0].metrics
+
+
+def test_process_fd_limit_soft_positive_infinity_sentinel_omitted(monkeypatch):
+    """[SA-04] Soft equal to a positive RLIM_INFINITY sentinel is omitted.
+
+    On Linux RLIM_INFINITY is -1, so soft > 0 alone would pass a broken
+    equality check; monkeypatch a positive sentinel to exercise it.
+    """
+    import psutil as _psutil
+
+    _ensure_rlimit_nofile(monkeypatch)
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    proc = _fake_proc(17, "big-infinity")
+    sentinel = 2**63 - 1
+    proc.rlimit = lambda resource: (sentinel, sentinel)
+    monkeypatch.setattr(_psutil, "RLIM_INFINITY", sentinel, raising=False)
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    snapshot = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
+    assert "fd_limit_soft" not in snapshot.entities[0].metrics
+
+
+def test_process_fd_limit_soft_reread_each_sample(monkeypatch):
+    """[SA-04][DM-02] Soft limit is re-read each sample, not lifetime-cached."""
+    _ensure_rlimit_nofile(monkeypatch)
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    soft = {"v": 1024}
+    proc = _fake_proc(18, "mutating")
+    proc.rlimit = lambda resource: (soft["v"], soft["v"] * 2)
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [proc])
+
+    first = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={})
+    assert first.entities[0].metrics["fd_limit_soft"] == 1024.0
+    soft["v"] = 8192
+    second = sampler.sample(now=1609459201.0, deadline_mono=2000.0, options={})
+    assert second.entities[0].metrics["fd_limit_soft"] == 8192.0
 
 
 def test_process_missing_io_counters_omits_metrics_not_entity_macos(monkeypatch):
@@ -327,6 +481,7 @@ def test_process_deadline_stops_iteration(monkeypatch):
             p.memory_info = lambda: types.SimpleNamespace(rss=10000)
             p.num_fds = lambda: 5
             p.num_threads = lambda: 1
+            p.rlimit = lambda resource: (1024, 4096)
             p.io_counters = lambda: types.SimpleNamespace(
                 read_bytes=0, write_bytes=0
             )
@@ -652,6 +807,7 @@ def test_samplers_real_system():
                 "cpu_pct",
                 "rss_bytes",
                 "num_fds",
+                "fd_limit_soft",
                 "num_threads",
                 "io_read_bytes",
                 "io_write_bytes",
@@ -708,6 +864,7 @@ def test_process_midread_vanish_does_not_abort_pass(monkeypatch):
         memory_info=lambda: types.SimpleNamespace(rss=1),
         num_fds=lambda: 1,
         num_threads=lambda: 1,
+        rlimit=lambda resource: (1024, 4096),
         io_counters=lambda: types.SimpleNamespace(read_bytes=0, write_bytes=0),
         cpu_percent=lambda interval: 0.0,
     )
@@ -731,6 +888,7 @@ def test_process_pid_reuse_gets_fresh_cache_entry(monkeypatch):
             memory_info=lambda: types.SimpleNamespace(rss=1),
             num_fds=lambda: 1,
             num_threads=lambda: 1,
+            rlimit=lambda resource: (1024, 4096),
             io_counters=lambda: types.SimpleNamespace(read_bytes=0, write_bytes=0),
             cpu_percent=lambda interval: 1.0,
         )

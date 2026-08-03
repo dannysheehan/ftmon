@@ -205,13 +205,17 @@ Run `ftmon monitors` / read the built-ins for live examples. Summary:
 
 | Source | Entities | Metrics | Attrs |
 | --- | --- | --- | --- |
-| `process` | every process (track-all + top-N/promoted persistence) | `cpu_pct rss_bytes num_fds num_threads io_read_bytes io_write_bytes` | `name cmdline username exe` |
+| `process` | every process (track-all + top-N/promoted persistence) | `cpu_pct rss_bytes num_fds fd_limit_soft num_threads io_read_bytes io_write_bytes` | `name cmdline username exe` |
 | `disk` | mounts | `total_bytes used_bytes free_bytes used_pct inode_used_pct` | `fstype device` |
 | `system` | one (`system`) | `load1 load5 load15 cpu_pct mem_* swap_used_pct psi_some_*` | `hostname` |
 | `unit` | watchlist targets | `present restarts` | `unit kind` |
 | `net` | `totals` + watchlist listeners | `conn_total conn_established conn_time_wait conn_listen present` | `proto port` |
 | `events` | episodes (see below) | `severity` | `provider event_id message source` |
 | `self` | the daemon | `cpu_pct rss_bytes db_bytes cycle_s tick_overruns event_* ring_mem_bytes ...` | — |
+
+`fd_limit_soft` is the process soft `RLIMIT_NOFILE`; it is omitted when denied,
+unsupported, zero, or infinite so expressions like `num_fds / fd_limit_soft`
+stay unknown rather than bogus.
 
 ## 3. Event rules and episodes
 

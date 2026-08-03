@@ -140,6 +140,19 @@ class ProcessSampler:
             value = _opt(read)
             if value is not None:
                 metrics[metric_name] = float(value)  # type: ignore[arg-type]
+        # Soft NOFILE limit for per-process fd utilization (#60 / SA-04).
+        # Guard both the method and the constant: `_opt` swallows AccessDenied /
+        # NoSuchProcess / OSError but not AttributeError, and hasattr(proc,
+        # "rlimit") is the same platform-support proxy used for num_fds /
+        # io_counters (PL-01). Do not cache the value on `_procs` — a process
+        # can setrlimit() after startup (DM-02 cache stays CPU-only).
+        if hasattr(proc, "rlimit") and hasattr(psutil, "RLIMIT_NOFILE"):
+            limits = _opt(lambda: proc.rlimit(psutil.RLIMIT_NOFILE))
+            if limits is not None:
+                soft = int(limits[0])  # type: ignore[index]
+                infinity = int(getattr(psutil, "RLIM_INFINITY", -1))
+                if soft > 0 and soft != infinity:
+                    metrics["fd_limit_soft"] = float(soft)
         # Process.io_counters is unavailable on some psutil/macOS builds,
         # just as num_fds is unavailable on Windows. Capability absence is
         # normal platform shape, not an entity failure (PL-01/PL-03).
