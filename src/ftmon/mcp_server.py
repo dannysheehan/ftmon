@@ -385,7 +385,10 @@ class McpApi:
             expr = compile_expr(filter_expr, NameEnv(attrs=frozenset(attr_names)))
         except ExprError as e:
             return _err("invalid_params", f"filter_expr: {e}",
-                        "attrs available: " + ", ".join(sorted(attr_names)))
+                        "attrs available: " + ", ".join(sorted(attr_names))
+                        + "; filter_expr is attribute-only — see "
+                        "ftmon://docs/definitions (filter_expr); "
+                        "use get_process_history for name/pid discovery")
         return {eid for eid, attrs in parsed.items()
                 if expr.eval(_AttrCtx(attrs, now=now)) is True}
 
@@ -795,7 +798,10 @@ def build_server(paths: Paths):
                 description="Time-series data; resolution auto-chosen (DM-06); "
                 "bounded to 50 entities / 10000 points with truncation "
                 "metadata; empty series include empty_reason and "
-                'available_metrics; range like "90m" or [iso, iso]')(
+                "available_metrics; filter_expr is attribute-only (not "
+                "metrics) — see ftmon://docs/definitions filter_expr; use "
+                'get_process_history for name/pid; range like "90m" or '
+                "[iso, iso]")(
                 api.query_metrics)
     server.tool(name="list_baselines",
                 description="Stored EWMA levels and learning coverage; exact "
@@ -823,34 +829,47 @@ def build_server(paths: Paths):
     server.tool(name="monitor_paths",
                 description="Resolved filesystem layout for authoring: "
                 "monitors, drafts, actions, check registry, database "
-                "(MC-06)")(api.monitor_paths)
+                "(MC-06). Read ftmon://docs/definitions and "
+                "ftmon://docs/check-authoring before writing monitors or "
+                "check executables")(api.monitor_paths)
     server.tool(name="diagnose_monitor",
                 description="Why isn't this monitor running? Location, "
                 "validation, load state, external-alias trust, and last "
                 "plugin result (state/message/sample age) in one call. "
                 "Shipped units cannot run sudo from checks; see "
-                "ftmon://docs/external-checks")(
+                "ftmon://docs/external-checks. For Trends missing from "
+                "/trends despite slope rules, see authoring traps in "
+                "ftmon://docs/definitions (Trends are opt-in via [[trend]])")(
                 api.diagnose_monitor)
     server.tool(name="validate_monitor",
                 description="Validate a monitor TOML without writing "
-                "anything")(api.validate_monitor)
+                "anything. Read ftmon://docs/definitions authoring traps "
+                "first; growth/slope alerts need [[trend]] for /trends; "
+                "ftmon-json checks must exit 0 — see "
+                "ftmon://docs/check-authoring")(api.validate_monitor)
     server.tool(name="define_monitor",
                 description="Validate and save a monitor TOML as a draft. "
                 "Drafts are never loaded by the daemon: a human must approve "
                 "via `ftmon monitor approve <name>` or the web UI Monitors "
-                "page — the response's next_steps repeats both")(
+                "page — the response's next_steps repeats both. Read "
+                "ftmon://docs/definitions authoring traps first; declare "
+                "[[trend]] when /trends should list the monitor; "
+                "ftmon-json checks must exit 0 — see "
+                "ftmon://docs/check-authoring")(
                 api.define_monitor)
     server.tool(name="ack_incident",
                 description="Acknowledge an incident (stops re-notifying, "
                 "keeps watching)")(api.ack_incident)
 
     @server.resource("ftmon://docs/definitions",
-                     description="The monitor-definition reference (DO-01)")
+                     description="Monitor-definition reference: authoring "
+                     "traps, CI recipes, attribute-only filter_expr (DO-01)")
     def definitions_guide() -> str:
         return _guide_text("definitions")
 
     @server.resource("ftmon://docs/check-authoring",
-                     description="How to write a bounded external-check executable (DO-07)")
+                     description="Write a bounded external-check executable; "
+                     "ftmon-json must exit 0 (DO-07)")
     def check_authoring_guide() -> str:
         return _guide_text("check-authoring")
 

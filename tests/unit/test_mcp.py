@@ -96,8 +96,8 @@ class TestSurface:
     @pytest.mark.parametrize(
         ("uri", "expected"),
         (
-            ("ftmon://docs/definitions", "complete reference"),
-            ("ftmon://docs/check-authoring", "Writing an external check"),
+            ("ftmon://docs/definitions", "Authoring traps"),
+            ("ftmon://docs/check-authoring", "ftmon-json always exits 0"),
             ("ftmon://docs/external-checks", "privileged exporter pattern"),
         ),
     )
@@ -116,6 +116,18 @@ class TestSurface:
         text = (contents if isinstance(contents, str)
                 else "".join(str(c.content) for c in contents))
         assert expected in text
+
+    def test_authoring_tool_descriptions_steer_to_docs(self, core_env):  # noqa: F811
+        """[MC-05] tool descriptions point at traps, filter_expr, and exit-0."""
+        server = build_server(core_env)
+        tools = {t.name: t.description for t in asyncio.run(server.list_tools())}
+        assert "filter_expr is attribute-only" in tools["query_metrics"]
+        assert "ftmon://docs/definitions" in tools["query_metrics"]
+        assert "authoring traps" in tools["define_monitor"]
+        assert "ftmon://docs/check-authoring" in tools["define_monitor"]
+        assert "exit 0" in tools["validate_monitor"]
+        assert "[[trend]]" in tools["diagnose_monitor"]
+        assert "ftmon://docs/definitions" in tools["monitor_paths"]
 
 
 # --- MC-02: tz + range grammar ---------------------------------------------
@@ -194,6 +206,8 @@ class TestErrors:
                                            filter_expr="name >"),
                          "invalid_params")
         assert "name" in err["hint"]
+        assert "ftmon://docs/definitions" in err["hint"]
+        assert "get_process_history" in err["hint"]
 
     def test_explain_unknown_incident(self, populated):
         """[MC-04] explain_incident on a nonexistent id -> not_found."""

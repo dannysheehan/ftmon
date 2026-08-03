@@ -9,6 +9,29 @@ notices new/changed files within 30 seconds. `ftmon check` validates
 everything and its errors say *what*, *where*, and *how to fix it* — trust
 them.
 
+## Authoring traps (read before `define_monitor`)
+
+Validation catches schema errors; it cannot catch these behavioral contracts.
+Read this list first when writing or reviewing a definition via MCP.
+
+| Trap | What to do |
+| --- | --- |
+| **Trends are opt-in** | Slope/growth *rules* do not register Trends. If operators should open `/trends`, declare `[[trend]]` with value/rate metrics, units, and threshold params. |
+| **Glance ≠ Trends ≠ incidents** | Glance = dashboard current value. Trends = investigation charts. Rules = incidents. None imply the others. |
+| **`incident_group` needs `group`** | Overlay incidents on Trends only when the profile's `incident_group` matches a rule `group`. |
+| **Signed rate units** | `slope()` is per-second; convert in the derived expr (e.g. `* 3600` for per-hour). Units are labels, not converters. |
+| **`monot()` is rise-biased** | Fine for leak/temp-up. For bidirectional series, prefer `coverage()` over `monot()` as confidence. |
+| **External `plugin_state` rules** | Always alert on `plugin_state == 3` (check health). Use state 1/2 **or** metric thresholds — do not double-threshold inconsistently. |
+| **No argv in definitions** | Alias only; admin owns `checks.toml`. Writing a check executable? See `ftmon://docs/check-authoring` (always exit 0 for ftmon-json). |
+| **Native units / `scale`** | Store what the plugin emits; `scale` is a rare real conversion, not a unit label. |
+| **Unmapped labels vanish** | Only `[[source_options.perfdata]]` mappings persist (EC-04). |
+| **`coverage()` with windows** | Pair `slope`/`avg`/`monot` with `coverage(...) >= …` when the window must be represented. |
+| **Unknown ≠ false** | Unknown freezes confirm/clear; do not `coalesce` away gaps unless intentional (EX-06). There is no `is not None`. |
+| **Drafts never run** | `define_monitor` writes drafts only; approve with CLI/web. Use `diagnose_monitor` / `monitor_paths`. |
+| **Event vs sampler rule keys** | Events use cooldown/`clear_after`; no glance/trend on event monitors. |
+| **TOML `exempt` placement** | Top-level arrays before the first `[table]`, or they attach silently. |
+| **Thresholds as `[parameters]`** | Prefer parameters over literals in `when` so glance/Trends threshold lines stay honest. |
+
 ## 1. Shape of a definition
 
 ```toml
@@ -205,7 +228,7 @@ Run `ftmon monitors` / read the built-ins for live examples. Summary:
 
 | Source | Entities | Metrics | Attrs |
 | --- | --- | --- | --- |
-| `process` | every process (track-all + top-N/promoted persistence) | `cpu_pct rss_bytes num_fds fd_limit_soft num_threads io_read_bytes io_write_bytes` | `name cmdline username exe` |
+| `process` | every process (track-all + top-N/promoted persistence) | `cpu_pct rss_bytes num_fds fd_limit_soft num_threads io_read_bytes io_write_bytes` | `name cmdline username exe exe_base display cmd_hint` |
 | `disk` | mounts | `total_bytes used_bytes free_bytes used_pct inode_used_pct` | `fstype device` |
 | `system` | one (`system`) | `load1 load5 load15 cpu_pct mem_* swap_used_pct psi_some_*` | `hostname` |
 | `unit` | watchlist targets | `present restarts` | `unit kind` |
@@ -214,8 +237,8 @@ Run `ftmon monitors` / read the built-ins for live examples. Summary:
 | `self` | the daemon | `cpu_pct rss_bytes db_bytes cycle_s tick_overruns event_* ring_mem_bytes ...` | — |
 
 `fd_limit_soft` is the process soft `RLIMIT_NOFILE`; it is omitted when denied,
-unsupported, zero, or infinite so expressions like `num_fds / fd_limit_soft`
-stay unknown rather than bogus.
+unsupported, zero, or infinite so expressions like `pct(num_fds, fd_limit_soft)`
+stay unknown rather than bogus. Prefer `pct(...)` (0–100) over a raw ratio.
 
 ## 3. Event rules and episodes
 
@@ -353,6 +376,186 @@ a new check executable, see [Writing an external check](check-authoring.md)
 approval and active validation fail until an administrator creates it.
 
 ## 4. Cookbook
+
+Complete recipes below are marked `` ```toml recipe=<id> `` so CI can
+`load_text` them. Unmarked fences are fragments or non-FTMON examples and are
+not validated that way. Recipe bodies must not contain a line that is exactly
+`` ``` `` (that always closes the outer fence).
+
+### Per-process FD utilization (`fd-pct`)
+
+**When to use:** alert when a process approaches its soft open-file limit.
+`cpu_pct` is unrelated (and can exceed 100 as percent of one core).
+
+```toml recipe=fd-pct
+schema = 1
+
+[monitor]
+name = "fds"
+description = "Per-process open-file utilization against the soft RLIMIT_NOFILE"
+version = 1
+platforms = ["linux"]
+interval = "60s"
+source = "process"
+
+[parameters]
+warn_pct = { value = 80, doc = "Warn when open FDs exceed this percent of the soft limit" }
+
+[glance]
+metric = "fd_pct"
+unit = "percent"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "warn_pct" },
+]
+
+[[derived]]
+name = "fd_pct"
+expr = "pct(num_fds, fd_limit_soft)"
+
+[[rule]]
+id = "fd-high"
+when = "fd_pct > warn_pct"
+severity = "warning"
+confirm_cycles = 3
+message = "{entity} open files at {fd_pct:.0f}% of soft limit (warn {warn_pct})"
+```
+
+`fd_limit_soft` may be absent; then `fd_pct` is unknown and the rule does not
+fire (EX-06). Thresholds are percent values (80), not fractions (0.8).
+
+### Host pressure over time (`aggregate-pressure`)
+
+**When to use:** detect whole-host CPU/swap pressure on the single `system`
+entity. FTMON expressions do **not** aggregate across process entities; this
+recipe is time-window pressure on host series only.
+
+```toml recipe=aggregate-pressure
+schema = 1
+
+[monitor]
+name = "host_pressure"
+description = "Host CPU and swap pressure over short windows (single system entity)"
+version = 1
+platforms = ["linux"]
+interval = "60s"
+source = "system"
+
+[parameters]
+cpu_warn = { value = 85, doc = "Warn when 5m average host CPU percent exceeds this" }
+swap_warn = { value = 25, doc = "Warn when 10m average swap used percent exceeds this" }
+
+[glance]
+metric = "cpu_5m"
+unit = "percent"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "cpu_warn" },
+]
+
+[[derived]]
+name = "cpu_5m"
+expr = 'avg(cpu_pct, "5m")'
+
+[[derived]]
+name = "swap_10m"
+expr = 'avg(swap_used_pct, "10m")'
+
+[[rule]]
+id = "cpu-pressure"
+group = "pressure"
+when = 'cpu_5m > cpu_warn and coverage(cpu_pct, "5m") >= 0.8'
+severity = "warning"
+confirm_cycles = 3
+message = "Host CPU pressure {cpu_5m:.0f}% over 5m"
+
+[[rule]]
+id = "swap-pressure"
+group = "pressure"
+when = 'swap_10m > swap_warn and coverage(swap_used_pct, "10m") >= 0.8'
+severity = "warning"
+confirm_cycles = 3
+message = "Host swap usage {swap_10m:.0f}% over 10m"
+```
+
+### Optional metrics stay unknown (`optional-metric`)
+
+**When to use:** a metric may be missing (platform, privilege, or sampler
+omission). There is no `is not None`; comparisons against unknown stay unknown
+and freeze confirm/clear instead of firing.
+
+```toml recipe=optional-metric
+schema = 1
+
+[monitor]
+name = "optional_fds"
+description = "FD utilization that stays quiet when fd_limit_soft is absent"
+version = 1
+platforms = ["linux"]
+interval = "60s"
+source = "process"
+
+[parameters]
+warn_pct = { value = 90, doc = "Warn percent of soft FD limit" }
+
+[[derived]]
+name = "fd_pct"
+expr = "pct(num_fds, fd_limit_soft)"
+
+[[rule]]
+id = "fd-optional"
+when = "fd_pct > warn_pct"
+severity = "warning"
+confirm_cycles = 2
+message = "{entity} FD utilization {fd_pct:.0f}%"
+```
+
+Do not wrap optional metrics in inventing defaults unless you intentionally
+want gaps to count as clear.
+
+### Process matching across restarts (`process-match`)
+
+**When to use:** target processes by stored attributes. Each `entity_id` is
+still one process lifetime (DM-02); matching `name` / `exe_base` / `display`
+does not merge rows across restarts.
+
+```toml recipe=process-match
+schema = 1
+
+# Match workers by executable basename; identity remains name:pid:create_time.
+exempt = [
+  'matches(exe_base, "^(gcc|clang|cargo)$")',
+]
+
+[monitor]
+name = "worker_rss"
+description = "Rising RSS for named worker processes (per lifetime entity)"
+version = 1
+platforms = ["linux"]
+interval = "60s"
+source = "process"
+
+[parameters]
+warn_bph = { value = 10000000, doc = "Warn bytes/hour of RSS growth" }
+
+[promotion]
+expr = 'matches(name, "^worker") or matches(exe_base, "^worker")'
+
+[[derived]]
+name = "growth_bph"
+expr = 'slope(rss_bytes, "15m") * 3600'
+
+[[rule]]
+id = "worker-grow"
+when = 'matches(name, "^worker") and growth_bph > warn_bph and coverage(rss_bytes, "15m") >= 0.8'
+severity = "warning"
+confirm_cycles = 3
+message = "{display} RSS rising {growth_bph:.0f} B/h"
+```
+
+`exe_base` and `cmd_hint` may be absent on some entities; then
+`matches(exe_base, ...)` is unknown (EX-06), not a silent false. `display` is
+always set (exe_base when distinct from name, otherwise name).
 
 ### Alert when a log pattern appears
 
@@ -502,4 +705,33 @@ never loaded by the daemon. A human approves with
 `ftmon monitor approve <name>` (or the web UI). Iterating on a draft
 overwrites it; a name that already exists as a real monitor is refused.
 Validation errors come back as `{path, code, message, hint}` — fix and
-resubmit.
+resubmit. Read the authoring traps above before the first draft.
+
+### `query_metrics.filter_expr` (attribute-only)
+
+MCP `query_metrics` accepts an optional `filter_expr` that selects entities by
+**stored attributes** in `entities.attrs` — not by metric values. Expressions
+such as `cpu_pct > 50` are invalid here. Available attribute names depend on
+the monitor source and what has been sampled; a compile error lists attrs
+observed for that monitor. For process name/PID discovery across history, use
+`get_process_history(name_or_pid)` first.
+
+Marked examples below are compiled by CI against a representative process
+attribute environment (including optional `exe_base`):
+
+```expr filter-example
+matches(name, "^chrome$")
+```
+
+```expr filter-example
+matches(exe_base, "^(python|node)$")
+```
+
+```expr filter-example
+username == "alice" and matches(name, "worker")
+```
+
+Optional attrs such as `exe_base` may be missing on some entities; then
+`matches(exe_base, ...)` is unknown (EX-06), not a silent false. Filtering
+never merges process lifetimes: each matching `entity_id` remains one
+`name:pid:create_time` row (DM-02).

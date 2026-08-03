@@ -54,6 +54,8 @@ def test_extra_monitor_skill_covers_both_protocols_and_repository_authority():
         "recipe-only",
         "FTMON JSON",
         "ftmon check trust",
+        "Do not ship an ftmon-json check until",
+        "never `sys.exit(state)`",
     ):
         assert required in text
     for path in (

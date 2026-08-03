@@ -157,7 +157,9 @@ accepts Nagios performance data only from the first line.
 ## Write an FTMON JSON check
 
 Use `protocol = "ftmon-json"` when a new script can emit typed values directly.
-It must write one UTF-8 JSON object and exit zero:
+It must write one UTF-8 JSON object and exit zero (severity in JSON `state`
+only — see the common trap at the top of
+[Writing an external check](check-authoring.md) / `ftmon://docs/check-authoring`):
 
 ```json
 {

@@ -1,5 +1,14 @@
 # Writing an external check
 
+## Common trap: ftmon-json always exits 0
+
+For `protocol = "ftmon-json"`, severity lives **only** in the JSON `state`
+field. The process MUST exit `0`. Do **not** `sys.exit(state)` or return a
+Nagios-style nonzero code — FTMON treats nonzero exit as unknown
+(`exit_status`) and **discards the JSON**, so a real warning becomes a silent
+check-health failure. Nagios-protocol checks still use exit 0/1/2/3 as
+evidence; that contract does not apply to ftmon-json.
+
 This is the authoring guide: how to write the executable itself. For how an
 administrator grants that executable authority to run, see
 [External checks](external-checks.md), also served as

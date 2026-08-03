@@ -40,7 +40,9 @@ For either protocol:
 
 For Nagios, inspect only perfdata after `|` on the first line; later lines are
 intentionally ignored. For FTMON JSON, verify the strict schema, state, message,
-metric object shapes, finite numeric values, unique labels and zero exit status.
+metric object shapes, finite numeric values, unique labels and **zero exit
+status**. Do not ship an ftmon-json check until a live or fixture run proves
+exit `0` with severity only in JSON `state` — never `sys.exit(state)`.
 
 Set evidence honestly:
 
