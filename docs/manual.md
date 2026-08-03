@@ -266,6 +266,13 @@ The assistant gets tools for status, metric queries with automatic
 resolution, top consumers, per-process history, events, incidents with a
 full `explain_incident` story, monitor listing/validation — and exactly
 two writes: acknowledging an incident, and *proposing* a monitor.
+
+`query_metrics` stays inside a fixed bound (at most 50 entities and 10 000
+points) and reports truncation metadata when it stops early. Empty results
+include `empty_reason` (`unknown_metric`, `no_data_in_range`, or
+`filtered_out`) plus `available_metrics` (current declaration unioned with
+metrics that have ever been persisted for that monitor), so an assistant can
+retry without guessing.
 Proposals land in `drafts/` and do nothing until you approve them with
 `ftmon monitor approve <name>` (or the web UI). The AI can never install
 actions, run commands, or enable monitors by itself. It also gets packaged

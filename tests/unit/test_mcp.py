@@ -18,9 +18,16 @@ import pytest
 from ftmon.clock import FakeClock
 from ftmon.daemon import DaemonCore
 from ftmon.definitions import loader, manage
-from ftmon.mcp_server import TOOL_NAMES, McpApi, build_server
+from ftmon.mcp_server import (
+    _QM_MAX_ENTITIES,
+    TOOL_NAMES,
+    McpApi,
+    build_server,
+)
 from ftmon.store.db import connect, migrate
+from ftmon.store.query import Query, SeriesPoint, SeriesResult
 from ftmon.store.writer import TickWriter
+from tests.unit.test_definitions import VALID_SAMPLER
 from tests.unit.test_engine import LEAKDEF, ScriptedSampler, grower
 from tests.unit.test_m2_integration import core_env, tick_n  # noqa: F401 - fixture
 
@@ -231,6 +238,10 @@ class TestQueryMetrics:
         _paths, _clock, api = populated
         res = api.query_metrics("leak", "rss_bytes", "30m")
         assert res["series"] and all(e["points"] for e in res["series"])
+        assert res["truncated"] is False
+        assert res["entities_returned"] == len(res["series"])
+        assert res["entities_matched"] == len(res["series"])
+        assert res["limits"]["max_entities"] == _QM_MAX_ENTITIES
 
     def test_agg_scalars(self, populated):
         """[MC-01] agg=avg/last collapses each entity to one scalar."""
@@ -240,6 +251,7 @@ class TestQueryMetrics:
             for entry in res["series"]:
                 assert "points" not in entry
                 assert isinstance(entry["agg"], float)
+            assert res["points_returned"] == 0
 
     def test_entity_filter_narrows(self, populated):
         """[MC-01] entity= restricts the result to that one series."""
@@ -256,6 +268,226 @@ class TestQueryMetrics:
                                 filter_expr='matches(name, "^leaky")')
         entities = {e["entity"] for e in res["series"]}
         assert entities == {"leaky:1:100"}
+
+    def test_unknown_metric_empty_reason(self, populated):
+        """[DM-06][MC-01] unknown metric → empty_reason=unknown_metric."""
+        _paths, _clock, api = populated
+        res = api.query_metrics("leak", "gpu_temp_celsius", "30m")
+        assert res["series"] == []
+        assert res["empty_reason"] == "unknown_metric"
+        assert "rss_bytes" in res["available_metrics"]
+        assert res["resolution"] == "raw"
+
+    def test_quiet_window_no_data_in_range(self, populated):
+        """[DM-06][MC-01] known metric, no observations → no_data_in_range."""
+        _paths, _clock, api = populated
+        res = api.query_metrics(
+            "leak", "rss_bytes",
+            ["2020-01-01T00:00:00Z", "2020-01-01T01:00:00Z"],
+        )
+        assert res["series"] == []
+        assert res["empty_reason"] == "no_data_in_range"
+        assert res["resolution"] == "5m"
+        assert "empty_reason" in res
+
+    def test_empty_resolution_hourly_tier(self, populated):
+        """[DM-06] empty responses still report the DM-06-selected tier."""
+        _paths, _clock, api = populated
+        res = api.query_metrics(
+            "leak", "rss_bytes",
+            ["2019-01-01T00:00:00Z", "2019-03-15T00:00:00Z"],
+        )
+        assert res["series"] == []
+        assert res["resolution"] == "1h"
+        assert res["empty_reason"] == "no_data_in_range"
+
+    def test_filter_removes_observed_entities(self, populated):
+        """[MC-01] filter wipeout of observed entities → filtered_out."""
+        _paths, _clock, api = populated
+        res = api.query_metrics(
+            "leak", "rss_bytes", "30m",
+            filter_expr='matches(name, "^nope$")',
+        )
+        assert res["series"] == []
+        assert res["empty_reason"] == "filtered_out"
+
+    def test_filter_over_quiet_window_is_no_data(self, populated):
+        """[MC-01] filter on a quiet window is no_data_in_range, not filtered_out."""
+        _paths, _clock, api = populated
+        res = api.query_metrics(
+            "leak", "rss_bytes",
+            ["2020-01-01T00:00:00Z", "2020-01-01T01:00:00Z"],
+            filter_expr='matches(name, "^nope$")',
+        )
+        assert res["series"] == []
+        assert res["empty_reason"] == "no_data_in_range"
+
+    def test_entity_cardinality_truncates_deterministically(
+        self, core_env, monkeypatch  # noqa: F811
+    ):
+        """[MC-01] >50 observed entities truncate stably; no fetch past returned."""
+        paths = core_env
+        clock = FakeClock(wall=WALL0, mono=1.0)
+        conn = connect(paths.db_file)
+        migrate(conn)
+        n = _QM_MAX_ENTITIES + 10
+        for i in range(n):
+            eid = f"e{i:03d}"
+            sid = i + 1
+            conn.execute(
+                "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+                "VALUES(?,?,?,?,1)",
+                (sid, "bulk", eid, "v"),
+            )
+            conn.execute(
+                "INSERT INTO entities(monitor,entity_id,attrs,first_seen,last_seen) "
+                "VALUES(?,?,?,?,?)",
+                ("bulk", eid, json.dumps({"name": eid}), WALL0, WALL0),
+            )
+            conn.execute(
+                "INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)",
+                (sid, int(WALL0), float(i)),
+            )
+        conn.commit()
+        conn.close()
+
+        fetches: list[int] = []
+        orig = Query.series_points
+
+        def counting_points(self, series_id, **kwargs):
+            fetches.append(series_id)
+            return orig(self, series_id, **kwargs)
+
+        monkeypatch.setattr(Query, "series_points", counting_points)
+        api = McpApi(paths, clock=clock)
+        res = api.query_metrics("bulk", "v", "30m")
+        assert res["truncated"] is True
+        assert res["entities_matched"] == n
+        assert res["entities_returned"] == _QM_MAX_ENTITIES
+        assert [e["entity"] for e in res["series"]] == [
+            f"e{i:03d}" for i in range(_QM_MAX_ENTITIES)
+        ]
+        assert fetches == list(range(1, _QM_MAX_ENTITIES + 1))
+
+    def test_point_budget_stops_without_discarded_fetch(
+        self, core_env, monkeypatch  # noqa: F811
+    ):
+        """[MC-01] capped-count preflight stops without materializing overflow."""
+        paths = core_env
+        clock = FakeClock(wall=WALL0, mono=1.0)
+        conn = connect(paths.db_file)
+        migrate(conn)
+        # Two entities with 80 in-range points each; total budget 100 → second stops.
+        points_each = 80
+        total_budget = 100
+        for i, eid in enumerate(("a", "b"), start=1):
+            conn.execute(
+                "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+                "VALUES(?,?,?,?,1)",
+                (i, "bulk", eid, "v"),
+            )
+            conn.execute(
+                "INSERT INTO entities(monitor,entity_id,attrs,first_seen,last_seen) "
+                "VALUES(?,?,?,?,?)",
+                ("bulk", eid, json.dumps({"name": eid}), WALL0, WALL0),
+            )
+            conn.executemany(
+                "INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)",
+                [(i, int(WALL0) - points_each + t, float(t))
+                 for t in range(points_each)],
+            )
+        conn.commit()
+        conn.close()
+
+        fetches: list[int] = []
+        orig = Query.series_points
+
+        def counting_points(self, series_id, **kwargs):
+            fetches.append(series_id)
+            return orig(self, series_id, **kwargs)
+
+        monkeypatch.setattr(Query, "series_points", counting_points)
+        monkeypatch.setattr("ftmon.mcp_server._QM_MAX_TOTAL_POINTS", total_budget)
+        api = McpApi(paths, clock=clock)
+        res = api.query_metrics("bulk", "v", "30m")
+        assert res["truncated"] is True
+        assert res["entities_returned"] == 1
+        assert res["entities_matched"] == 2
+        assert fetches == [1]
+        assert res["points_returned"] <= total_budget
+        assert res["limits"]["max_total_points"] == total_budget
+
+    def test_point_cap_holds_when_preflight_underestimates(
+        self, core_env, monkeypatch  # noqa: F811
+    ):
+        """[MC-01] post-fetch guard keeps points_returned ≤ hard cap."""
+        paths = core_env
+        clock = FakeClock(wall=WALL0, mono=1.0)
+        conn = connect(paths.db_file)
+        migrate(conn)
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES(1,'bulk','a','v',1)",
+        )
+        conn.execute(
+            "INSERT INTO entities(monitor,entity_id,attrs,first_seen,last_seen) "
+            "VALUES('bulk','a',?,?,?)",
+            (json.dumps({"name": "a"}), WALL0, WALL0),
+        )
+        conn.execute(
+            "INSERT INTO samples(series_id,ts,value) VALUES(1,?,1.0)",
+            (int(WALL0),),
+        )
+        conn.commit()
+        conn.close()
+
+        total_budget = 50
+        monkeypatch.setattr("ftmon.mcp_server._QM_MAX_TOTAL_POINTS", total_budget)
+        monkeypatch.setattr(
+            Query, "series_point_budget", lambda *a, **k: 40
+        )
+
+        def fat_points(self, series_id, **kwargs):
+            pts = [SeriesPoint(ts=int(WALL0) - i, value=float(i)) for i in range(80)]
+            return SeriesResult(
+                monitor="bulk", metric="v", entity_id="a",
+                resolution="raw", points=pts,
+            )
+
+        monkeypatch.setattr(Query, "series_points", fat_points)
+        begins: list[str] = []
+        api = McpApi(paths, clock=clock)
+        orig_snapshot = Query.read_snapshot
+
+        def tracking_snapshot(self):
+            begins.append("BEGIN")
+            return orig_snapshot(self)
+
+        monkeypatch.setattr(Query, "read_snapshot", tracking_snapshot)
+        res = api.query_metrics("bulk", "v", "30m")
+        assert begins == ["BEGIN"]
+        assert res["truncated"] is True
+        assert res["entities_returned"] == 0
+        assert res["points_returned"] == 0
+        assert res["points_returned"] <= total_budget
+
+    def test_declared_metrics_follow_monitor_name_not_filename(
+        self, core_env  # noqa: F811
+    ):
+        """[MC-01] good.toml declaring name=test still contributes declared metrics."""
+        paths = core_env
+        clock = FakeClock(wall=WALL0, mono=1.0)
+        migrate(connect(paths.db_file))
+        (paths.monitors_dir / "good.toml").write_text(
+            VALID_SAMPLER
+            + '\n[[derived]]\nname = "headroom"\nexpr = "100 - used_pct"\n'
+        )
+        api = McpApi(paths, clock=clock)
+        res = api.query_metrics("test", "headroom", "30m")
+        assert res["series"] == []
+        assert res["empty_reason"] == "no_data_in_range"
+        assert "headroom" in res["available_metrics"]
+        assert "used_pct" in res["available_metrics"]
 
 
 # --- list_baselines ---------------------------------------------------------

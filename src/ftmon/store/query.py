@@ -11,6 +11,8 @@ import math
 import sqlite3
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from binascii import Error as BinasciiError
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -150,6 +152,20 @@ def lttb(points: list[SeriesPoint], n: int) -> list[SeriesPoint]:
 class Query:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        """Hold a WAL read snapshot across multiple SELECTs (MC-01 / #61).
+
+        Preflight COUNTs and point fetches must see the same database state so
+        an intervening daemon write cannot inflate ``points_returned`` past the
+        documented total cap.
+        """
+        self._conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            self._conn.rollback()
 
     def glance_samples(
         self, monitor: str, metric: str, *, not_before: float
@@ -393,14 +409,21 @@ class Query:
             return "5m"
         return "1h"
 
-    def series_catalog(self, *, now: float, start: float, end: float) -> list[sqlite3.Row]:
-        """Series with observations in the tier the requested range will query."""
-        resolution = self._resolution(now, start, end)
-        table, time_column = {
+    def resolution_for(self, now: float, start: float, end: float) -> str:
+        """Public DM-06 tier choice (used by MCP even when no series rows exist)."""
+        return self._resolution(now, start, end)
+
+    def _tier_table(self, resolution: str) -> tuple[str, str]:
+        return {
             "raw": ("samples", "ts"),
             "5m": ("rollup5m", "bucket"),
             "1h": ("rollup1h", "bucket"),
         }[resolution]
+
+    def series_catalog(self, *, now: float, start: float, end: float) -> list[sqlite3.Row]:
+        """Series with observations in the tier the requested range will query."""
+        resolution = self._resolution(now, start, end)
+        table, time_column = self._tier_table(resolution)
         return self._conn.execute(
             "SELECT s.monitor, s.entity_id, s.metric FROM series s "
             f"WHERE EXISTS (SELECT 1 FROM {table} d "  # noqa: S608
@@ -408,6 +431,145 @@ class Query:
             "ORDER BY s.monitor, s.entity_id, s.metric",
             (round(start), round(end)),
         ).fetchall()
+
+    def persisted_metrics(self, monitor: str) -> list[str]:
+        """Distinct metric names ever written for a monitor (issue #61)."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT metric FROM series WHERE monitor=? ORDER BY metric",
+            (monitor,),
+        ).fetchall()
+        return [r["metric"] for r in rows]
+
+    def list_observed_series_entities(
+        self,
+        monitor: str,
+        metric: str,
+        *,
+        now: float,
+        start: float,
+        end: float,
+        entity_id: str | None = None,
+    ) -> list[tuple[int, str]]:
+        """Observed `(series_id, entity_id)` in the DM-06 tier/window, ordered.
+
+        Catalog-only rows with no in-range observations are omitted so MCP can
+        treat quiet windows as empty without materializing point arrays.
+        """
+        resolution = self._resolution(now, start, end)
+        table, time_column = self._tier_table(resolution)
+        sql = (
+            "SELECT s.id, s.entity_id FROM series s "
+            "WHERE s.monitor=? AND s.metric=? "
+            f"AND EXISTS (SELECT 1 FROM {table} d "  # noqa: S608
+            f"WHERE d.series_id=s.id AND d.{time_column}>=? AND d.{time_column}<=?)"
+        )
+        params: list[object] = [monitor, metric, round(start), round(end)]
+        if entity_id is not None:
+            sql += " AND s.entity_id=?"
+            params.append(entity_id)
+        sql += " ORDER BY s.entity_id"
+        return [(int(r["id"]), str(r["entity_id"]))
+                for r in self._conn.execute(sql, params).fetchall()]
+
+    def series_point_budget(
+        self,
+        series_id: int,
+        *,
+        now: float,
+        start: float,
+        end: float,
+        max_points: int = 2000,
+    ) -> int:
+        """Capped observation count for preflight (no point materialization)."""
+        resolution = self._resolution(now, start, end)
+        table, time_column = self._tier_table(resolution)
+        istart, iend = round(start), round(end)
+        if resolution == "raw":
+            row = self._conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table} "  # noqa: S608
+                f"WHERE series_id=? AND {time_column}>=? AND {time_column}<=?",
+                (series_id, istart, iend),
+            ).fetchone()
+        else:
+            # Match series(): only rows with a non-NULL avg become points by default.
+            row = self._conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table} "  # noqa: S608
+                f"WHERE series_id=? AND {time_column}>=? AND {time_column}<=? "
+                "AND avg IS NOT NULL",
+                (series_id, istart, iend),
+            ).fetchone()
+        return min(int(row["n"]), max_points)
+
+    def series_points(
+        self,
+        series_id: int,
+        *,
+        now: float,
+        start: float,
+        end: float,
+        max_points: int = 2000,
+        statistic: str = "avg",
+    ) -> SeriesResult:
+        """Materialize one series with per-entity LTTB (MCP fetch path)."""
+        if statistic not in {"avg", "min", "max", "last"}:
+            raise ValueError("statistic must be avg, min, max, or last")
+        meta = self._conn.execute(
+            "SELECT monitor, entity_id, metric FROM series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        if meta is None:
+            raise ValueError(f"unknown series_id {series_id}")
+        resolution = self._resolution(now, start, end)
+        istart, iend = round(start), round(end)
+        points, envelope = self._load_points(
+            series_id, resolution, istart, iend, statistic
+        )
+        downsampled = len(points) > max_points
+        if downsampled:
+            points = lttb(points, max_points)
+        return SeriesResult(
+            monitor=meta["monitor"],
+            metric=meta["metric"],
+            entity_id=meta["entity_id"],
+            resolution=resolution,
+            points=points,
+            statistic=statistic,
+            downsampled=downsampled,
+        )
+
+    def _load_points(
+        self,
+        series_id: int,
+        resolution: str,
+        istart: int,
+        iend: int,
+        statistic: str,
+    ) -> tuple[list[SeriesPoint], dict[int, tuple[float, float]]]:
+        if resolution == "raw":
+            rows = self._conn.execute(
+                "SELECT ts, value FROM samples "
+                "WHERE series_id=? AND ts>=? AND ts<=? ORDER BY ts",
+                (series_id, istart, iend),
+            ).fetchall()
+            points = [SeriesPoint(ts=r["ts"], value=r["value"]) for r in rows]
+            envelope = {p.ts: (p.value, p.value) for p in points}
+            return points, envelope
+        table = "rollup5m" if resolution == "5m" else "rollup1h"
+        rows = self._conn.execute(
+            f"SELECT bucket, {statistic} AS value, min, max FROM {table} "  # noqa: S608
+            "WHERE series_id=? AND bucket>=? AND bucket<=? ORDER BY bucket",
+            (series_id, istart, iend),
+        ).fetchall()
+        points = [
+            SeriesPoint(ts=r["bucket"], value=r["value"])
+            for r in rows
+            if r["value"] is not None
+        ]
+        envelope = {
+            r["bucket"]: (r["min"], r["max"])
+            for r in rows if r["min"] is not None and r["max"] is not None
+        }
+        return points, envelope
 
     def series(
         self,
@@ -426,7 +588,8 @@ class Query:
 
         Column selection precedes LTTB. Envelopes are sampled at the exact
         timestamps selected for the center line so browser code cannot
-        accidentally align unrelated buckets.
+        accidentally align unrelated buckets. May include empty-point shells
+        for catalog rows with no observations in-range (web chart gaps).
         """
         if statistic not in {"avg", "min", "max", "last"}:
             raise ValueError("statistic must be avg, min, max, or last")
@@ -435,6 +598,7 @@ class Query:
         if entity_id is not None:
             sql += " AND entity_id=?"
             params.append(entity_id)
+        sql += " ORDER BY entity_id"
         series_rows = self._conn.execute(sql, params).fetchall()
 
         resolution = self._resolution(now, start, end)
@@ -443,31 +607,9 @@ class Query:
         results = []
         for row in series_rows:
             sid = row["id"]
-            if resolution == "raw":
-                rows = self._conn.execute(
-                    "SELECT ts, value FROM samples "
-                    "WHERE series_id=? AND ts>=? AND ts<=? ORDER BY ts",
-                    (sid, istart, iend),
-                ).fetchall()
-                points = [SeriesPoint(ts=r["ts"], value=r["value"]) for r in rows]
-                envelope = {p.ts: (p.value, p.value) for p in points}
-            else:
-                table = "rollup5m" if resolution == "5m" else "rollup1h"
-                rows = self._conn.execute(
-                    f"SELECT bucket, {statistic} AS value, min, max FROM {table} "  # noqa: S608
-                    "WHERE series_id=? AND bucket>=? AND bucket<=? ORDER BY bucket",
-                    (sid, istart, iend),
-                ).fetchall()
-                points = [
-                    SeriesPoint(ts=r["bucket"], value=r["value"])
-                    for r in rows
-                    if r["value"] is not None
-                ]
-                envelope = {
-                    r["bucket"]: (r["min"], r["max"])
-                    for r in rows if r["min"] is not None and r["max"] is not None
-                }
-
+            points, envelope = self._load_points(
+                sid, resolution, istart, iend, statistic
+            )
             downsampled = len(points) > max_points
             if downsampled:
                 points = lttb(points, max_points)
