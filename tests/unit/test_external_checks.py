@@ -141,6 +141,29 @@ def test_ftmon_json_rejects_duplicate_keys_at_every_object_level():
     assert parse_json(duplicate_label, 0).failure == "protocol"
 
 
+def test_runner_ftmon_json_nonzero_exit_discards_valid_json(tmp_path):
+    """[EC-10] Nonzero process exit yields exit_status unknown; JSON is discarded."""
+    state = tmp_path / "state"
+    state.mkdir()
+    # Valid warning JSON on stdout, but Nagios-style exit 1 — must not apply.
+    code = (
+        "import json, sys; "
+        "print(json.dumps({"
+        "'schema': 1, 'state': 1, 'message': 'hot', "
+        "'metrics': {'temp': {'value': 90.0, 'uom': 'C'}}"
+        "})); "
+        "sys.exit(1)"
+    )
+    result = CheckRunner(state).run(
+        CheckSpec("json-exit", (_PYTHON, "-c", code), "ftmon-json", 2),
+        float("inf"),
+    )
+    assert result.state == 3
+    assert result.failure == "exit_status"
+    assert result.values == {}
+    assert result.message == "External check failed"
+
+
 def test_runner_uses_fixed_environment_cwd_and_no_shell(tmp_path):
     """[EC-02] Runner supplies only its fixed environment and invokes argv directly."""
     state = tmp_path / "state"

@@ -1,6 +1,10 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.40** — v0.40 bounds MCP `query_metrics` total response size
+Status: **DRAFT v0.41** — v0.41 improves MCP authoring discoverability
+(definition traps and CI-validated recipes, attribute-only `filter_expr`
+guidance, ftmon-json exit-0 steering) and clarifies that Nagios exit evidence
+(EC-06) must not be confused with the ftmon-json exit-0 contract (EC-10,
+issue #62). v0.40 bounds MCP `query_metrics` total response size
 and distinguishes empty-series reasons (DM-06/MC-01, issue #61). v0.39 extends
 the process sampler with per-PID soft
 `RLIMIT_NOFILE` (`fd_limit_soft`) so fd-utilization monitors can key off each
@@ -572,13 +576,15 @@ rate_threshold_params = ["latency_growth_sph"]
   confirmation rules, and eligible for explicit `[[trend]]` profiles. FTMON
   MUST NOT infer a Trend, unit, threshold, or semantic meaning from a Nagios
   label.
-- **EC-06** Exit 1/2/3 is valid monitoring evidence, not a daemon fault. FTMON
-  rules decide how plugin state confirms, escalates, clears, and notifies.
-  Execution failure also yields state 3 so a definition may distinguish
-  “unknown” from OK; a missing sample caused by the global source budget stays
-  `None` and cannot falsely clear an incident (CA-02). Reloading a changed
-  registry is atomic; invalid new registry content leaves the last valid
-  registry active and emits one redacted configuration self-event.
+- **EC-06** For `protocol = "nagios"`, exit codes 1/2/3 are valid monitoring
+  evidence under EC-03, not a daemon fault. FTMON rules decide how plugin state
+  confirms, escalates, clears, and notifies. This exit-as-severity contract
+  does not apply to `protocol = "ftmon-json"` (EC-10). Execution failure also
+  yields state 3 so a definition may distinguish “unknown” from OK; a missing
+  sample caused by the global source budget stays `None` and cannot falsely
+  clear an incident (CA-02). Reloading a changed registry is atomic; invalid
+  new registry content leaves the last valid registry active and emits one
+  redacted configuration self-event.
 - **EC-07** Registry arguments are configuration, not a secret transport.
   Tokens, passwords, URL user-info, and private keys MUST NOT appear in argv,
   monitor definitions, output, database rows, diagnostics, or MCP/web views.
@@ -612,7 +618,10 @@ rate_threshold_params = ["latency_growth_sph"]
   scaling; JSON output cannot declare or override FTMON schema. Extra
   non-whitespace stdout, malformed UTF-8/JSON, nesting, arrays,
   booleans-as-numbers, or oversized output make the run unknown rather than
-  partially trusted.
+  partially trusted. The process exit code MUST be `0`; severity lives only in
+  JSON `state`. A nonzero exit MUST yield unknown with failure `exit_status`
+  and MUST discard the JSON object (including any `state` and metrics), even
+  when stdout would otherwise parse successfully.
 
 ### 6.5 Curated extra-monitor recipes
 
@@ -1013,7 +1022,10 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
   `ftmon://docs/definitions` (DO-01), `ftmon://docs/check-authoring` and
   `ftmon://docs/external-checks` (DO-07). A model authoring a definition or
   external check on an installed host can pull the canonical guides without a
-  repository checkout. The full SPEC is not exposed (operational noise).
+  repository checkout. Tool descriptions MUST steer authors to those resources
+  for definition traps, attribute-only `filter_expr`, and the ftmon-json
+  exit-0 contract; the resource count remains exactly three. The full SPEC is
+  not exposed (operational noise).
 - **MC-06** `monitor_paths` and `diagnose_monitor` are strictly read-only diagnostics: they answer "where do files go?" and "why isn't this monitor running?" in one round-trip each. `diagnose_monitor` may surface validation errors verbatim (already exposed by `get_monitor`) but MUST NOT expose registry argv or credentials — trust status is reported as booleans and stable categories only (SE-07). For every found monitor it also returns `last_result`: null when there is no DB, the monitor is non-external, or the **currently configured** `source_options.entity` has never produced a coherent EC-05 sample; otherwise the stored `plugin_state` (0–3), `plugin_ok`, `duration_s`, sanitized `plugin_message`, and `sample_age_s` for that entity at one shared sample timestamp. That block re-exposes already-persisted EC-05 fields under the local single-user trust model (SE-04): no registry argv or credentials; stderr remains excluded. `plugin_message` is control-stripped/truncated plugin stdout — FTMON does not apply secret-pattern redaction (NG-08). Write paths remain exactly drafts (`define_monitor`) and `ack_incident`; approval stays a human action (MD-05).
 - **MC-07** `list_baselines` is read-only, bounded and deterministic. It lists all stored baseline rows (never rows inferred from definitions) in `(monitor, entity, metric)` order, with optional exact filters and readiness filter. `limit` defaults to 100 and MUST be in `1..500`; pagination uses an opaque keyset cursor containing the last key and canonical filters so malformed or filter-mismatched cursors return MC-04 `invalid_params`. Learning rows expose their current level plus `updates`, `required_updates`, capped coverage, `ready`, UTC update bucket and effective half-life; `next_cursor` is null at the end.
 
@@ -1237,7 +1249,7 @@ occur. These gates convert the resource-budget and durability *claims*
 
 ## 17. Documentation deliverables (v1)
 
-- **DO-01** `docs/definitions.md`: complete monitor-definition reference (schema, every function with examples, the EX-06 truth table, cookbook: "watch this log pattern", "alert when X grows"). Written to be pasted into an AI context and exposed as the MCP resource (MC-05) — the primary consumer is `define_monitor` authors, human or model.
+- **DO-01** `docs/definitions.md`: complete monitor-definition reference (schema, every function with examples, the EX-06 truth table, authoring traps for weaker models, CI-validated cookbook recipes, MCP `query_metrics.filter_expr` attribute-only guidance, and cookbook entries such as "watch this log pattern" / "alert when X grows"). Written to be pasted into an AI context and exposed as the MCP resource (MC-05) — the primary consumer is `define_monitor` authors, human or model.
 - **DO-02** `docs/install.md`: uv install, `ftmon init`, systemd unit, MCP client registration snippet (Claude Code/Desktop), web UI.
 - **DO-03** Man-page-style `--help` for every CLI subcommand.
 - **DO-04** `docs/manual.md`: the user manual — installation, concepts (monitors, rules, incidents, baselines, episodes), daily use (CLI, web UI, notifications), tuning thresholds, writing definitions (pointer to DO-01), AI/MCP setup, troubleshooting (`ftmon doctor`, config errors, budget breaches). Grows one chapter per milestone; a milestone's user-visible feature is not done until its manual chapter exists.
@@ -1333,6 +1345,15 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.41 (2026-08-03)** — MCP authoring discoverability (issue #62): DO-01
+gains authoring traps, CI-validated marked cookbook recipes, and attribute-only
+`filter_expr` guidance; check-authoring/MCP tool descriptions steer to the
+ftmon-json exit-0 contract; EC-06 scopes exit-as-severity evidence to Nagios
+(EC-03) without altering EC-08/EC-09; EC-10 states that ftmon-json process exit
+MUST be `0` and nonzero exits discard JSON as `exit_status` unknown. No new
+MCP tools or resources (MC-05 remains three); `query_metrics` response fields
+unchanged from v0.40.
 
 **v0.40 (2026-08-03)** — MCP `query_metrics` gains a total response bound
 (≤50 entities, ≤10 000 points) with deterministic truncation metadata, and
