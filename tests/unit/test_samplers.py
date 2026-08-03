@@ -154,6 +154,13 @@ def _fake_proc(pid, name, create_time=1609459200.0, exe=None, cmdline=None):
     return proc
 
 
+def _ensure_rlimit_nofile(monkeypatch, resource: int = 7) -> None:
+    """Stub psutil.RLIMIT_NOFILE when absent (Windows) so rlimit paths are exercised."""
+    import psutil as _psutil
+
+    monkeypatch.setattr(_psutil, "RLIMIT_NOFILE", resource, raising=False)
+
+
 def test_process_display_identity_from_exe_basename_sa_09(monkeypatch):
     """[SA-09] MainThread + exe agent -> exe_base/display/cmd_hint recover
     a recognizable identity from an interpreter-hosted process."""
@@ -276,6 +283,7 @@ def test_process_access_denied_omits_metric_not_entity(monkeypatch):
 
 def test_process_fd_limit_soft_emits_soft_rlimit(monkeypatch):
     """[SA-04][PL-05] Finite soft RLIMIT_NOFILE is emitted as fd_limit_soft."""
+    _ensure_rlimit_nofile(monkeypatch)
     clock = FakeClock()
     sampler = ProcessSampler(clock)
     proc = _fake_proc(10, "svc")
@@ -290,6 +298,7 @@ def test_process_fd_limit_soft_access_denied_omits_metric(monkeypatch):
     """[PL-03] AccessDenied on rlimit omits fd_limit_soft but keeps the entity."""
     import psutil as _psutil
 
+    _ensure_rlimit_nofile(monkeypatch)
     clock = FakeClock()
     sampler = ProcessSampler(clock)
     proc = _fake_proc(11, "other-user")
@@ -306,6 +315,7 @@ def test_process_fd_limit_soft_nosuchprocess_omits_metric(monkeypatch):
     """[PL-03] NoSuchProcess during rlimit omits fd_limit_soft; entity kept."""
     import psutil as _psutil
 
+    _ensure_rlimit_nofile(monkeypatch)
     clock = FakeClock()
     sampler = ProcessSampler(clock)
     proc = _fake_proc(12, "vanishing")
@@ -320,6 +330,7 @@ def test_process_fd_limit_soft_nosuchprocess_omits_metric(monkeypatch):
 
 def test_process_missing_rlimit_omits_fd_limit_soft(monkeypatch):
     """[PL-01] Platforms without Process.rlimit omit fd_limit_soft."""
+    _ensure_rlimit_nofile(monkeypatch)
     clock = FakeClock()
     sampler = ProcessSampler(clock)
     proc = _fake_proc(13, "no-rlimit")
@@ -335,6 +346,9 @@ def test_process_missing_rlimit_nofile_constant_omits_fd_limit_soft(monkeypatch)
     """[PL-01] Missing psutil.RLIMIT_NOFILE omits the metric without AttributeError."""
     import psutil as _psutil
 
+    # Ensure the constant exists first so delattr is meaningful on Windows too,
+    # where stock psutil has no RLIMIT_NOFILE.
+    _ensure_rlimit_nofile(monkeypatch)
     clock = FakeClock()
     sampler = ProcessSampler(clock)
     proc = _fake_proc(14, "no-constant")
@@ -348,6 +362,7 @@ def test_process_missing_rlimit_nofile_constant_omits_fd_limit_soft(monkeypatch)
 
 def test_process_fd_limit_soft_zero_omitted(monkeypatch):
     """[SA-04] Soft limit 0 is omitted so fd_pct cannot divide by zero."""
+    _ensure_rlimit_nofile(monkeypatch)
     clock = FakeClock()
     sampler = ProcessSampler(clock)
     proc = _fake_proc(15, "zero-limit")
@@ -360,6 +375,7 @@ def test_process_fd_limit_soft_zero_omitted(monkeypatch):
 
 def test_process_fd_limit_soft_native_infinity_omitted(monkeypatch):
     """[SA-04] Soft -1 (Linux RLIM_INFINITY) is omitted, not emitted as a ratio."""
+    _ensure_rlimit_nofile(monkeypatch)
     clock = FakeClock()
     sampler = ProcessSampler(clock)
     proc = _fake_proc(16, "unlimited")
@@ -378,6 +394,7 @@ def test_process_fd_limit_soft_positive_infinity_sentinel_omitted(monkeypatch):
     """
     import psutil as _psutil
 
+    _ensure_rlimit_nofile(monkeypatch)
     clock = FakeClock()
     sampler = ProcessSampler(clock)
     proc = _fake_proc(17, "big-infinity")
@@ -392,6 +409,7 @@ def test_process_fd_limit_soft_positive_infinity_sentinel_omitted(monkeypatch):
 
 def test_process_fd_limit_soft_reread_each_sample(monkeypatch):
     """[SA-04][DM-02] Soft limit is re-read each sample, not lifetime-cached."""
+    _ensure_rlimit_nofile(monkeypatch)
     clock = FakeClock()
     sampler = ProcessSampler(clock)
     soft = {"v": 1024}
