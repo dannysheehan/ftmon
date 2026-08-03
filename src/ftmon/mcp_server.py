@@ -26,6 +26,7 @@ from pathlib import Path
 
 from ftmon.clock import SystemClock
 from ftmon.definitions import loader, manage
+from ftmon.definitions.loader import declared_metric_names
 from ftmon.expr.parse import ExprError, NameEnv, compile_expr, parse_duration
 from ftmon.model import SEVERITIES, severity_name
 from ftmon.paths import Paths, get_paths
@@ -35,6 +36,19 @@ from ftmon.store.query import Query, SmallWrites
 _EVENT_ENV = NameEnv(metrics=frozenset({"severity"}),
                      attrs=frozenset({"provider", "event_id", "message", "source"}))
 _STALE_AFTER_S = 15.0  # 3x the 5s base tick (UI-04's staleness rule)
+# MC-01 / issue #61: total response bound for query_metrics (additive metadata).
+_QM_MAX_ENTITIES = 50
+_QM_MAX_POINTS_PER_ENTITY = 2000
+_QM_MAX_TOTAL_POINTS = 10_000
+
+
+def _qm_limits() -> dict[str, int]:
+    """Current query_metrics bounds (reads constants so tests can patch them)."""
+    return {
+        "max_entities": _QM_MAX_ENTITIES,
+        "max_points_per_entity": _QM_MAX_POINTS_PER_ENTITY,
+        "max_total_points": _QM_MAX_TOTAL_POINTS,
+    }
 
 
 def _err(code: str, message: str, hint: str = "", **extra) -> dict:
@@ -174,6 +188,7 @@ class McpApi:
 
     def query_metrics(self, monitor: str, metric: str, range,  # noqa: A002
                       entity=None, agg=None, filter_expr=None) -> dict:
+        """Bounded metric series with empty-reason metadata (DM-06/MC-01, #61)."""
         now = self._clock.now()
         q = self._query()
         if q is None:
@@ -184,27 +199,123 @@ class McpApi:
         if agg not in (None, "avg", "min", "max", "last"):
             return _err("invalid_params", f"unknown agg {agg!r}",
                         "avg | min | max | last")
-        results = q.series(monitor, metric, now=now, start=r[0], end=r[1],
-                           entity_id=entity)
-        keep = self._attr_filter(q, monitor, filter_expr, now)
-        if isinstance(keep, dict):
-            return keep
-        series = []
-        for res in results:
-            if keep is not None and res.entity_id not in keep:
-                continue
-            entry: dict = {"entity": res.entity_id}
-            if agg is None:
-                entry["points"] = [[p.ts, p.value] for p in res.points]
-            elif res.points:
-                vals = [p.value for p in res.points]
-                entry["agg"] = {"avg": sum(vals) / len(vals), "min": min(vals),
-                                "max": max(vals), "last": vals[-1]}[agg]
-            else:
-                entry["agg"] = None
-            series.append(entry)
-        resolution = results[0].resolution if results else "raw"
-        return {"tz": _tz_name(now), "resolution": resolution, "series": series}
+        start, end = r[0], r[1]
+        # One WAL read snapshot for observed-list / preflight / fetch so an
+        # intervening daemon write cannot inflate points past the hard cap.
+        with q.read_snapshot():
+            resolution = q.resolution_for(now, start, end)
+            observed = q.list_observed_series_entities(
+                monitor, metric, now=now, start=start, end=end, entity_id=entity,
+            )
+            keep = self._attr_filter(q, monitor, filter_expr, now)
+            if isinstance(keep, dict):
+                return keep
+            matched = [
+                (sid, eid) for sid, eid in observed
+                if keep is None or eid in keep
+            ]
+            base = {
+                "tz": _tz_name(now),
+                "resolution": resolution,
+                "limits": _qm_limits(),
+            }
+            if not matched:
+                available = self._available_metrics(q, monitor)
+                if filter_expr and observed:
+                    empty_reason = "filtered_out"
+                elif metric not in available:
+                    empty_reason = "unknown_metric"
+                else:
+                    empty_reason = "no_data_in_range"
+                return {
+                    **base,
+                    "series": [],
+                    "truncated": False,
+                    "entities_returned": 0,
+                    "entities_matched": 0,
+                    "points_returned": 0,
+                    "empty_reason": empty_reason,
+                    "available_metrics": available,
+                }
+
+            series: list[dict] = []
+            points_returned = 0
+            truncated = False
+            for sid, eid in matched:
+                if len(series) >= _QM_MAX_ENTITIES:
+                    truncated = True
+                    break
+                if agg is None:
+                    budget = q.series_point_budget(
+                        sid, now=now, start=start, end=end,
+                        max_points=_QM_MAX_POINTS_PER_ENTITY,
+                    )
+                    if points_returned + budget > _QM_MAX_TOTAL_POINTS:
+                        truncated = True
+                        break
+                    res = q.series_points(
+                        sid, now=now, start=start, end=end,
+                        max_points=_QM_MAX_POINTS_PER_ENTITY,
+                    )
+                    n = len(res.points)
+                    # Belt-and-suspenders if preflight ever under-counts.
+                    if points_returned + n > _QM_MAX_TOTAL_POINTS:
+                        truncated = True
+                        break
+                    entry = {
+                        "entity": eid,
+                        "points": [[p.ts, p.value] for p in res.points],
+                    }
+                    points_returned += n
+                else:
+                    res = q.series_points(
+                        sid, now=now, start=start, end=end,
+                        max_points=_QM_MAX_POINTS_PER_ENTITY,
+                    )
+                    if res.points:
+                        vals = [p.value for p in res.points]
+                        agg_val = {
+                            "avg": sum(vals) / len(vals),
+                            "min": min(vals),
+                            "max": max(vals),
+                            "last": vals[-1],
+                        }[agg]
+                    else:
+                        # Observed-list guarantees ≥1 observation; defensive None.
+                        agg_val = None
+                    entry = {"entity": eid, "agg": agg_val}
+                series.append(entry)
+
+            if len(series) < len(matched):
+                truncated = True
+            return {
+                **base,
+                "series": series,
+                "truncated": truncated,
+                "entities_returned": len(series),
+                "entities_matched": len(matched),
+                "points_returned": points_returned if agg is None else 0,
+            }
+
+    def _available_metrics(self, q: Query, monitor: str) -> list[str]:
+        """Declared (current def) ∪ persisted history for empty-series hints.
+
+        Declarations are matched by ``MonitorDef.name``, not filename — the
+        loader permits ``good.toml`` whose monitor name is ``test``.
+        """
+        declared: set[str] = set()
+        monitors_dir = self._paths.monitors_dir
+        if monitors_dir.is_dir():
+            defs, _errors = loader.load_dir(
+                monitors_dir,
+                actions_dir=self._paths.actions_dir,
+                require_actions=False,
+            )
+            for mdef in defs:
+                if mdef.name == monitor:
+                    declared = set(declared_metric_names(mdef))
+                    break
+        return sorted(declared | set(q.persisted_metrics(monitor)))
 
     def list_baselines(
         self,
@@ -681,8 +792,11 @@ def build_server(paths: Paths):
                 description="Daemon liveness, monitors, open incidents, "
                 "self metrics")(api.get_status)
     server.tool(name="query_metrics",
-                description="Time-series data; resolution auto-chosen; range "
-                'like "90m" or [iso, iso]')(api.query_metrics)
+                description="Time-series data; resolution auto-chosen (DM-06); "
+                "bounded to 50 entities / 10000 points with truncation "
+                "metadata; empty series include empty_reason and "
+                'available_metrics; range like "90m" or [iso, iso]')(
+                api.query_metrics)
     server.tool(name="list_baselines",
                 description="Stored EWMA levels and learning coverage; exact "
                 "filters with bounded keyset pagination (MC-07)")(

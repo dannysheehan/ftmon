@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from ftmon.definitions import ValidationError, load_dir, load_file, load_text
+from ftmon.definitions.loader import declared_metric_names
 from tests.platform_permissions import symlink_or_skip
 
 BUILTINS_DIR = Path(__file__).resolve().parents[2] / "src" / "ftmon" / "definitions" / "builtins"
@@ -690,6 +691,31 @@ expr = "a + 1"
     md = load_text(text)
     order = [n for n, _ in md.derived]
     assert order.index("a") < order.index("b") < order.index("c")
+
+
+def test_declared_metric_names_union_source_derived_and_external_mappings():
+    """[MC-01] declared_metric_names covers raw, derived, and external mappings."""
+    sampler = load_text(
+        VALID_SAMPLER
+        + '\n[[derived]]\nname = "headroom"\nexpr = "100 - used_pct"\n'
+    )
+    names = declared_metric_names(sampler)
+    assert "used_pct" in names
+    assert "headroom" in names
+
+    external = load_text(VALID_EXTERNAL + '''
+[[derived]]
+name = "response_time_rate_sph"
+expr = 'slope(response_time_s, "2h") * 3600'
+''')
+    ext_names = declared_metric_names(external)
+    assert "plugin_state" in ext_names
+    assert "response_time_s" in ext_names
+    assert "response_time_rate_sph" in ext_names
+    # Stub SOURCE_DECLS["external"] alone would miss the mapped metric.
+    assert "response_time_s" not in __import__(
+        "ftmon.sources.base", fromlist=["SOURCE_DECLS"]
+    ).SOURCE_DECLS["external"].metric_names()
 
 
 # --------------------------------------------------------------------------

@@ -372,6 +372,28 @@ def test_tier_selection_raw_5m_1h(tmp_path):
     assert len(far[0].points) == 5
 
 
+def test_list_observed_series_entities_orders_and_skips_quiet(tmp_path):
+    """[DM-06][MC-01] observed listing is entity_id-ordered and EXISTS-gated."""
+    conn = _fresh(tmp_path)
+    w = TickWriter(conn)
+    sid_b = w.series_id("m", "b", "v", True)
+    sid_a = w.series_id("m", "a", "v", True)
+    sid_quiet = w.series_id("m", "c", "v", True)
+    w.add_sample(sid_a, NOW - 60, 1.0)
+    w.add_sample(sid_b, NOW - 30, 2.0)
+    # sid_quiet: catalog only, no samples in window
+    w.add_sample(sid_quiet, NOW - 10 * 86400, 9.0)
+    w.commit_tick()
+    q = Query(conn)
+    observed = q.list_observed_series_entities(
+        "m", "v", now=NOW, start=NOW - 3600, end=NOW,
+    )
+    assert observed == [(sid_a, "a"), (sid_b, "b")]
+    assert q.series_point_budget(sid_a, now=NOW, start=NOW - 3600, end=NOW) == 1
+    assert q.persisted_metrics("m") == ["v"]
+    assert q.resolution_for(NOW, NOW - 3600, NOW) == "raw"
+
+
 def test_lttb_downsamples_exactly_and_keeps_endpoints():
     """[DM-06][UI-05] LTTB reduces 10000 points to exactly max_points, keeping ends."""
     points = [SeriesPoint(ts=i, value=math.sin(i / 37.0) * 100 + i * 0.01) for i in range(10_000)]

@@ -127,6 +127,23 @@ class MonitorDef:
     content_hash: str  # sha256 hex of normalized_toml
 
 
+def declared_metric_names(mdef: MonitorDef) -> frozenset[str]:
+    """Metric names the current definition declares (raw/source + derived).
+
+    For ``source = "external"``, mapped perfdata names come from validated
+    ``source_options["perfdata"]`` via ``schema.external_decl`` — not from the
+    stub ``SOURCE_DECLS["external"]`` alone (MC-01 / issue #61).
+    """
+    if mdef.source == "external":
+        base = schema.external_decl(
+            mdef.source_options.get("perfdata", [])
+        ).metric_names()
+    else:
+        decl = SOURCE_DECLS.get(mdef.source)
+        base = decl.metric_names() if decl is not None else frozenset()
+    return base | {name for name, _ in mdef.derived}
+
+
 class ValidationError(Exception):
     """Raised with one or more structured errors: {path, code, message, hint}."""
 

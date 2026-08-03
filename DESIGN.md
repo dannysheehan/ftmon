@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.39 — every design element
+Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.40 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -996,6 +996,15 @@ Network rules are watchlist-only.
 
 Tier choice: `end > now−48h and span ≤ 12h` → raw; `span ≤ 30d` → 5m; else 1h — then if points > max_points, server-side LTTB downsample to max_points (used by web charts and MCP alike). All timestamps out are UTC ints + one `tz: "<IANA>"` field per response (MC-02).
 
+`Query.series` remains the shared web/chart path and may return empty-point
+shells for catalog rows with no observations in-range. MCP `query_metrics`
+uses a separate observed-first path (`list_observed_series_entities` via
+`EXISTS` on the DM-06-selected table, capped `COUNT` preflight, then
+`series_points`) under one WAL `read_snapshot()` transaction so quiet windows
+are empty series with reasons, entity order is deterministic (`entity_id ASC`),
+discarded entities are never point-materialized, and an intervening daemon
+write cannot inflate `points_returned` past the hard cap (MC-01 / issue #61).
+
 Baseline reads join `baselines` to `series`. `current_baseline` returns the
 stored level even below the 240-update rule gate together with capped coverage,
 readiness, update bucket and effective half-life. `baseline_history` starts at
@@ -1021,7 +1030,7 @@ FastMCP over stdio; every tool = thin wrapper on `Query`/`SmallWrites`/`definiti
 | Tool | Params (required bold) | Returns |
 | --- | --- | --- |
 | get_status | — | daemon alive/last_tick_age, monitors[], open_incidents, self_metrics |
-| query_metrics | **monitor, metric, range**; entity, agg(avg\|min\|max\|last), filter_expr | series[] {entity, points[[ts,v]]}, resolution, tz |
+| query_metrics | **monitor, metric, range**; entity, agg(avg\|min\|max\|last), filter_expr | series[] {entity, points[[ts,v]] \| agg}, resolution, tz, truncated, entities_returned, entities_matched, points_returned, limits{max_entities:50, max_points_per_entity:2000, max_total_points:10000}; when series empty also empty_reason + available_metrics (additive return fields; params FROZEN) |
 | top_consumers | **resource(cpu\|rss\|io), range**; n=10 | ranked[] {entity, attrs, agg_value} |
 | get_process_history | **name_or_pid, range** | entities[] {entity_id, attrs, first/last/gone, series{…}} |
 | list_events | **range**; min_severity, provider, match_expr, limit=200 | events[] |

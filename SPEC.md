@@ -1,6 +1,8 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.39** — v0.39 extends the process sampler with per-PID soft
+Status: **DRAFT v0.40** — v0.40 bounds MCP `query_metrics` total response size
+and distinguishes empty-series reasons (DM-06/MC-01, issue #61). v0.39 extends
+the process sampler with per-PID soft
 `RLIMIT_NOFILE` (`fd_limit_soft`) so fd-utilization monitors can key off each
 process's real limit rather than a single host-wide parameter (SA-04/PL-05,
 issue #60). v0.38 hardens Windows managed paths, secret-file
@@ -310,7 +312,7 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 
 - **DM-04** Raw samples are kept **48 h**. 5-minute rollups `(avg, min, max, last, count)` are kept **30 d**. 1-hour rollups are kept **400 d** for *durable* series (system, disk, self, and watchlist-synthetic entities) and **90 d** for process-sourced series (v0.3 amendment: the capacity worksheet shows process-entity churn makes 400 d hourly retention for all series infeasible within DM-05). Rollup jobs run in the daemon, incrementally, never more than 1 s of work per cycle.
 - **DM-05** Total database size MUST stay under **200 MB**. On breach the daemon degrades in this fixed order until under budget: (1) oldest raw samples beyond 24 h, (2) oldest events beyond 7 d, (3) oldest 5-min rollups, (4) oldest 1-h rollups. Incidents are never pruned. Each degradation step records a self-event. The DB is created with `auto_vacuum=INCREMENTAL`; `PRAGMA incremental_vacuum` runs after prune batches, full `VACUUM` at most weekly, off-cycle.
-- **DM-06** Queries spanning tiers (raw → 5 m → 1 h) MUST be answered transparently by the query layer choosing resolution by range; callers never pick tables.
+- **DM-06** Queries spanning tiers (raw → 5 m → 1 h) MUST be answered transparently by the query layer choosing resolution by range; callers never pick tables. MCP `query_metrics` MAY apply a documented post-tier entity/point truncation with explicit metadata; it MUST NOT select a coarser retention table merely because many entities matched. The selected resolution MUST be reported even when no observations exist in the range. MCP MUST omit entities with no in-range observations (quiet windows are empty `series` with `empty_reason`, not empty-point shells).
 - **DM-16** The design document MUST include a capacity worksheet deriving RB-01/DM-05 feasibility from stated assumptions — max tracked entities (budget: 400 persisted), metrics per entity (≤ 10), sample width in bytes, rows/day at 60 s intervals, event rates, ring-buffer memory (CA-04) — and the worksheet's assumptions become validation limits (a definition exceeding them is rejected).
 - **DM-17** Historical chart queries MUST expose the selected rollup statistic (`avg|min|max|last`) and, when requested, the stored minimum/maximum envelope. Rates and projections MUST be computed from observations before display downsampling; presentation code MUST NOT derive them from the ≤2 000 rendered points. Missing intervals remain gaps rather than being interpolated.
 
@@ -989,7 +991,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 | Tool | Signature (abridged) | Behavior |
 |---|---|---|
 | `get_status` | () | daemon liveness, last cycle, monitor list w/ state, open incident counts, budget self-metrics |
-| `query_metrics` | (monitor, metric, entity?, range, agg?, filter_expr?) | series data, resolution auto-chosen (DM-06); `filter_expr` uses §8.2 language over entity attrs |
+| `query_metrics` | (monitor, metric, entity?, range, agg?, filter_expr?) | series data, resolution auto-chosen (DM-06); bounded to ≤50 entities and ≤10 000 total points with truncation metadata; empty `series` includes `empty_reason` (`unknown_metric` \| `no_data_in_range` \| `filtered_out`) and `available_metrics` (declared ∪ persisted); `filter_expr` uses §8.2 language over entity attrs |
 | `top_consumers` | (resource: cpu\|rss\|io, range, n=10) | ranked entities with aggregates over range |
 | `get_process_history` | (name_or_pid, range) | metrics + lifecycle (starts/stops/gone) for matching process entities |
 | `list_events` | (range, min_severity?, provider?, match_expr?, limit=200) | canonical events |
@@ -1003,7 +1005,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 | `define_monitor` ✎ | (toml_text) | validate → write to `drafts/` (PM-06) → return draft path plus structured `next_steps` (CLI approve command and web UI) |
 | `ack_incident` ✎ | (id, note?) | sets acked with `by = "mcp"`, note into history |
 
-- **MC-01** The tool list above is the complete v1 tool surface; names and required parameters are frozen by this spec (exact JSON schemas in the design doc). Every tool answers within 2 s on a DM-05-sized database.
+- **MC-01** The tool list above is the complete v1 tool surface; names and required parameters are frozen by this spec (exact JSON schemas in the design doc). Every tool answers within 2 s on a DM-05-sized database. `query_metrics` MUST use an observed-first, work-bounded read (list entities with in-range observations, then fetch points only for returned entities after a capped-count preflight) so high entity cardinality cannot force full point materialization for discarded series.
 - **MC-02** Range parameters accept `"90m"`-style durations or ISO-8601 pairs; all responses carry UTC timestamps plus the host's IANA timezone name once per response for the model to localize.
 - **MC-03** `define_monitor` MUST refuse (not silently overwrite) a name that already exists as enabled/disabled; drafts may be overwritten (iterating on a draft is the normal flow).
 - **MC-04** Error responses are structured (`code`, `message`, `hint`) — a less capable model must be able to self-correct from validation errors (MD-01's quality bar applies).
@@ -1331,6 +1333,15 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.40 (2026-08-03)** — MCP `query_metrics` gains a total response bound
+(≤50 entities, ≤10 000 points) with deterministic truncation metadata, and
+empty `series` responses report `empty_reason` plus `available_metrics`
+(declared ∪ persisted history) so agents can distinguish unknown metric,
+quiet window, and filter wipeout (DM-06/MC-01, issue #61). Resolution follows
+DM-06 even when empty; quiet known metrics omit empty-point shells; query
+work lists observed candidates first and uses a capped-count preflight so
+discarded entities are not point-materialized. Parameter schemas unchanged.
 
 **v0.39 (2026-08-03)** — process sampler emits per-PID `fd_limit_soft` from
 `RLIMIT_NOFILE` soft limit where available (SA-04/PL-05, issue #60). The
