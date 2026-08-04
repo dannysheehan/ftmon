@@ -235,6 +235,20 @@ class TestGetStatus:
         leak = [m for m in res["monitors"] if m["name"] == "leak"]
         assert leak and leak[0]["enabled"] is True
 
+    def test_glance_fields_are_additive_and_bounded_mc_01(self, populated):
+        """[MC-01] Pre-#64 keys survive; readout metadata is always present."""
+        _paths, _clock, api = populated
+        res = api.get_status()
+        assert {"tz", "monitors", "drafts", "daemon_alive", "last_tick_age_s",
+                "db_bytes", "open_incidents", "self_metrics"} <= set(res)
+        # the fixture's leak definition declares no [glance], so nothing
+        # qualifies while the bound is still described (issue #64)
+        assert res["glances"] == []
+        assert res["glances_matched"] == 0
+        assert res["glances_returned"] == 0
+        assert res["glances_truncated"] is False
+        assert res["limits"] == {"max_glances": 64}
+
     def test_no_db_reports_dead_daemon(self, core_env):  # noqa: F811
         """[MC-01] with no database at all, get_status degrades gracefully
         instead of crashing (PM-01: read paths work with the daemon down)."""

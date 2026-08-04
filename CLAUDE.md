@@ -111,6 +111,9 @@ Package layout (full annotated tree in DESIGN.md §1):
   retention/rollups, durable notification `outbox.py`.
 - `src/ftmon/notify/` — desktop/file/ntfy/webhook/SMTP adapters with
   independent durable retry.
+- `glance.py` — read-side policy shared by the dashboard and MCP: the single
+ UI-04 staleness predicate, UI-14 health precedence, check-alias loading, and
+ UI-17/UI-18 primary-readout selection (raw values; consumers format).
 - `daemon.py` (composition root; owns the only bulk-write connection),
   `cli.py`, `mcp_server.py`, `web/` (operational app + isolated synthetic demo
   app), `demo.py`, `selfmon.py`, `systemd/` units (incl. the soak-evidence

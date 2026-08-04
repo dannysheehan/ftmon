@@ -267,6 +267,24 @@ resolution, top consumers, per-process history, events, incidents with a
 full `explain_incident` story, monitor listing/validation — and exactly
 two writes: acknowledging an incident, and *proposing* a monitor.
 
+`get_status` also returns `glances`: the same primary readout the dashboard
+tile shows, for each monitor in a trustworthy UI-14 state (`clear`, `warning`,
+or `error`) with eligible fresh evidence. Each entry carries the
+monitor, the winning entity, the metric, the raw value in its stored unit, the
+declared aggregate (`max`, `min`, or `last` for the Events ingest rate) and the
+labelled thresholds with raw values — no formatted strings, so the assistant
+does the arithmetic on real numbers. A monitor that is stale, unknown,
+disabled, mis-configured, or has no sample newer than twice its interval is
+simply absent from the list, exactly as its tile omits the value. The list holds
+at most 64 entries ordered by monitor name, and `glances_matched`,
+`glances_returned`, `glances_truncated` and `limits.max_glances` are always
+present so truncation is never silent.
+
+An external monitor whose check alias is not in `checks.toml` (or whose
+registry is invalid) now appears in `monitors` as `state = "config_error"`
+instead of a loaded monitor, matching the web UI. That is separate from daemon
+reload: a malformed replacement registry leaves the last valid registry active.
+
 `query_metrics` stays inside a fixed bound (at most 50 entities and 10 000
 points) and reports truncation metadata when it stops early. Empty results
 include `empty_reason` (`unknown_metric`, `no_data_in_range`, or

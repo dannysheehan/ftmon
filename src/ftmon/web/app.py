@@ -22,7 +22,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
-from ftmon import __version__
+from ftmon import __version__, glance
 from ftmon.clock import SystemClock
 from ftmon.definitions import loader
 from ftmon.expr import ExprError, parse_duration
@@ -87,6 +87,16 @@ class TileGlance:
     meter: TileGlanceMeter | None
 
 
+# Icon + visible text per UI-14 state; color alone never carries health (UI-09).
+_STATE_PRESENTATION = {
+    "clear": ("✓", "clear"),
+    "warning": ("▲", "warning"),
+    "error": ("✖", "error"),
+    "disabled": ("●", "disabled"),
+    "unknown": ("?", "unknown"),
+}
+
+
 # Attention-first scan order; UI-14 state itself stays computed above (DESIGN §15.3).
 _TILE_STATE_ORDER = {
     "config-error": 0,
@@ -123,44 +133,6 @@ def _tile_summary(tiles: list[MonitorTile]) -> dict:
         ),
         "worst_severity": worst,
     }
-
-
-@dataclass(frozen=True)
-class _StoredEntityCtx:
-    """Persisted expression context used only to honor CA-07 in glance."""
-
-    query: Query
-    monitor: str
-    entity_id: str
-    attrs: dict[str, str]
-    params: dict[str, float]
-    wall: float
-
-    def metric_last(self, metric: str) -> float | None:
-        point = self.query.entity_metric_last(self.monitor, self.entity_id, metric)
-        return None if point is None else point.value
-
-    def metric_last_ts(self, metric: str) -> float | None:
-        point = self.query.entity_metric_last(self.monitor, self.entity_id, metric)
-        return None if point is None else point.ts
-
-    def metric_window(self, metric: str, seconds: float) -> list[tuple[float, float]]:
-        return self.query.entity_metric_window(
-            self.monitor, self.entity_id, metric, start=self.wall - seconds
-        )
-
-    def attr(self, name: str) -> str | None:
-        return self.attrs.get(name)
-
-    def param(self, name: str) -> float:
-        return self.params[name]
-
-    def baseline(self, metric: str) -> float | None:
-        record = self.query.current_baseline(self.monitor, self.entity_id, metric)
-        return None if record is None else record.level
-
-    def now(self) -> float:
-        return self.wall
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
@@ -228,20 +200,8 @@ def _status(request: Request, q: Query | None) -> dict:
         return {"daemon_stale": True, "last_tick_age_s": None, "db_bytes": 0,
                 "open_incidents": 0}
     out = q.status(now=now)
-    out["daemon_stale"] = out["last_tick_age_s"] is None or out["last_tick_age_s"] > 15
+    out["daemon_stale"] = glance.daemon_stale(out["last_tick_age_s"])
     return out
-
-
-def _check_aliases(paths) -> frozenset[str]:
-    """Load administrator check aliases; empty when registry is absent/invalid."""
-    if not paths.check_registry_file.exists():
-        return frozenset()
-    try:
-        from ftmon.checks.registry import load as load_check_registry
-
-        return frozenset(load_check_registry(paths.check_registry_file, paths=paths))
-    except ValueError:
-        return frozenset()
 
 
 async def dashboard(request: Request):
@@ -254,7 +214,7 @@ async def dashboard(request: Request):
                 paths.monitors_dir,
                 actions_dir=paths.actions_dir,
                 require_actions=True,
-                check_aliases=_check_aliases(paths),
+                check_aliases=glance.check_aliases(paths),
                 require_checks=True,
             )
         status = _status(request, q)
@@ -327,19 +287,15 @@ def _demo_monitor_tiles(definitions, q: Query | None, now: float) -> list[Monito
             "FROM incidents WHERE state!='cleared' GROUP BY monitor"
         )
     }
-    presentation = {
-        "clear": ("✓", "clear"), "warning": ("▲", "warning"),
-        "error": ("✖", "error"), "disabled": ("●", "disabled"),
-    }
     tiles = []
     for mdef in definitions:
         state = summaries.get(mdef.name, "unknown")
-        icon, label = presentation.get(state, ("?", "unknown"))
-        glance = _compose_tile_glance(mdef, q, state, now)
+        icon, label = _STATE_PRESENTATION.get(state, ("?", "unknown"))
+        readout = _tile_glance(glance.reading(mdef, q, state, now))
         incident_count, maximum = live.get(mdef.name, (0, None))
         tiles.append(MonitorTile(
             mdef.name, mdef.description, mdef.enabled,
-            state, icon, label, incident_count, maximum, mdef.trends, glance,
+            state, icon, label, incident_count, maximum, mdef.trends, readout,
         ))
     return _sort_tiles(tiles)
 
@@ -348,42 +304,23 @@ def _monitor_tiles(
     defs, errors, q: Query | None, status: dict, now: float
 ) -> list[MonitorTile]:
     """Apply fixed health precedence to evidence and live incidents (UI-14)."""
-    live_by_monitor: dict[str, list] = {}
-    if q is not None:
-        for row in q.incidents(state=None):
-            if row["state"] != "cleared":
-                live_by_monitor.setdefault(row["monitor"], []).append(row)
+    live_by_monitor = glance.open_incidents_by_monitor(q)
 
     tiles = []
     for mdef in defs:
         live = live_by_monitor.get(mdef.name, [])
         maximum = max((row["severity"] for row in live), default=None)
-        has_evidence = False
-        if q is not None:
-            has_evidence = q._conn.execute(
-                "SELECT EXISTS(SELECT 1 FROM monitor_loads WHERE monitor=?) "
-                "OR EXISTS(SELECT 1 FROM series WHERE monitor=?)",
-                (mdef.name, mdef.name),
-            ).fetchone()[0] == 1
-            if mdef.source == "events" and not has_evidence:
-                has_evidence = q._conn.execute(
-                    "SELECT EXISTS(SELECT 1 FROM cursors)"
-                ).fetchone()[0] == 1
-
-        if status["daemon_stale"] or not has_evidence:
-            state, icon, label = "unknown", "?", "unknown"
-        elif not mdef.enabled:
-            state, icon, label = "disabled", "●", "disabled"
-        elif maximum is not None and maximum >= 3:
-            state, icon, label = "error", "✖", "error"
-        elif maximum is not None:
-            state, icon, label = "warning", "▲", "warning"
-        else:
-            state, icon, label = "clear", "✓", "clear"
-        glance = _compose_tile_glance(mdef, q, state, now)
+        state = glance.health_state(
+            stale=status["daemon_stale"],
+            has_evidence=glance.has_evidence(q, mdef),
+            enabled=mdef.enabled,
+            max_severity=maximum,
+        )
+        icon, label = _STATE_PRESENTATION[state]
+        readout = _tile_glance(glance.reading(mdef, q, state, now))
         tiles.append(MonitorTile(
             mdef.name, mdef.description, mdef.enabled, state, icon, label,
-            len(live), maximum, mdef.trends, glance,
+            len(live), maximum, mdef.trends, readout,
         ))
 
     # Invalid files have no MonitorDef; omitting them would hide the highest
@@ -461,83 +398,36 @@ def _glance_meter(
     )
 
 
-def _compose_glance(mdef, q: Query | None, state: str, now: float) -> TileGlance | None:
-    """Add context only after UI-14 has established a trustworthy state."""
-    if q is None or mdef.glance is None or state not in {"clear", "warning", "error"}:
+def _tile_glance(readout: glance.GlanceReading | None) -> TileGlance | None:
+    """Format a shared reading; selection policy stays in `ftmon.glance` (UI-17)."""
+    if readout is None:
         return None
-    samples = q.glance_samples(
-        mdef.name,
-        mdef.glance.metric,
-        not_before=now - 2 * mdef.interval_s,
-    )
-    eligible = [
-        sample
-        for sample in samples
-        if not any(
-            expression.eval(_StoredEntityCtx(
-                query=q,
-                monitor=mdef.name,
-                entity_id=sample.entity_id,
-                attrs=sample.attrs,
-                params=mdef.parameters,
-                wall=now,
-            )) is True
-            for expression in mdef.exempt
-        )
-    ]
-    if not eligible:
-        return None
-    if mdef.glance.aggregate == "max":
-        sample = min(eligible, key=lambda item: (-item.value, -item.ts, item.entity_id))
-    else:
-        sample = min(eligible, key=lambda item: (item.value, -item.ts, item.entity_id))
     threshold_pairs = tuple(
-        (threshold.label, float(mdef.parameters[threshold.parameter]))
-        for threshold in mdef.glance.thresholds
+        (threshold.label, threshold.value) for threshold in readout.thresholds
     )
-    threshold_raws = tuple(raw for _, raw in threshold_pairs)
-    meter = _glance_meter(sample.value, mdef.glance.unit, threshold_pairs)
+    meter = _glance_meter(readout.value, readout.unit, threshold_pairs)
     thresholds = tuple(
         TileGlanceThreshold(
             label=threshold.label,
-            value=_format_glance_value(raw, mdef.glance.unit),
-            raw=raw,
+            value=_format_glance_value(threshold.value, readout.unit),
+            raw=threshold.value,
             mark_pct=(
                 None
                 if (
                     meter is None
-                    or not math.isfinite(raw)
+                    or not math.isfinite(threshold.value)
                     or meter.scale_max <= 0
                 )
-                else min(100.0, max(0.0, (raw / meter.scale_max) * 100.0))
+                else min(100.0, max(0.0, (threshold.value / meter.scale_max) * 100.0))
             ),
         )
-        for threshold, raw in zip(mdef.glance.thresholds, threshold_raws, strict=True)
+        for threshold in readout.thresholds
     )
     return TileGlance(
-        entity_id=sample.entity_id,
-        value=_format_glance_value(sample.value, mdef.glance.unit),
+        entity_id=readout.entity_id,
+        value=_format_glance_value(readout.value, readout.unit),
         thresholds=thresholds,
         meter=meter,
-    )
-
-
-def _compose_tile_glance(mdef, q: Query | None, state: str, now: float) -> TileGlance | None:
-    """Use declared glance metadata, plus the fixed Events ingest-rate readout."""
-    declared = _compose_glance(mdef, q, state, now)
-    if declared is not None or mdef.source != "events":
-        return declared
-    if q is None or state not in {"clear", "warning", "error"}:
-        return None
-    samples = q.glance_samples("self", "event_rate_per_min", not_before=now - 120.0)
-    if not samples:
-        return None
-    latest = max(samples, key=lambda sample: sample.ts)
-    return TileGlance(
-        entity_id="ingest",
-        value=f"{format(latest.value, '.3g')} events/min",
-        thresholds=(),
-        meter=None,
     )
 
 
@@ -1098,7 +988,7 @@ async def events(request: Request):
 
 async def monitors(request: Request):
     paths = request.app.state.paths
-    check_aliases = _check_aliases(paths)
+    check_aliases = glance.check_aliases(paths)
     defs, errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True,
         check_aliases=check_aliases, require_checks=True,
@@ -1122,7 +1012,7 @@ async def monitor_action(request: Request):
 
     name, action = request.path_params["name"], request.path_params["action"]
     paths = request.app.state.paths
-    check_aliases = _check_aliases(paths)
+    check_aliases = glance.check_aliases(paths)
     try:
         if action == "approve":
             manage.approve_draft(paths, name, check_aliases=check_aliases)

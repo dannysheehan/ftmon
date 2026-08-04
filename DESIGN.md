@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.41 — every design element
+Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.42 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -109,6 +109,7 @@ PROJECTS/ftmon/                  # monorepo root (git)
 │   │   ├── base.py desktop.py file.py ntfy.py webhook.py smtp.py
 │   │   └── dispatch.py           # retry/classification, no incident policy
 │   ├── daemon.py                # composition root; owns the only bulk-write connection
+│   ├── glance.py                # UI-04/14/17/18 read-side policy shared by web + MCP
 │   ├── mcp_server.py            # §13
 │   ├── web/                     # §14: operational + isolated demo factories
 │   ├── demo.py                  # seeded synthetic DB builder (UI-15/16)
@@ -1029,7 +1030,7 @@ FastMCP over stdio; every tool = thin wrapper on `Query`/`SmallWrites`/`definiti
 
 | Tool | Params (required bold) | Returns |
 | --- | --- | --- |
-| get_status | — | daemon alive/last_tick_age, monitors[], open_incidents, self_metrics |
+| get_status | — | daemon alive/stale (shared UI-04 predicate)/last_tick_age, monitors[] (loaded entries, plus `state="config_error"` for invalid files and unavailable check aliases), drafts[], open_incidents, self_metrics, glances[] {monitor, entity_id, metric, value, unit, aggregate(max\|min\|last), thresholds[{label, value}]} with glances_returned/glances_matched/glances_truncated/limits{max_glances:64} always present (additive return fields; params FROZEN) |
 | query_metrics | **monitor, metric, range**; entity, agg(avg\|min\|max\|last), filter_expr | series[] {entity, points[[ts,v]] \| agg}, resolution, tz, truncated, entities_returned, entities_matched, points_returned, limits{max_entities:50, max_points_per_entity:2000, max_total_points:10000}; when series empty also empty_reason + available_metrics (additive return fields; params FROZEN) |
 | top_consumers | **resource(cpu\|rss\|io), range**; n=10 | ranked[] {entity, attrs, agg_value} |
 | get_process_history | **name_or_pid, range** | entities[] {entity_id, attrs, first/last/gone, series{…}} |
@@ -1200,6 +1201,19 @@ optional tile value; Jinja never aggregates, checks freshness or guesses a
 unit. Unknown, disabled, config-error and globally stale tiles omit glance, so
 UI-14 remains the sole health-state contract (UI-17). This adds no database
 migration, daemon write, tick-path computation or incident-state transition.
+
+That whole read side lives in `glance.py`, not in `web/app.py`: the staleness
+predicate, the UI-14 precedence function, the check-alias loader, the CA-07
+stored-context evaluator, the `max|min` reduction, the UI-18 fallback and the
+bounded batch. MCP `get_status` composes the same `GlanceReading`s and the web
+layer only wraps them into `TileGlance` (formatted strings, SVG meter
+geometry), so a formatting change cannot alter selection and MCP never imports
+a Starlette application (MC-01, issue #64). `GlanceReading` is raw: consumers
+that want text call the web formatter, and the MCP payload deliberately omits
+display strings so a model cannot parse `"94%"` where `94.0` and `percent` are
+available. The batch sorts by monitor name and caps at 64 records with
+always-present truncation metadata; the dashboard renders every tile it has and
+is unaffected by the cap.
 
 The Events source has no sampled entity of its own, so its fixed operational
 glance reads the fresh `self/ftmon/event_rate_per_min` series and labels it

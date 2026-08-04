@@ -24,6 +24,7 @@ from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 
+from ftmon import glance
 from ftmon.clock import SystemClock
 from ftmon.definitions import loader, manage
 from ftmon.definitions.loader import declared_metric_names
@@ -35,7 +36,6 @@ from ftmon.store.query import Query, SmallWrites
 
 _EVENT_ENV = NameEnv(metrics=frozenset({"severity"}),
                      attrs=frozenset({"provider", "event_id", "message", "source"}))
-_STALE_AFTER_S = 15.0  # 3x the 5s base tick (UI-04's staleness rule)
 # MC-01 / issue #61: total response bound for query_metrics (additive metadata).
 _QM_MAX_ENTITIES = 50
 _QM_MAX_POINTS_PER_ENTITY = 2000
@@ -48,6 +48,22 @@ def _qm_limits() -> dict[str, int]:
         "max_entities": _QM_MAX_ENTITIES,
         "max_points_per_entity": _QM_MAX_POINTS_PER_ENTITY,
         "max_total_points": _QM_MAX_TOTAL_POINTS,
+    }
+
+
+def _glance_json(reading: glance.GlanceReading) -> dict:
+    """Raw-first readout (UI-17/MD-12): no display strings replace value+unit."""
+    return {
+        "monitor": reading.monitor,
+        "entity_id": reading.entity_id,
+        "metric": reading.metric,
+        "value": reading.value,
+        "unit": reading.unit,
+        "aggregate": reading.aggregate,
+        "thresholds": [
+            {"label": threshold.label, "value": threshold.value}
+            for threshold in reading.thresholds
+        ],
     }
 
 
@@ -153,10 +169,15 @@ class McpApi:
     def get_status(self) -> dict:
         now = self._clock.now()
         q = self._query()
+        # Same load authority as the dashboard: an external monitor whose alias
+        # is missing from the registry is a configuration error, not a loaded
+        # monitor the model should trust (EC-01, issue #64).
         defs, errors = loader.load_dir(
             self._paths.monitors_dir,
             actions_dir=self._paths.actions_dir,
             require_actions=True,
+            check_aliases=glance.check_aliases(self._paths),
+            require_checks=True,
         )
         monitors = [{"name": d.name, "source": d.source, "enabled": d.enabled}
                     for d in defs]
@@ -164,9 +185,14 @@ class McpApi:
                      for p, e in errors]
         drafts = sorted(p.stem for p in self._paths.drafts_dir.glob("*.toml")
                         ) if self._paths.drafts_dir.exists() else []
-        out = {"tz": _tz_name(now), "monitors": monitors, "drafts": drafts}
+        # Bounds are reported even when nothing qualifies, so a model never has
+        # to guess whether an absent readout means "quiet" or "capped" (MC-01).
+        out = {"tz": _tz_name(now), "monitors": monitors, "drafts": drafts,
+               "glances": [], "glances_returned": 0, "glances_matched": 0,
+               "glances_truncated": False, "limits": glance.limits()}
         if q is None:
-            out.update({"daemon_alive": False, "last_tick_age_s": None,
+            out.update({"daemon_alive": False, "daemon_stale": True,
+                        "last_tick_age_s": None,
                         "open_incidents": 0, "self_metrics": {}})
             return out
         info = q.status(now=now)
@@ -176,13 +202,20 @@ class McpApi:
             "ON s.series_id = se.id WHERE se.monitor = 'self' AND s.ts = "
             "(SELECT MAX(ts) FROM samples WHERE series_id = se.id)"
         ).fetchall()
+        batch = glance.monitor_glances(
+            defs, q, stale=glance.daemon_stale(age), now=now
+        )
         out.update({
-            "daemon_alive": age is not None and age < _STALE_AFTER_S,
-            "daemon_stale": age is not None and age >= _STALE_AFTER_S,
+            "daemon_alive": glance.daemon_alive(age),
+            "daemon_stale": glance.daemon_stale(age),
             "last_tick_age_s": age,
             "db_bytes": info["db_bytes"],
             "open_incidents": info["open_incidents"],
             "self_metrics": {r["metric"]: r["value"] for r in rows},
+            "glances": [_glance_json(r) for r in batch.readings],
+            "glances_returned": batch.returned,
+            "glances_matched": batch.matched,
+            "glances_truncated": batch.truncated,
         })
         return out
 
@@ -793,7 +826,10 @@ def build_server(paths: Paths):
 
     server.tool(name="get_status",
                 description="Daemon liveness, monitors, open incidents, "
-                "self metrics")(api.get_status)
+                "self metrics, plus each eligible monitor's declared primary "
+                "readout in glances[] (raw value+unit+thresholds for "
+                "trustworthy dashboard states, ≤64, with truncation metadata)")(
+                api.get_status)
     server.tool(name="query_metrics",
                 description="Time-series data; resolution auto-chosen (DM-06); "
                 "bounded to 50 entities / 10000 points with truncation "
