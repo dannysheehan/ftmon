@@ -1,6 +1,12 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.43** — v0.43 makes MD-09's catalog lifecycle concrete: a
+Status: **DRAFT v0.44** — v0.44 completes issue #74 with explicit database
+pressure diagnostics and a bounded live-compaction policy: DM-05 measures used
+pages, keeps incremental vacuum in the retention pass, and rejects automatic
+full `VACUUM` while monitoring because its exclusive lock is disproportionate
+for a 200 MB local store; CL-05 distinguishes file allocation, used bytes,
+freelist headroom, and degradation recency (DM-05, CL-05, issue #74). v0.43
+makes MD-09's catalog lifecycle concrete: a
 `gone` entity (and its series/baselines) now reaps once its observations age
 out and no open incident references it, closing the gap where dead process
 identities counted against the DM-05 budget forever; CL-05 doctor gains
@@ -325,7 +331,7 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 ### 5.2 Retention and rollups
 
 - **DM-04** Raw samples are kept **48 h**. 5-minute rollups `(avg, min, max, last, count)` are kept **30 d**. 1-hour rollups are kept **400 d** for *durable* series (system, disk, self, and watchlist-synthetic entities) and **90 d** for process-sourced series (v0.3 amendment: the capacity worksheet shows process-entity churn makes 400 d hourly retention for all series infeasible within DM-05). Rollup jobs run in the daemon, incrementally, never more than 1 s of work per cycle.
-- **DM-05** Total database size MUST stay under **200 MB**. On breach the daemon degrades in this fixed order until under budget: (1) oldest raw samples beyond 24 h, (2) oldest events beyond 7 d, (3) oldest 5-min rollups, (4) oldest 1-h rollups. Incidents are never pruned. Each degradation step records a self-event. The DB is created with `auto_vacuum=INCREMENTAL`; `PRAGMA incremental_vacuum` runs after prune batches, full `VACUUM` at most weekly, off-cycle.
+- **DM-05** The database's **used-page footprint** MUST stay under **200 MB**, measured as `(page_count − freelist_count) × page_size`. On breach the daemon degrades in this fixed order until under budget: (1) oldest raw samples beyond 24 h, (2) oldest events beyond 7 d, (3) oldest 5-min rollups, (4) oldest 1-h rollups. Incidents are never pruned. Each degradation step records a self-event and its timestamp. The DB is created with `auto_vacuum=INCREMENTAL`; bounded `PRAGMA incremental_vacuum(200)` runs after each retention transaction so reusable freelist pages progressively return to the filesystem. The main database file MAY temporarily exceed the used-page footprint while that bounded reclaim catches up; free pages remain immediately reusable and do not trigger further lossy degradation. FTMON MUST NOT run a full `VACUUM` automatically while the daemon is live: rebuilding this bounded local database requires an exclusive SQLite write lock whose sampling, retention, and notification availability cost is disproportionate to tighter physical packing. Offline full compaction is explicit operator maintenance, not part of the live retention path. (v0.44 amendment, issue #74.)
 - **DM-06** Queries spanning tiers (raw → 5 m → 1 h) MUST be answered transparently by the query layer choosing resolution by range; callers never pick tables. MCP `query_metrics` MAY apply a documented post-tier entity/point truncation with explicit metadata; it MUST NOT select a coarser retention table merely because many entities matched. The selected resolution MUST be reported even when no observations exist in the range. MCP MUST omit entities with no in-range observations (quiet windows are empty `series` with `empty_reason`, not empty-point shells).
 - **DM-16** The design document MUST include a capacity worksheet deriving RB-01/DM-05 feasibility from stated assumptions — max tracked entities (budget: 400 persisted), metrics per entity (≤ 10), sample width in bytes, rows/day at 60 s intervals, event rates, ring-buffer memory (CA-04) — and the worksheet's assumptions become validation limits (a definition exceeding them is rejected).
 - **DM-17** Historical chart queries MUST expose the selected rollup statistic (`avg|min|max|last`) and, when requested, the stored minimum/maximum envelope. Rates and projections MUST be computed from observations before display downsampling; presentation code MUST NOT derive them from the ≤2 000 rendered points. Missing intervals remain gaps rather than being interpolated.
@@ -1147,7 +1153,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **CL-02** `ftmon check` validates all definitions (or one file) and exits non-zero on any error — the successor of legacy `-c`, and the pre-commit/CI hook for definitions.
 - **CL-03** Every list-producing subcommand supports `--json` (stable, documented shape shared with MCP responses) — the CLI is also scripting surface.
 - **CL-04** `ftmon status` is the legacy `-z` successor: one screen, exit code 0/1/2 mapping to (all-clear / warnings / errors+) for scripting.
-- **CL-05** `ftmon doctor`: runs `PRAGMA quick_check` (full `integrity_check` with `--deep`), WAL checkpoint, reports DB/table sizes, orphaned rows, cursor ages, and config errors; `ftmon doctor --backup <path>` produces a consistent snapshot via the SQLite backup API. Naive file-copy of the live WAL database is documented as unsupported (VC-03). Exit non-zero on any problem found. (v0.43 amendment, issue #74) Also reports active catalog pressure against the DM-16 worksheet — live (`gone_ts IS NULL`) entity and recently-active series counts against its ≤400/~270 assumptions — separately from total retained catalog rows (which legitimately exceed those assumptions under process churn even when reap is healthy; DM-16 §9), plus MD-09 reap recency (last pass timestamp and row count). Doctor MUST NOT collapse this into a single pass/fail flag: the worksheet's active-count assumptions and DM-05's byte budget are distinct signals, and only the byte budget is the real gate.
+- **CL-05** `ftmon doctor`: runs `PRAGMA quick_check` (full `integrity_check` with `--deep`), WAL checkpoint, reports DB/table sizes, orphaned rows, cursor ages, and config errors; `ftmon doctor --backup <path>` produces a consistent snapshot via the SQLite backup API. Naive file-copy of the live WAL database is documented as unsupported (VC-03). Exit non-zero on any problem found. (v0.43 amendment, issue #74) Also reports active catalog pressure against the DM-16 worksheet — live (`gone_ts IS NULL`) entity and recently-active series counts against its ≤400/~270 assumptions — separately from total retained catalog rows (which legitimately exceed those assumptions under process churn even when reap is healthy; DM-16 §9), plus MD-09 reap recency (last pass timestamp and row count). (v0.44 amendment, issue #74) Database capacity is split into file allocation, used bytes, and reusable freelist pages/bytes/percentage, with last DM-05 degradation recency. Doctor MUST NOT collapse catalog assumptions or fragmentation into a single pass/fail flag: active counts, used-page budget, and physical packing are distinct signals, and only integrity/orphan/config failures affect doctor health.
 - **CL-06** `ftmon paths` prints the resolved filesystem layout an author or operator needs — config dir, monitors dir, drafts dir, actions dir, check registry file, data dir, database file, state dir, log and notifications files, runtime dir and lock file — honoring the `FTMON_*` overrides, with `--json` (CL-03). Works with the daemon down (PM-01); prints paths only, never file contents.
 - **CL-07** `ftmon monitor rescan` requests an immediate PM-11 reload from the running daemon instead of waiting out the PM-04 window, using the daemon pid recorded in the PM-02 lock file. When no daemon is running (lock not held), it exits non-zero with a clear message rather than signalling a stale pid.
 - **CL-08** `ftmon check trust <path>` evaluates the shared executable trust policy (EC-01/SE-07 — the same predicate the registry and runner enforce) and reports **every** failed condition by name (absolute path, symlink-free, regular file, trusted owner, no group/other write, executable), exiting 0 when trusted and 1 otherwise. It never executes the candidate.
@@ -1364,6 +1370,21 @@ Implementation lands in stages; each stage is independently usable, ships the §
 
 ## 21. Changelog & review disposition
 
+**v0.44 (2026-08-04)** — completes issue #74 without adding a live full-
+`VACUUM` worker. PR #89's v0.43 catalog reap fixed the root unbounded-metadata
+defect; deleted pages immediately become reusable and stop counting against
+DM-05's existing used-page calculation, while the bounded
+`incremental_vacuum(200)` already run after every retention pass progressively
+returns them to the filesystem. DM-05 now names that used-page formula and
+removes DESIGN's unimplemented weekly full-`VACUUM` promise: rebuilding a
+bounded 200 MB store under an exclusive SQLite write lock would require new
+tick, retention, outbox, thread, retry, shutdown, and cross-platform recovery
+semantics for tighter packing rather than better monitoring. CL-05 doctor now
+reports file allocation, used bytes, freelist pages/bytes/percentage, and last
+lossy-degradation recency alongside v0.43's catalog/reap fields. Full compaction
+remains explicit offline operator maintenance; no live command or worker is
+introduced.
+
 **v0.43 (2026-08-04)** — closes issue #74's catalog-lifecycle gap: on
 long-running installs, dead process identities (`entities`, `series`,
 `baselines`) never aged out even after their observations did, so the
@@ -1382,9 +1403,8 @@ worksheet (DESIGN.md) now distinguishes active (concurrently persisted)
 catalog from total retained catalog, since the latter legitimately exceeds
 the worksheet's ≤400/~270 assumptions under process churn even when reap is
 healthy — CL-05 doctor reports both, plus MD-09 reap recency, without
-collapsing them into one pass/fail signal. Weekly full-`VACUUM` compaction
-(DESIGN §10.5's existing promise) is tracked separately (issue #74's
-follow-up) and is not part of this amendment.
+collapsing them into one pass/fail signal. The live compaction policy and
+remaining capacity diagnostics are resolved by the v0.44 follow-up.
 
 **v0.42 (2026-08-04)** — MCP `get_status` exposes the dashboard's primary
 readouts as `glances` (issue #64): one shared read-side module now owns

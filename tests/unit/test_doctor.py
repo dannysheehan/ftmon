@@ -48,6 +48,11 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
     assert report["last_reap_ts"] is None
     assert report["last_reap_count"] is None
     assert report["last_reap_age_s"] is None
+    assert report["used_bytes"] + report["freelist_bytes"] == report["db_bytes"]
+    assert report["freelist_pages"] >= 0
+    assert 0.0 <= report["freelist_fragment_pct"] <= 1.0
+    assert report["last_degradation_ts"] is None
+    assert report["last_degradation_age_s"] is None
     conn.close()
 
 
@@ -145,6 +150,47 @@ def test_doctor_surfaces_last_reap_meta_cl_05_dm_16(tmp_path):
     conn.close()
 
 
+def test_doctor_reports_used_and_free_database_pages_cl_05(tmp_path):
+    """[CL-05] Used plus freelist bytes equals the database file allocation;
+    freed pages are visible as reusable headroom, not a health failure."""
+    conn = connect(tmp_path / "ftmon.db")
+    migrate(conn)
+    conn.execute("CREATE TABLE pressure(payload BLOB)")
+    conn.executemany(
+        "INSERT INTO pressure(payload) VALUES (zeroblob(4096))",
+        [() for _ in range(256)],
+    )
+    conn.commit()
+    conn.execute("DELETE FROM pressure")
+    conn.commit()
+
+    report = inspect(conn, now=1000)
+
+    assert report["freelist_pages"] > 0
+    assert report["freelist_bytes"] > 0
+    assert report["used_bytes"] < report["db_bytes"]
+    assert report["used_bytes"] + report["freelist_bytes"] == report["db_bytes"]
+    assert report["freelist_fragment_pct"] == (
+        report["freelist_bytes"] / report["db_bytes"]
+    )
+    assert report["ok"]
+    conn.close()
+
+
+def test_doctor_surfaces_last_degradation_meta_cl_05(tmp_path):
+    """[CL-05] Degradation recency is optional and uses the injected now."""
+    conn = connect(tmp_path / "ftmon.db")
+    migrate(conn)
+    conn.execute("INSERT INTO meta(key,value) VALUES ('last_degradation_ts', '400')")
+    conn.commit()
+
+    report = inspect(conn, now=1000)
+
+    assert report["last_degradation_ts"] == 400
+    assert report["last_degradation_age_s"] == 600
+    conn.close()
+
+
 def test_backup_uses_sqlite_snapshot_vc_03(tmp_path):
     conn = connect(tmp_path / "ftmon.db")
     migrate(conn)
@@ -177,6 +223,9 @@ def test_doctor_reports_redacted_channel_readiness_no_10(tmp_path, monkeypatch, 
 
     assert main(["doctor"]) == 1
     captured = capsys.readouterr()
+    assert "Database: file=" in captured.out and "used=" in captured.out
+    assert "Freelist:" in captured.out
+    assert "Degradation: never" in captured.out
     assert "Notification desktop: disabled" in captured.out
     assert "Notification ntfy: error (invalid_config)" in captured.out
     assert "Notification webhook: disabled" in captured.out

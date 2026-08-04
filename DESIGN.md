@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.43 — every design element
+Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.44 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -684,7 +684,9 @@ The process source keeps its own all-process short window (15 samples) in `rings
 
 ### 10.5 Baselines & retention slices
 
-`baseline.py` hooks the 5-min rollup job: for each rolled bucket, apply the CA-05 EW update (`α = 1 − 2^(−300/259200)` per 5-min step at the 3 d half-life), increment `updates`. `retention.py` runs ≤ 1 s/tick with cursors in `meta`: rollup 5m → rollup 1h → prune per DM-05 order → `incremental_vacuum(200 pages)`. Weekly full VACUUM only when daemon idle and DB fragmented > 20 %.
+`baseline.py` hooks the 5-min rollup job: for each rolled bucket, apply the CA-05 EW update (`α = 1 − 2^(−300/259200)` per 5-min step at the 3 d half-life), increment `updates`. `retention.py` runs ≤ 1 s/tick with cursors in `meta`: rollup 5m → rollup 1h → prune/reap per DM-05/MD-09 order → `incremental_vacuum(200 pages)`. DM-05 measures `(page_count − freelist_count) × page_size`: a deleted page is reusable headroom immediately, even when the main file remains physically larger until bounded incremental vacuum moves/truncates enough tail pages.
+
+FTMON deliberately does not run full `VACUUM` while the daemon is live (v0.44, issue #74). SQLite rebuilds the database under an exclusive write lock; making a background rebuild survivable would spread new lock recovery across the tick writer, retention transaction and notification outbox, plus add another connection/thread, retry state, cross-thread reporting and shutdown behavior. That availability and implementation cost is disproportionate for a local store capped at 200 MB, where incremental vacuum already bounds normal reclaim work and SQLite reuses freelist pages. A future offline compaction command may be considered from measured operator need, but it must refuse while the daemon lock is held and is not part of live retention.
 
 ### 10.6 Self source (RB-02)
 

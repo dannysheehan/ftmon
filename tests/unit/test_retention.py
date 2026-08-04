@@ -363,13 +363,40 @@ class TestPruneAndDegrade:
         for table in ("samples", "events", "rollup5m", "rollup1h"):
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT value FROM meta WHERE key = 'last_degradation_ts'"
+        ).fetchone()["value"] == str(now)
+
+    def test_degradation_timestamp_survives_early_budget_return(self, conn):
+        """[DM-05] a successful first degradation batch records its timestamp
+        before the next step sees the restored budget and returns early."""
+        now = T0 + 2 * 86400
+        add_series(conn, 1)
+        add_samples(conn, 1, [(now - 30 * 3600, 1.0)])  # degradable, not normal-pruned
+        retention = Retention(conn)
+        measurements = iter((retention._budget + 1, retention._budget))
+        retention._used_bytes = lambda _cur: next(measurements)
+
+        notes = retention.run(now=now)
+
+        assert len(notes) == 1 and "raw samples" in notes[0]
+        assert conn.execute(
+            "SELECT value FROM meta WHERE key = 'last_degradation_ts'"
+        ).fetchone()["value"] == str(now)
 
     def test_under_budget_never_degrades(self, conn):
         """[DM-05] a healthy database takes no degradation steps at all."""
         add_series(conn, 1)
         add_samples(conn, 1, [(T0, 1.0)])
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES ('last_degradation_ts', '123')"
+        )
+        conn.commit()
         assert Retention(conn).run(now=T0 + 60) == []
         assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT value FROM meta WHERE key = 'last_degradation_ts'"
+        ).fetchone()["value"] == "123"
 
 
 def add_incident(conn, incident_id=1):

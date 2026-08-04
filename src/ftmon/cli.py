@@ -808,7 +808,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"{report['check']}: {', '.join(report['integrity'])}")
     print(f"WAL checkpoint: busy={report['checkpoint'][0]} "
           f"log={report['checkpoint'][1]} checkpointed={report['checkpoint'][2]}")
-    print(f"Database: {report['db_bytes'] / 2**20:.1f} MB")
+    print(
+        f"Database: file={report['db_bytes'] / 2**20:.1f} MB "
+        f"used={report['used_bytes'] / 2**20:.1f} MB"
+    )
+    print(
+        f"Freelist: {report['freelist_pages']} pages "
+        f"({report['freelist_bytes'] / 2**20:.1f} MB, "
+        f"{report['freelist_fragment_pct']:.1%})"
+    )
     print("Tables: " + ", ".join(f"{k}={v}" for k, v in report["tables"].items()))
     dm16 = report["dm16"]
     print(
@@ -824,6 +832,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             f"Reap: last ran {report['last_reap_age_s']:.0f}s ago, "
             f"{report['last_reap_count']} removed"
         )
+    if report["last_degradation_ts"] is None:
+        print("Degradation: never")
+    else:
+        print(f"Degradation: last ran {report['last_degradation_age_s']:.0f}s ago")
     print("Orphans: " + ", ".join(f"{k}={v}" for k, v in report["orphans"].items()))
     for cursor in report["cursors"]:
         print(f"Cursor {cursor['source']}: {cursor['age_s']:.0f}s old")
