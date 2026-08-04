@@ -202,7 +202,9 @@ go quiet while relearning rather than firing against the old normal.
 
 FTMON keeps raw minute-level history for 48 h, 5-minute summaries for a
 month, and hourly summaries for about a year, pruning automatically to stay
-inside the 200 MB budget. Incident history is never pruned.
+inside the 200 MB budget. Incident history is never pruned. Dead process
+entries in the catalog are pruned automatically once the process is gone
+and its history has aged out.
 
 **Journal events** (the `events` monitor) watch the systemd journal live.
 Not everything is stored — only entries at notice level and above, or ones
@@ -514,4 +516,6 @@ in `docs/install.md` when publishing or updating the site.
 
 Never copy the live `ftmon.db` file directly: SQLite may have committed data
 in its WAL file. `ftmon doctor --backup PATH` uses SQLite's snapshot API and
-checks the resulting backup before reporting success.
+checks the resulting backup before reporting success. Doctor also reports
+active and total entity/series catalog counts to track capacity pressure,
+and when automatic cleanup last ran and how many rows it removed.

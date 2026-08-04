@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.42 — every design element
+Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.43 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -632,6 +632,25 @@ Two findings forced SPEC amendments (recorded as v0.3):
 2. **Storing all journal events** (50–200 k lines/day on a desktop) would blow the budget within days. Amended DM-09: the event store-filter keeps events with severity ≥ notice **or** matching any loaded event rule; info-level non-matching events are counted (self-metric) but not stored. Configurable `store_min_severity`.
 
 Ring-buffer RAM (CA-04): worst case all-processes window = 300 procs × 2 metrics × 15 samples × 32 B ≈ 0.3 MB; promoted/watchlist long windows: 40 series × 720 points × 32 B ≈ 0.9 MB; comfortably inside the 64 MB cap; cap exists for pathological definitions.
+
+**Active vs. total catalog (v0.43, issue #74).** The ≤400 entity / ~270
+series figures above describe *active* catalog — what's concurrently
+persisted in a steady tick. They are not a cap on the *total* rows retained
+in `entities`/`series`/`baselines` over time: under process churn (the
+`hog`/`leak` built-ins plus broad-promotion host monitors), many more
+distinct process identities pass through the top-N/promoted set over a
+DM-04 retention window (30 d 5-min / 90 d process-hourly) than are active at
+any one instant, and each leaves a `gone` catalog row that legitimately
+outlives it until its own observations age out. Confirmed on the maintainer
+workstation: ~248k `entities` rows (~246k already `gone`) against the ≤400
+assumption, ~18 MB of that in `entities` alone, none of it prunable by the
+observation-retention logic that existed before MD-09's reap rule (see
+`retention.py`'s `_reap_catalog`). Reap makes total catalog **bounded by
+DM-04's retention windows**, not convergent to the ~270/≤400 active-state
+assumptions — `ftmon doctor` (CL-05) reports both counts separately rather
+than treating the active-state assumption as a total-catalog budget, since
+doing so would produce routine false pressure on any host with real process
+churn.
 
 ---
 

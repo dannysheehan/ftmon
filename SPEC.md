@@ -1,6 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.42** — v0.42 exposes the dashboard's bounded primary
+Status: **DRAFT v0.43** — v0.43 makes MD-09's catalog lifecycle concrete: a
+`gone` entity (and its series/baselines) now reaps once its observations age
+out and no open incident references it, closing the gap where dead process
+identities counted against the DM-05 budget forever; CL-05 doctor gains
+active-vs-total catalog visibility against the DM-16 worksheet (MD-09, CL-05,
+DM-16, issue #74). v0.42 exposes the dashboard's bounded primary
 readouts through MCP `get_status` (`glances`, ≤64, deterministic truncation
 metadata), unifies the daemon-staleness boundary shared by the web UI and MCP,
 and gives `get_status` the dashboard's external-check load authority so an
@@ -873,7 +878,7 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 
 - **MD-05** States: **draft** (in `monitors/drafts/`, never loaded by the daemon) → **enabled** (in `monitors/`) → **disabled** (`enabled = false` key retained in place, so disabling is a one-line edit and history stays in git/file). Approval = `ftmon monitor approve <name>` (CLI or web UI button) performing PM-06(d).
 - **MD-06** Editing an enabled file (PM-04) resets that monitor's incidents to `cleared (superseded)` and its confirm counters — a changed rule never inherits confirmation progress from its previous self.
-- **MD-09** Removing or renaming a definition: open incidents clear with `clear_reason = superseded`; stored samples/rollups age out by normal retention; baselines for the monitor are deleted; entity records are retained until their data ages out. A renamed monitor is a removal plus an addition (no identity continuity).
+- **MD-09** Removing or renaming a definition: open incidents clear with `clear_reason = superseded`; stored samples/rollups age out by normal retention; baselines for the monitor are deleted; entity records are retained until their data ages out. A renamed monitor is a removal plus an addition (no identity continuity). "Ages out" is concrete (v0.43 amendment, issue #74): retention reaps a `gone` entity — and its `series`/`baselines` — once none of its series retain any `samples`/`rollup5m`/`rollup1h` row and no non-cleared incident references it. Watchlist/synthetic entities never reach this state: CA-08 keeps their `last_seen` refreshed every tick (they are always present), so `gone_ts` never gets set for them and they are structurally exempt, not specially cased. Reap runs unconditionally alongside normal pruning (it never removes data still inside its DM-04 window, so it is not a DM-05 degradation step) in bounded catalog-visited batches, the same catch-up shape as rollup rollforward.
 
 ---
 
@@ -1142,7 +1147,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **CL-02** `ftmon check` validates all definitions (or one file) and exits non-zero on any error — the successor of legacy `-c`, and the pre-commit/CI hook for definitions.
 - **CL-03** Every list-producing subcommand supports `--json` (stable, documented shape shared with MCP responses) — the CLI is also scripting surface.
 - **CL-04** `ftmon status` is the legacy `-z` successor: one screen, exit code 0/1/2 mapping to (all-clear / warnings / errors+) for scripting.
-- **CL-05** `ftmon doctor`: runs `PRAGMA quick_check` (full `integrity_check` with `--deep`), WAL checkpoint, reports DB/table sizes, orphaned rows, cursor ages, and config errors; `ftmon doctor --backup <path>` produces a consistent snapshot via the SQLite backup API. Naive file-copy of the live WAL database is documented as unsupported (VC-03). Exit non-zero on any problem found.
+- **CL-05** `ftmon doctor`: runs `PRAGMA quick_check` (full `integrity_check` with `--deep`), WAL checkpoint, reports DB/table sizes, orphaned rows, cursor ages, and config errors; `ftmon doctor --backup <path>` produces a consistent snapshot via the SQLite backup API. Naive file-copy of the live WAL database is documented as unsupported (VC-03). Exit non-zero on any problem found. (v0.43 amendment, issue #74) Also reports active catalog pressure against the DM-16 worksheet — live (`gone_ts IS NULL`) entity and recently-active series counts against its ≤400/~270 assumptions — separately from total retained catalog rows (which legitimately exceed those assumptions under process churn even when reap is healthy; DM-16 §9), plus MD-09 reap recency (last pass timestamp and row count). Doctor MUST NOT collapse this into a single pass/fail flag: the worksheet's active-count assumptions and DM-05's byte budget are distinct signals, and only the byte budget is the real gate.
 - **CL-06** `ftmon paths` prints the resolved filesystem layout an author or operator needs — config dir, monitors dir, drafts dir, actions dir, check registry file, data dir, database file, state dir, log and notifications files, runtime dir and lock file — honoring the `FTMON_*` overrides, with `--json` (CL-03). Works with the daemon down (PM-01); prints paths only, never file contents.
 - **CL-07** `ftmon monitor rescan` requests an immediate PM-11 reload from the running daemon instead of waiting out the PM-04 window, using the daemon pid recorded in the PM-02 lock file. When no daemon is running (lock not held), it exits non-zero with a clear message rather than signalling a stale pid.
 - **CL-08** `ftmon check trust <path>` evaluates the shared executable trust policy (EC-01/SE-07 — the same predicate the registry and runner enforce) and reports **every** failed condition by name (absolute path, symlink-free, regular file, trusted owner, no group/other write, executable), exiting 0 when trusted and 1 otherwise. It never executes the candidate.
@@ -1358,6 +1363,28 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.43 (2026-08-04)** — closes issue #74's catalog-lifecycle gap: on
+long-running installs, dead process identities (`entities`, `series`,
+`baselines`) never aged out even after their observations did, so the
+DM-05 200 MB budget was partly consumed by metadata that could not shrink —
+observed on the maintainer workstation at ~248k `entities` rows (~246k
+`gone`) against the ≤400 DM-16 worksheet assumption. MD-09's "retained until
+their data ages out" is now concrete: a `gone` entity reaps (with its
+series/baselines) once none of its series retain a samples/rollup5m/rollup1h
+row and no non-cleared incident references it; watchlist/synthetic entities
+are structurally exempt (CA-08 never marks them gone) with no schema change.
+Reap runs unconditionally alongside normal pruning, in bounded
+catalog-rows-visited batches (a cursor over the entity catalog, same
+catch-up shape as rollup rollforward) — it never removes data still inside
+its DM-04 window, so it is cleanup, not a DM-05 degradation step. DM-16's §9
+worksheet (DESIGN.md) now distinguishes active (concurrently persisted)
+catalog from total retained catalog, since the latter legitimately exceeds
+the worksheet's ≤400/~270 assumptions under process churn even when reap is
+healthy — CL-05 doctor reports both, plus MD-09 reap recency, without
+collapsing them into one pass/fail signal. Weekly full-`VACUUM` compaction
+(DESIGN §10.5's existing promise) is tracked separately (issue #74's
+follow-up) and is not part of this amendment.
 
 **v0.42 (2026-08-04)** — MCP `get_status` exposes the dashboard's primary
 readouts as `glances` (issue #64): one shared read-side module now owns

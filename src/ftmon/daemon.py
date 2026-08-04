@@ -728,6 +728,23 @@ class DaemonCore:
                 ts=wall, ingest_ts=wall, source="self", provider="ftmon.retention",
                 event_id=None, severity=1, message=note,
             ))
+        if self.retention.entities_reaped:
+            # Reap runs on retention's own connection/transaction, so nothing
+            # else notices these rows are gone unless told: the writer's
+            # long-lived series-id cache (one instance per daemon lifetime)
+            # would otherwise hand a returning identity a series id that no
+            # longer exists, and a cached baseline for the same key would
+            # keep answering for an entity that no longer has a baseline row.
+            for monitor, entity_id in self.retention.reaped_keys:
+                self.writer.evict_series_cache(monitor, entity_id)
+            self.baselines.invalidate()
+            self.stats.count("entities_reaped")
+            self.writer.add_event(EventRecord(
+                ts=wall, ingest_ts=wall, source="self", provider="ftmon.retention",
+                event_id=None, severity=0,
+                message=f"catalog reap: {self.retention.entities_reaped} "
+                         "gone entities removed (MD-09)",
+            ))
 
     def _record_delivery_failure(self, channel: str, reason: str) -> None:
         """NO-07: expose terminal delivery failure without recursive notify."""
