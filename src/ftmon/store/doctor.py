@@ -41,9 +41,44 @@ def inspect(conn: sqlite3.Connection, *, now: float, deep: bool = False) -> dict
                for row in conn.execute("SELECT source,updated_ts FROM cursors ORDER BY source")]
     page_count = conn.execute("PRAGMA page_count").fetchone()[0]
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    # DM-16's ~270/≤400 figures describe *active* catalog pressure, not a cap
+    # on total retained rows (which legitimately grow under process churn even
+    # with the MD-09 reap running); report the two counts separately (CL-05,
+    # issue #74) rather than folding them into the ok/fail signal.
+    entities_alive = conn.execute(
+        "SELECT COUNT(*) FROM entities WHERE gone_ts IS NULL"
+    ).fetchone()[0]
+    # A raw sample alone isn't "active": a just-gone entity keeps its samples
+    # until DM-04's window or MD-09's reap catches up, so counting bare
+    # sample presence would double-count catalog pressure that's already on
+    # its way out. Require the owning entity to still be alive (gone_ts NULL).
+    series_active = conn.execute(
+        "SELECT COUNT(DISTINCT sm.series_id) FROM samples sm "
+        "JOIN series se ON se.id = sm.series_id "
+        "JOIN entities en ON en.monitor = se.monitor AND en.entity_id = se.entity_id "
+        "WHERE en.gone_ts IS NULL"
+    ).fetchone()[0]
+    dm16 = {
+        "max_entities_active": 400,
+        "entities_active": entities_alive,
+        "max_series_active": 270,
+        "series_active": series_active,
+    }
+    meta_rows = dict(conn.execute(
+        "SELECT key, value FROM meta WHERE key IN ('last_reap_ts', 'last_reap_count')"
+    ).fetchall())
+    last_reap_ts = float(meta_rows["last_reap_ts"]) if "last_reap_ts" in meta_rows else None
+    last_reap_count = (
+        int(meta_rows["last_reap_count"]) if "last_reap_count" in meta_rows else None
+    )
+    last_reap_age_s = max(0, now - last_reap_ts) if last_reap_ts is not None else None
     return {"check": check, "integrity": integrity, "checkpoint": checkpoint,
             "db_bytes": page_count * page_size, "tables": row_counts,
             "orphans": orphans, "cursors": cursors,
+            "entities_alive": entities_alive, "series_active": series_active,
+            "dm16": dm16,
+            "last_reap_ts": last_reap_ts, "last_reap_count": last_reap_count,
+            "last_reap_age_s": last_reap_age_s,
             "ok": integrity == ["ok"] and not any(orphans.values())}
 
 

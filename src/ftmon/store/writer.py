@@ -168,6 +168,16 @@ class TickWriter:
     def forget_entity(self, monitor: str, entity_id: str) -> None:
         """Atomically remove persistence for an entity excluded by CA-07."""
         self._pending_forgotten_entities.add((monitor, entity_id))
+        self.evict_series_cache(monitor, entity_id)
+
+    def evict_series_cache(self, monitor: str, entity_id: str) -> None:
+        """Drop cached series ids for an entity whose series rows were
+        deleted outside this writer -- retention's MD-09 reap runs on its
+        own connection/transaction, so without this the writer's long-lived
+        cache (one instance per daemon lifetime) would keep handing out a
+        series id that no longer exists in `series` the next time this
+        identity is seen, producing orphan samples/rollups instead of a
+        fresh series row."""
         for key in [
             key for key in self._series_cache if key[:2] == (monitor, entity_id)
         ]:

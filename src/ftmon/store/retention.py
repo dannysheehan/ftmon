@@ -38,6 +38,10 @@ _DAY = 86400
 HISTORY_CAP = 500
 HISTORY_TRIM = 100
 
+# MD-09: rows *visited* per reap pass, not rows deleted -- bounds the pass
+# the same way regardless of how much of the catalog currently qualifies.
+REAP_SCAN = 2000
+
 
 class Retention:
     """One instance per daemon; ``run(now)`` is the whole public surface.
@@ -63,6 +67,7 @@ class Retention:
         # retention passes (~48 min at the daemon's cadence), by design.
         max_bucket_span_s: int = 3600,
         delete_batch: int = 5000,  # prune rows per table per pass
+        reap_scan: int = REAP_SCAN,  # entities visited per catalog-reap pass
     ) -> None:
         self._conn = conn
         self._budget = budget_bytes
@@ -77,13 +82,21 @@ class Retention:
         self._alpha = 1.0 - 2.0 ** (-ROLLUP5M_S / half_life_s)
         self._span = max_bucket_span_s
         self._batch = delete_batch
+        self._reap_scan = reap_scan
         self.baselines_updated = 0  # daemon invalidates the lookup cache when > 0
+        self.entities_reaped = 0  # daemon emits a self-event when > 0
+        self.reaped_keys: list[tuple[str, str]] = []  # (monitor, entity_id);
+        # daemon evicts the writer's series-id cache and the baseline lookup
+        # cache for each -- reap runs on its own connection/transaction, so
+        # nothing else notices these rows are gone (finding: issue #74 review)
 
     def run(self, now: float) -> list[str]:
         """One bounded retention pass. Returns human-readable notes for any
         DM-05 degradation steps taken (the daemon records them as self-events;
         normal rollup/prune activity is silent)."""
         self.baselines_updated = 0
+        self.entities_reaped = 0
+        self.reaped_keys = []
         notes: list[str] = []
         cur = self._conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
@@ -91,6 +104,7 @@ class Retention:
             self._rollup_5m(cur, now)
             self._rollup_1h(cur, now)
             self._prune_normal(cur, now)
+            self._reap_catalog(cur, now)
             self._cap_incident_history(cur)
             notes = self._degrade_if_over_budget(cur, now)
         except BaseException:
@@ -109,7 +123,11 @@ class Retention:
         row = cur.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return int(row["value"]) if row is not None else default
 
-    def _set_meta(self, cur: sqlite3.Cursor, key: str, value: int) -> None:
+    def _meta_str(self, cur: sqlite3.Cursor, key: str, default: str) -> str:
+        row = cur.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row is not None else default
+
+    def _set_meta(self, cur: sqlite3.Cursor, key: str, value: int | str) -> None:
         cur.execute(
             "INSERT INTO meta(key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -267,6 +285,94 @@ class Retention:
             "(SELECT id FROM events WHERE ts < ? LIMIT ?)",
             (int(now) - self._events_keep,),
         )
+
+    # -- catalog reap (MD-09) ----------------------------------------------
+
+    def _reap_catalog(self, cur: sqlite3.Cursor, now: float) -> None:
+        """A `gone` entity (and its series/baselines) reaps once none of its
+        series retain any samples/rollup5m/rollup1h row and no non-cleared
+        incident references it -- reap never removes data still inside its
+        DM-04 window, so unlike _degrade_if_over_budget this runs every pass
+        regardless of budget state.
+
+        Watchlist/synthetic entities are structurally excluded: CA-08's
+        gone-detection (engine/pipeline.py) refreshes their last_seen every
+        tick since they are always present in the snapshot, so gone_ts stays
+        NULL for them forever and they never match the WHERE clause below --
+        no source-kind column is needed.
+
+        Cursor-bounded (`reap_cursor_monitor`/`_entity` in meta), same
+        catch-up shape as the rollup cursors above but keyed on the entities
+        PK instead of a time bucket: REAP_SCAN caps rows *visited* by the
+        outer scan, not rows deleted, so one pass costs the same whether
+        every visited entity qualifies or none do.
+        """
+        cm = self._meta_str(cur, "reap_cursor_monitor", "")
+        ce = self._meta_str(cur, "reap_cursor_entity", "")
+        rows = cur.execute(
+            """
+            WITH candidates AS (
+                SELECT monitor, entity_id, gone_ts FROM entities
+                WHERE (monitor, entity_id) > (?, ?)
+                ORDER BY monitor, entity_id
+                LIMIT ?
+            )
+            SELECT c.monitor, c.entity_id,
+                   CASE WHEN c.gone_ts IS NOT NULL
+                         AND NOT EXISTS (
+                             SELECT 1 FROM incidents i
+                             WHERE i.monitor = c.monitor AND i.entity_id = c.entity_id
+                               AND i.state != 'cleared')
+                         AND NOT EXISTS (
+                             SELECT 1 FROM series s
+                             WHERE s.monitor = c.monitor AND s.entity_id = c.entity_id
+                               AND (EXISTS (SELECT 1 FROM samples WHERE series_id = s.id)
+                                 OR EXISTS (SELECT 1 FROM rollup5m WHERE series_id = s.id)
+                                 OR EXISTS (SELECT 1 FROM rollup1h WHERE series_id = s.id)))
+                        THEN 1 ELSE 0 END AS reap
+            FROM candidates c
+            ORDER BY c.monitor, c.entity_id
+            """,
+            (cm, ce, self._reap_scan),
+        ).fetchall()
+        if not rows:
+            self._set_meta(cur, "reap_cursor_monitor", "")
+            self._set_meta(cur, "reap_cursor_entity", "")
+            self._set_meta(cur, "last_reap_ts", int(now))
+            self._set_meta(cur, "last_reap_count", 0)
+            return
+        qualifying = [(r["monitor"], r["entity_id"]) for r in rows if r["reap"]]
+        if qualifying:
+            # Same delete order as writer.py's forget_entity (CA-07 exemption
+            # path) -- samples/rollup5m/rollup1h are already empty by the
+            # qualifying condition above; deleting them too costs nothing and
+            # keeps the two reap paths identical in shape.
+            for table in ("baselines", "samples", "rollup5m", "rollup1h"):
+                cur.executemany(
+                    f"DELETE FROM {table} WHERE series_id IN "
+                    "(SELECT id FROM series WHERE monitor = ? AND entity_id = ?)",
+                    qualifying,
+                )
+            cur.executemany(
+                "DELETE FROM entities WHERE monitor = ? AND entity_id = ?", qualifying
+            )
+            cur.executemany(
+                "DELETE FROM series WHERE monitor = ? AND entity_id = ?", qualifying
+            )
+        self.entities_reaped = len(qualifying)
+        self.reaped_keys = qualifying
+        # Fewer rows than the scan bound means the outer scan hit end of
+        # table this pass -- wrap immediately rather than re-querying an
+        # empty tail on the next pass.
+        if len(rows) < self._reap_scan:
+            self._set_meta(cur, "reap_cursor_monitor", "")
+            self._set_meta(cur, "reap_cursor_entity", "")
+        else:
+            last = rows[-1]
+            self._set_meta(cur, "reap_cursor_monitor", last["monitor"])
+            self._set_meta(cur, "reap_cursor_entity", last["entity_id"])
+        self._set_meta(cur, "last_reap_ts", int(now))
+        self._set_meta(cur, "last_reap_count", len(qualifying))
 
     # -- history cap (DM-13) ----------------------------------------------
 

@@ -1,6 +1,6 @@
-"""[DM-04][DM-05][DM-13][CA-05][CA-06] Rollups, retention windows,
-degradation order, incident-history cap, and EW-mean baselines —
-golden-value tests against a real SQLite db."""
+"""[DM-04][DM-05][DM-13][CA-05][CA-06][MD-09] Rollups, retention windows,
+degradation order, incident-history cap, EW-mean baselines, and catalog
+reap — golden-value tests against a real SQLite db."""
 
 from __future__ import annotations
 
@@ -8,13 +8,19 @@ import json
 
 import pytest
 
+from ftmon.clock import FakeClock
+from ftmon.daemon import DaemonCore
+from ftmon.sources.fixtures import fixture_samplers, scenario
 from ftmon.store.db import connect, migrate
+from ftmon.store.doctor import inspect as doctor_inspect
 from ftmon.store.query import Query
 from ftmon.store.retention import (
     BaselineLookup,
     Retention,
     reset_baselines,
 )
+from tests.unit.test_engine import LEAKDEF, ScriptedSampler
+from tests.unit.test_m2_integration import core_env  # noqa: F401
 
 T0 = 1_700_000_100  # deliberately not bucket-aligned
 
@@ -40,6 +46,14 @@ def add_samples(conn, sid, pairs):
         [(sid, ts, v) for ts, v in pairs],
     )
     conn.commit()
+
+
+def add_entity(conn, monitor="m", entity="e", *, gone_ts=None, first_seen=1, last_seen=1):
+    conn.execute(
+        "INSERT INTO entities(monitor, entity_id, first_seen, last_seen, gone_ts, attrs) "
+        "VALUES (?,?,?,?,?,?)",
+        (monitor, entity, first_seen, last_seen, gone_ts, "{}"),
+    )
 
 
 class TestRollup5m:
@@ -458,3 +472,304 @@ class TestHistoryCap:
         add_history_rows(conn, 1, 510)
         notes = Retention(conn).run(now=T0 + 1000)
         assert notes == []
+
+
+class TestCatalogReap:
+    def test_reaps_gone_entity_with_no_observations(self, conn):
+        """[MD-09][DM-04] a gone entity whose series retains no samples,
+        rollup5m, or rollup1h row reaps in full: the entities row, its
+        series row, and its baseline all disappear in the same pass, and
+        entities_reaped counts it."""
+        add_series(conn, 1)
+        add_entity(conn, gone_ts=T0 - 100, first_seen=T0 - 10_000, last_seen=T0 - 200)
+        conn.execute(
+            "INSERT INTO baselines(series_id, value, updates, updated_bucket, half_life_s) "
+            "VALUES (1, 5.0, 300, 0, 259200)"
+        )
+        conn.commit()
+
+        r = Retention(conn)
+        r.run(now=T0)
+
+        assert conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM series").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM baselines").fetchone()[0] == 0
+        assert r.entities_reaped == 1
+
+    def test_protected_by_recent_rollup1h_row(self, conn):
+        """[MD-09][DM-04] a gone entity whose series still has a rollup1h
+        row inside the retention window is not reaped — reap only removes
+        catalog rows holding nothing DM-04 still promises to keep."""
+        add_series(conn, 1, durable=1)
+        add_entity(conn, gone_ts=T0 - 100, last_seen=T0 - 200)
+        conn.execute(
+            "INSERT INTO rollup1h(series_id, bucket, avg, min, max, last, cnt) "
+            "VALUES (1, ?, 1, 1, 1, 1, 1)",
+            (T0 - 3600,),
+        )
+        conn.commit()
+
+        r = Retention(conn)
+        r.run(now=T0)
+
+        assert conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM series").fetchone()[0] == 1
+        assert r.entities_reaped == 0
+
+    def test_protected_by_open_incident(self, conn):
+        """[MD-09] a gone entity with zero retained observations but a live
+        (non-cleared) incident referencing it must not be reaped — an
+        operator resolving that incident still needs the entity row."""
+        add_series(conn, 1)
+        add_entity(conn, gone_ts=T0 - 100, last_seen=T0 - 200)
+        add_incident(conn, 1)  # monitor 'm', entity 'e', state 'open'
+        conn.commit()
+
+        r = Retention(conn)
+        r.run(now=T0)
+
+        assert conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 1
+        assert r.entities_reaped == 0
+
+    def test_gone_ts_null_entity_never_reaped(self, conn):
+        """[MD-09] entities whose gone_ts is NULL — CA-08's gone-detection
+        never sets it for watchlist/synthetic entities re-emitted every
+        tick — are structurally excluded from reap and survive arbitrarily
+        many passes, with or without a data-bearing series."""
+        add_series(conn, 1)
+        add_entity(conn, gone_ts=None)
+        conn.commit()
+
+        r = Retention(conn)
+        for i in range(5):
+            r.run(now=T0 + i * 100)
+            assert conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 1
+            assert r.entities_reaped == 0
+
+    def test_reap_scan_bounds_rows_visited_per_pass(self, conn):
+        """[MD-09] reap_scan bounds a pass by rows *visited*, not rows
+        deleted: with a backlog bigger than the scan window, one run()
+        reaps at most reap_scan entities and leaves the cursor advanced
+        (not wrapped) so the next pass resumes past this one instead of
+        rescanning it."""
+        for i in range(10):
+            eid = f"e{i:02d}"
+            add_series(conn, i + 1, entity=eid)
+            add_entity(conn, entity=eid, gone_ts=T0 - 100, last_seen=T0 - 200)
+        conn.commit()
+
+        r = Retention(conn, reap_scan=3)
+        r.run(now=T0)
+
+        assert r.entities_reaped == 3
+        assert conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 7
+        cm = conn.execute("SELECT value FROM meta WHERE key = 'reap_cursor_monitor'").fetchone()
+        ce = conn.execute("SELECT value FROM meta WHERE key = 'reap_cursor_entity'").fetchone()
+        assert (cm["value"], ce["value"]) == ("m", "e02")
+
+    def test_reap_cursor_wraps_and_clears_full_backlog(self, conn):
+        """[MD-09] driving run() repeatedly over a backlog bigger than
+        reap_scan eventually reaps everything, and the cursor returns to
+        ("", "") once caught up — the same bounded catch-up-over-many-passes
+        shape as the rollup cursors, not one unbounded pass."""
+        for i in range(10):
+            eid = f"e{i:02d}"
+            add_series(conn, i + 1, entity=eid)
+            add_entity(conn, entity=eid, gone_ts=T0 - 100, last_seen=T0 - 200)
+        conn.commit()
+
+        r = Retention(conn, reap_scan=3)
+        total_reaped = 0
+        for _ in range(4):  # 3 + 3 + 3 + 1 == 10, and the short last pass wraps
+            r.run(now=T0)
+            total_reaped += r.entities_reaped
+        assert total_reaped == 10
+        assert conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 0
+        cm = conn.execute("SELECT value FROM meta WHERE key = 'reap_cursor_monitor'").fetchone()
+        ce = conn.execute("SELECT value FROM meta WHERE key = 'reap_cursor_entity'").fetchone()
+        assert (cm["value"], ce["value"]) == ("", "")
+
+        r.run(now=T0)  # one more pass over the now-empty backlog: a no-op
+        assert r.entities_reaped == 0
+        assert conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 0
+
+
+class TestCatalogReapIntegration:
+    def test_proc_churn_backlog_reaps_and_bounds_db_growth(self, core_env):  # noqa: F811
+        """[MD-09][DM-04][DM-05] proc-churn-300 driven through the real
+        DaemonCore: SA-05 top-N selection means only a fraction of each
+        minute's ~290 churned identities ever get a series, but CA-08's
+        gone-tracking (pipeline._track_gone) still writes an `entities` row
+        for every identity once it drops out of the snapshot — without
+        catalog reap that is thousands of permanent rows over the scenario's
+        20-minute run. The default REAP_SCAN (2000) comfortably outpaces
+        this fixture's per-wave backlog (~270 entities) and reaps it away
+        within the same tick it appears, so a small reap_scan is used here
+        to make a real backlog visibly form, cycle the cursor, and drain —
+        the same shape a slower or busier real host would see. Meanwhile
+        the always-selected 'stable' entities' full observation history is
+        untouched, and DB used-bytes plateaus instead of growing with the
+        ~5800 churned identities the scenario generates."""
+        paths = core_env
+        (paths.monitors_dir / "leak.toml").write_text(
+            LEAKDEF.replace("[parameters]", "[source_options]\ntop_n = 15\n[parameters]")
+        )
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock, platform="linux")
+        core.samplers.update(fixture_samplers(scenario("proc-churn-300")))
+        core.retention._reap_scan = 50  # shrink so a backlog visibly accumulates/drains
+
+        entity_counts: list[int] = []
+        series_counts: list[int] = []
+        used_bytes: list[int] = []
+        cursor_wrapped_mid_backlog = False
+        for _ in range(40):
+            core.on_tick(clock.now(), clock.monotonic(), 0.0)
+            clock.advance(60.0)
+            ro = connect(paths.db_file, readonly=True)
+            entities = ro.execute(
+                "SELECT COUNT(*) FROM entities WHERE monitor = 'leak'"
+            ).fetchone()[0]
+            entity_counts.append(entities)
+            series_counts.append(
+                ro.execute("SELECT COUNT(*) FROM series WHERE monitor = 'leak'").fetchone()[0]
+            )
+            (pages,) = ro.execute("PRAGMA page_count").fetchone()
+            (free,) = ro.execute("PRAGMA freelist_count").fetchone()
+            (size,) = ro.execute("PRAGMA page_size").fetchone()
+            used_bytes.append((pages - free) * size)
+            cursor_monitor = ro.execute(
+                "SELECT value FROM meta WHERE key = 'reap_cursor_monitor'"
+            ).fetchone()
+            # (b): the cursor completing a full lap while a real backlog is
+            # still outstanding is direct evidence of a finished scan cycle,
+            # not just the trivial empty-table wrap seen before any backlog
+            # has formed.
+            if cursor_monitor is not None and cursor_monitor["value"] == "" and entities > 1000:
+                cursor_wrapped_mid_backlog = True
+            ro.close()
+
+        # (a): a real backlog accumulates -- far more gone entities than a
+        # single reap_scan=50 pass could ever clear in one tick.
+        peak = max(entity_counts)
+        assert peak > 1000
+        assert cursor_wrapped_mid_backlog
+        # (c): once churn stops generating new gone waves, reap catches up --
+        # a measurable drop from the peak, not a monotonic pile-up.
+        assert entity_counts[-1] < peak * 0.9
+        # series only ever exist for entities actually selected/persisted;
+        # that population stays bounded and stops growing once the
+        # scenario's churn ends, regardless of the ~5800 identities seen.
+        assert max(series_counts) < 1000
+        assert series_counts[-1] == series_counts[-10]  # plateaued, not still growing
+
+        conn = connect(paths.db_file, readonly=True)
+        assert conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0] == 0
+        # (d): the always-selected 'stable' entities' observations are
+        # untouched -- two metrics (rss_bytes, cpu_pct) every one of the 40
+        # ticks, never brushed by reap despite it running every pass.
+        stable = conn.execute(
+            "SELECT s.entity_id, COUNT(*) AS c FROM series s "
+            "JOIN samples sm ON sm.series_id = s.id "
+            "WHERE s.monitor = 'leak' AND s.entity_id LIKE 'stable%' "
+            "GROUP BY s.entity_id"
+        ).fetchall()
+        assert len(stable) == 10
+        assert all(row["c"] == 80 for row in stable)  # 2 metrics * 40 ticks
+
+        # (e): the *row-level* headroom claim -- reaped catalog rows stay
+        # reaped, not just capped -- is (a)/(c)/the series-count assertions
+        # above; entity_counts[-1] < peak * 0.9 alone is a genuine ~250-row
+        # drop, not noise. used_bytes is checked only as a weaker "does not
+        # grow unbounded" guard on top of that: this fixture's backlog is
+        # almost entirely bare entities rows (SA-05 top-N means most churned
+        # identities never get a series/sample at all), so at page
+        # granularity (4 KiB) incremental_vacuum's reclaim from a few
+        # thousand such rows is a handful of pages -- real but too small a
+        # fraction of a ~1 MB test database to assert a specific percentage
+        # drop without being flaky. A budget-pressure scenario large enough
+        # to move used_bytes by a measurable margin is DM-05 territory, not
+        # this test's job.
+        peak_idx = entity_counts.index(peak)
+        post_peak = used_bytes[peak_idx:]
+        assert max(post_peak) <= used_bytes[peak_idx] * 1.05  # no unbounded growth
+
+
+class TestReapCacheInvalidation:
+    def test_reap_evicts_caches_so_returning_identity_gets_fresh_state(self, core_env):  # noqa: F811
+        """[MD-09] Reap runs on retention's own connection/transaction, so
+        nothing else notices its deletes unless told. Two long-lived
+        in-process caches would otherwise go stale when a reaped identity's
+        entity_id is later reused by a new, unrelated observation of "the
+        same" name: TickWriter._series_cache (one instance per daemon
+        lifetime) would keep handing out a series id the `series` table no
+        longer has a row for, producing orphan samples; BaselineLookup's
+        cache would keep answering with a baseline learned by the entity
+        that no longer exists. daemon.py's _run_retention must evict both
+        whenever entities_reaped > 0 -- not only when baselines_updated > 0,
+        since reap can delete a mature baseline row without recomputing one
+        in the same pass."""
+        paths = core_env
+        eid = "e1:1:1"
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock, platform="linux")
+        sampler = ScriptedSampler()
+        sampler.push((eid, {"name": "e1"}, {"rss_bytes": 1e6, "cpu_pct": 1.0}))
+        for _ in range(6):
+            sampler.push()  # absent long enough to cross gone_grace_s (300s)
+        sampler.push((eid, {"name": "e1"}, {"rss_bytes": 2e6, "cpu_pct": 1.0}))
+        core.samplers["process"] = sampler
+        # Shrink retention windows to seconds so this identity's samples/
+        # rollups age out within the test's ~10 simulated minutes instead of
+        # DM-04's real 48h/30d/90d windows -- same technique the churn
+        # integration test above uses for _reap_scan.
+        core.retention._raw_keep = 1
+        core.retention._r5m_keep = 1
+        core.retention._r1h_keep_durable = 1
+        core.retention._r1h_keep_process = 1
+
+        core.on_tick(clock.now(), clock.monotonic(), 0.0)  # tick 0: e1 present
+        clock.advance(60.0)
+
+        original_series_id = core.conn.execute(
+            "SELECT id FROM series WHERE monitor='leak' AND entity_id=? AND metric='rss_bytes'",
+            (eid,),
+        ).fetchone()["id"]
+        # Seed a mature baseline directly (bypassing the real ~24h/240-update
+        # ramp) so BaselineLookup has a concrete cached value to later lose.
+        core.conn.execute(
+            "INSERT INTO baselines(series_id, value, updates, updated_bucket, half_life_s) "
+            "VALUES (?, 500000.0, 300, 0, 259200)",
+            (original_series_id,),
+        )
+        core.conn.commit()
+        assert core.baselines("leak", eid, "rss_bytes") == 500000.0  # now cached
+
+        reaped = False
+        for _ in range(6):  # ticks 1-6: absent -> gone_ts set + reaped same pass
+            core.on_tick(clock.now(), clock.monotonic(), 0.0)
+            clock.advance(60.0)
+            if core.retention.entities_reaped:
+                reaped = True
+        assert reaped, "setup never reached reap -- this test would be vacuous"
+        assert core.conn.execute(
+            "SELECT COUNT(*) FROM series WHERE id = ?", (original_series_id,)
+        ).fetchone()[0] == 0
+
+        # The stale answer is the bug under test: without eviction this
+        # would still return 500000.0 even though the row backing it is gone.
+        assert core.baselines("leak", eid, "rss_bytes") is None
+
+        core.on_tick(clock.now(), clock.monotonic(), 0.0)  # tick 7: e1 reappears
+        clock.advance(60.0)
+        core.on_tick(clock.now(), clock.monotonic(), 0.0)  # settle
+
+        new_series_id = core.conn.execute(
+            "SELECT id FROM series WHERE monitor='leak' AND entity_id=? AND metric='rss_bytes'",
+            (eid,),
+        ).fetchone()["id"]
+        assert new_series_id != original_series_id, (
+            "writer handed out a stale cached series id for a returning identity"
+        )
+        report = doctor_inspect(core.conn, now=clock.now())
+        assert report["orphans"]["samples"] == 0

@@ -810,6 +810,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
           f"log={report['checkpoint'][1]} checkpointed={report['checkpoint'][2]}")
     print(f"Database: {report['db_bytes'] / 2**20:.1f} MB")
     print("Tables: " + ", ".join(f"{k}={v}" for k, v in report["tables"].items()))
+    dm16 = report["dm16"]
+    print(
+        "Catalog (active/total, DM-16 worksheet "
+        f"≤{dm16['max_entities_active']}/~{dm16['max_series_active']}): "
+        f"entities={dm16['entities_active']}/{report['tables']['entities']} "
+        f"series={dm16['series_active']}/{report['tables']['series']}"
+    )
+    if report["last_reap_ts"] is None:
+        print("Reap: last ran never")
+    else:
+        print(
+            f"Reap: last ran {report['last_reap_age_s']:.0f}s ago, "
+            f"{report['last_reap_count']} removed"
+        )
     print("Orphans: " + ", ".join(f"{k}={v}" for k, v in report["orphans"].items()))
     for cursor in report["cursors"]:
         print(f"Cursor {cursor['source']}: {cursor['age_s']:.0f}s old")
