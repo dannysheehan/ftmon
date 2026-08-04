@@ -1,6 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.41** — v0.41 improves MCP authoring discoverability
+Status: **DRAFT v0.42** — v0.42 exposes the dashboard's bounded primary
+readouts through MCP `get_status` (`glances`, ≤64, deterministic truncation
+metadata), unifies the daemon-staleness boundary shared by the web UI and MCP,
+and gives `get_status` the dashboard's external-check load authority so an
+unavailable alias reads as a configuration error (MC-01, UI-14/17/18, MD-12,
+CA-07, issue #64). v0.41 improves MCP authoring discoverability
 (definition traps and CI-validated recipes, attribute-only `filter_expr`
 guidance, ftmon-json exit-0 steering) and clarifies that Nagios exit evidence
 (EC-06) must not be confused with the ftmon-json exit-0 contract (EC-10,
@@ -888,6 +893,8 @@ message = "Disk {entity} at {used_pct:.0f}% used"
   units, aggregation and threshold meaning are definition metadata; the loader
   and presentation layer MUST NOT infer them from rules, metric names,
   parameter names or trend profiles. Event monitors cannot declare a glance.
+  `aggregate` stays `max|min` in TOML: UI-18's fixed ingest readout is reported
+  with the response-level label `last`, which no definition may declare.
 - **MD-13** A `source = "events"` monitor's `[source_options]` MAY declare
   `channels` (§5.3 DM-19): an array of `{path, query}` tables, `path` required
   and unique within the array (≤16 entries, ≤256 chars), `query` optional
@@ -999,7 +1006,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 
 | Tool | Signature (abridged) | Behavior |
 |---|---|---|
-| `get_status` | () | daemon liveness, last cycle, monitor list w/ state, open incident counts, budget self-metrics |
+| `get_status` | () | daemon liveness, last cycle, monitor list w/ state, open incident counts, budget self-metrics; additive `glances[]` of dashboard primary readouts (`monitor`, `entity_id`, `metric`, `value`, `unit`, `aggregate`, `thresholds[{label,value}]`) for UI-14 trustworthy states only, bounded to ≤64 with always-present truncation metadata (`glances_returned`/`glances_matched`/`glances_truncated`, `limits.max_glances`) |
 | `query_metrics` | (monitor, metric, entity?, range, agg?, filter_expr?) | series data, resolution auto-chosen (DM-06); bounded to ≤50 entities and ≤10 000 total points with truncation metadata; empty `series` includes `empty_reason` (`unknown_metric` \| `no_data_in_range` \| `filtered_out`) and `available_metrics` (declared ∪ persisted); `filter_expr` uses §8.2 language over entity attrs |
 | `top_consumers` | (resource: cpu\|rss\|io, range, n=10) | ranked entities with aggregates over range |
 | `get_process_history` | (name_or_pid, range) | metrics + lifecycle (starts/stops/gone) for matching process entities |
@@ -1014,7 +1021,7 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 | `define_monitor` ✎ | (toml_text) | validate → write to `drafts/` (PM-06) → return draft path plus structured `next_steps` (CLI approve command and web UI) |
 | `ack_incident` ✎ | (id, note?) | sets acked with `by = "mcp"`, note into history |
 
-- **MC-01** The tool list above is the complete v1 tool surface; names and required parameters are frozen by this spec (exact JSON schemas in the design doc). Every tool answers within 2 s on a DM-05-sized database. `query_metrics` MUST use an observed-first, work-bounded read (list entities with in-range observations, then fetch points only for returned entities after a capped-count preflight) so high entity cardinality cannot force full point materialization for discarded series.
+- **MC-01** The tool list above is the complete v1 tool surface; names and required parameters are frozen by this spec (exact JSON schemas in the design doc). Every tool answers within 2 s on a DM-05-sized database. `query_metrics` MUST use an observed-first, work-bounded read (list entities with in-range observations, then fetch points only for returned entities after a capped-count preflight) so high entity cardinality cannot force full point materialization for discarded series. `get_status` additionally returns `glances`: the UI-17/UI-18 readouts of monitors whose UI-14 state permits one, each record identifying monitor, winning entity, metric, raw value, declared unit, aggregate and ordered labelled thresholds with raw values. It is bounded at 64 records ordered by monitor name ascending, and `glances_returned`, `glances_matched`, `glances_truncated` and `limits.max_glances` are present on every response including empty ones. `get_status` MUST load definitions with the same action and check-registry authority as the dashboard, so a monitor whose external alias is unavailable is reported as `config_error` rather than as a loaded monitor.
 - **MC-02** Range parameters accept `"90m"`-style durations or ISO-8601 pairs; all responses carry UTC timestamps plus the host's IANA timezone name once per response for the model to localize.
 - **MC-03** `define_monitor` MUST refuse (not silently overwrite) a name that already exists as enabled/disabled; drafts may be overwritten (iterating on a draft is the normal flow).
 - **MC-04** Error responses are structured (`code`, `message`, `hint`) — a less capable model must be able to self-correct from validation errors (MD-01's quality bar applies).
@@ -1038,7 +1045,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **UI-01** `ftmon web` serves on 127.0.0.1:8420: no external network assets whatsoever (all JS/CSS/fonts vendored; must work fully offline), no auth (NG-05).
 - **UI-02** v1 pages: **Dashboard** (per-monitor status tiles, open incidents, daemon health/budget strip, sparklines); **Incidents** (filter, detail view = `explain_incident` rendered, ack button); **Metrics explorer** (pick monitor/entity/metric/range → chart; shareable URL state); **Baselines** (read-only, paginated learned levels and coverage linking into Metrics); **Events** (filterable browser); **Monitors** (definitions rendered with docs, enable/disable toggle, drafts with rich validation view and **Approve** button); **Self** (daemon log tail, self-metrics, DB size, config errors).
 - **UI-03** Write operations are exactly: ack incident, enable/disable monitor, approve/delete draft. Each is a POST hitting the same code paths as the CLI equivalents (incl. PM-06).
-- **UI-04** Data freshness uses full-page polling without SSE: dashboard, incident and Events views reload every 5 s; Monitors and Self reload every 15 s. Metrics, Trends and Baselines do not auto-refresh in v1. A stale daemon (last cycle > 3× base interval) shows an unmistakable banner.
+- **UI-04** Data freshness uses full-page polling without SSE: dashboard, incident and Events views reload every 5 s; Monitors and Self reload every 15 s. Metrics, Trends and Baselines do not auto-refresh in v1. A stale daemon (last cycle > 3× base interval) shows an unmistakable banner. That boundary is one shared predicate: the daemon is stale when the last-tick age is unknown or strictly greater than 15 s, and alive at exactly 15 s. Every read consumer (web UI, MCP) MUST use it rather than deriving its own comparison.
 - **UI-05** Charts must remain legible with 400 d hourly data (downsampled server-side to ≤ 2 000 points per series per request).
 - **UI-06** Server-side rendering with minimal vendored JS (htmx-style partials + one small chart library — chosen in the design doc for size, accessibility, and long-range rendering) is the required *style*: no SPA framework, no frontend build step beyond file copying.
 - **UI-07** The web server process is optional at runtime: nothing else may depend on it.
@@ -1073,12 +1080,18 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   timestamp then entity ID. It omits the readout for stale dashboard state, unknown, disabled
   or configuration-error tiles, and when no active sample is newer than twice
   the monitor interval. Retained rollups and disappeared entities MUST NOT be
-  used as current evidence.
+  used as current evidence. Selection — liveness, UI-14 precedence, active
+  filtering, exemptions, aggregate choice and omission — is one shared read-side
+  path that also serves MCP `get_status` (MC-01), and it yields raw values,
+  units and threshold values; display formatting belongs to each consumer and
+  MUST NOT replace them.
 - **UI-18** A healthy Events dashboard tile MUST show the latest fresh
   `event_rate_per_min` self metric as `ingest … events/min`. This operational
   readout does not define thresholds and MUST NOT alter UI-14 health state; it
   follows the same stale, unknown, disabled, and configuration-error omission
-  rules as other glance values.
+  rules as other glance values. Where it is reported structurally it carries
+  entity `ingest`, metric `event_rate_per_min`, unit `events/min`, aggregate
+  `last` and no thresholds.
 
 ## 13. Resource budget (self-enforced)
 
@@ -1345,6 +1358,27 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.42 (2026-08-04)** — MCP `get_status` exposes the dashboard's primary
+readouts as `glances` (issue #64): one shared read-side module now owns
+liveness, UI-14 precedence, UI-17 active/exemption/aggregate selection and
+UI-18's fixed ingest readout, so web and MCP cannot drift. Records are
+raw-first (value, unit and threshold values as stored; formatting stays with
+each consumer), bounded at 64 ordered by monitor name, and the truncation
+metadata (`glances_returned`, `glances_matched`, `glances_truncated`,
+`limits.max_glances`) is present on every response — there was no real
+"≤30 tiles" invariant to lean on. UI-04's staleness boundary is now one
+predicate (unknown age or age > 15 s is stale; exactly 15 s is alive); MCP
+previously treated 15 s as stale and an unknown age as neither alive nor stale.
+MD-12's TOML `aggregate` is unchanged at `max|min` — `last` exists only as the
+response label for UI-18. One semantic change to an existing field:
+`get_status` now loads with the dashboard's check-registry authority, so an
+external monitor whose alias is missing or whose registry is invalid moves out
+of `monitors[]` as a loaded entry and appears as `state = "config_error"`,
+matching the web UI (issue #64 requires web/MCP parity). That is distinct from
+daemon reload behavior: a malformed replacement registry leaves the last valid
+registry active (EC-06). No new MCP tools or resources (MC-05 remains three);
+`get_status` parameters remain frozen and empty.
 
 **v0.41 (2026-08-03)** — MCP authoring discoverability (issue #62): DO-01
 gains authoring traps, CI-validated marked cookbook recipes, and attribute-only
