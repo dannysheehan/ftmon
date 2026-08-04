@@ -40,7 +40,12 @@ def inspect(conn: sqlite3.Connection, *, now: float, deep: bool = False) -> dict
     cursors = [{"source": row["source"], "age_s": max(0, now-row["updated_ts"])}
                for row in conn.execute("SELECT source,updated_ts FROM cursors ORDER BY source")]
     page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+    freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    db_bytes = page_count * page_size
+    freelist_bytes = freelist_count * page_size
+    used_bytes = db_bytes - freelist_bytes
+    freelist_fragment_pct = freelist_count / page_count if page_count else 0.0
     # DM-16's ~270/≤400 figures describe *active* catalog pressure, not a cap
     # on total retained rows (which legitimately grow under process churn even
     # with the MD-09 reap running); report the two counts separately (CL-05,
@@ -65,20 +70,33 @@ def inspect(conn: sqlite3.Connection, *, now: float, deep: bool = False) -> dict
         "series_active": series_active,
     }
     meta_rows = dict(conn.execute(
-        "SELECT key, value FROM meta WHERE key IN ('last_reap_ts', 'last_reap_count')"
+        "SELECT key, value FROM meta WHERE key IN "
+        "('last_reap_ts', 'last_reap_count', 'last_degradation_ts')"
     ).fetchall())
     last_reap_ts = float(meta_rows["last_reap_ts"]) if "last_reap_ts" in meta_rows else None
     last_reap_count = (
         int(meta_rows["last_reap_count"]) if "last_reap_count" in meta_rows else None
     )
     last_reap_age_s = max(0, now - last_reap_ts) if last_reap_ts is not None else None
+    last_degradation_ts = (
+        float(meta_rows["last_degradation_ts"])
+        if "last_degradation_ts" in meta_rows else None
+    )
+    last_degradation_age_s = (
+        max(0, now - last_degradation_ts) if last_degradation_ts is not None else None
+    )
     return {"check": check, "integrity": integrity, "checkpoint": checkpoint,
-            "db_bytes": page_count * page_size, "tables": row_counts,
+            "db_bytes": db_bytes, "used_bytes": used_bytes,
+            "freelist_pages": freelist_count, "freelist_bytes": freelist_bytes,
+            "freelist_fragment_pct": freelist_fragment_pct,
+            "tables": row_counts,
             "orphans": orphans, "cursors": cursors,
             "entities_alive": entities_alive, "series_active": series_active,
             "dm16": dm16,
             "last_reap_ts": last_reap_ts, "last_reap_count": last_reap_count,
             "last_reap_age_s": last_reap_age_s,
+            "last_degradation_ts": last_degradation_ts,
+            "last_degradation_age_s": last_degradation_age_s,
             "ok": integrity == ["ok"] and not any(orphans.values())}
 
 

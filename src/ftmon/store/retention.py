@@ -460,6 +460,10 @@ class Retention:
             deleted = self._delete_batch(cur, sql, params)
             if deleted:
                 notes.append(f"db over budget: pruned {deleted} rows ({label})")
+                # CL-05 exposes the last real data-dropping degradation. Set
+                # this when the note is created: the next loop iteration may
+                # return early once this batch has restored the budget.
+                self._set_meta(cur, "last_degradation_ts", int(now))
         return notes
 
 

@@ -204,7 +204,9 @@ FTMON keeps raw minute-level history for 48 h, 5-minute summaries for a
 month, and hourly summaries for about a year, pruning automatically to stay
 inside the 200 MB budget. Incident history is never pruned. Dead process
 entries in the catalog are pruned automatically once the process is gone
-and its history has aged out.
+and its history has aged out. Freed database pages are reusable immediately;
+FTMON reclaims them toward the filesystem progressively in small incremental
+vacuum batches so compaction never introduces a long monitoring pause.
 
 **Journal events** (the `events` monitor) watch the systemd journal live.
 Not everything is stored — only entries at notice level and above, or ones
@@ -518,4 +520,12 @@ Never copy the live `ftmon.db` file directly: SQLite may have committed data
 in its WAL file. `ftmon doctor --backup PATH` uses SQLite's snapshot API and
 checks the resulting backup before reporting success. Doctor also reports
 active and total entity/series catalog counts to track capacity pressure,
-and when automatic cleanup last ran and how many rows it removed.
+when automatic cleanup last ran and how many rows it removed, file allocation
+versus used bytes, reusable freelist space, and the most recent lossy budget
+degradation. The database file can remain larger than its used bytes while
+bounded incremental vacuum catches up; that free space remains available to
+new observations, so a healthy database may stay near 200 MB as it replaces
+dead catalog overhead with useful retained history. `ftmon doctor` only
+reports this state; it does not trigger retention, catalog reaping, or
+compaction. Never run direct SQL or full `VACUUM` against the live daemon
+database.
