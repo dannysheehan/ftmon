@@ -758,6 +758,23 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _daemon_holds_lock(paths) -> bool:
+    """Is a daemon actually running? (PM-02 lock, not a timestamp.)
+
+    Doctor's PM-12 predicates describe a daemon that should be delivering, so
+    they must not fire against a deliberately stopped one. The lock answers
+    that independently of whichever clock wrote `last_tick_ts` (TS-03).
+    """
+    from ftmon.paths import try_lock_exclusive
+
+    try:
+        # "r+" for the same msvcrt reason as _monitor_rescan.
+        with open(paths.lock_file, "r+") as f:
+            return not try_lock_exclusive(f)
+    except OSError:
+        return False
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Inspect database/config health and optionally create a live backup (CL-05)."""
     from ftmon.clock import SystemClock
@@ -797,7 +814,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     config_errors.extend(f"{path}: {error}" for path, error in definition_errors)
     conn = connect(paths.db_file)
     try:
-        report = inspect(conn, now=SystemClock().now(), deep=args.deep)
+        report = inspect(
+            conn, now=SystemClock().now(), deep=args.deep, quiet=config.quiet,
+            daemon_live=_daemon_holds_lock(paths),
+        )
         if args.backup:
             backup(conn, Path(args.backup))
     except Exception as exc:
@@ -840,6 +860,30 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for cursor in report["cursors"]:
         print(f"Cursor {cursor['source']}: {cursor['age_s']:.0f}s old")
     print("Notification file: ready")
+    dispatch = report["dispatch"]
+    heartbeat = (
+        "never" if dispatch["heartbeat_age_s"] is None
+        else f"{dispatch['heartbeat_age_s']:.0f}s ago"
+    )
+    print(
+        f"Notification dispatcher: state={dispatch['state']} "
+        f"mode={dispatch['mode']} heartbeat={heartbeat}"
+        + (f" last_error={dispatch['last_error_category']}"
+           if dispatch["last_error_category"] else "")
+    )
+    # All four printed always: a reader who sees only a pending count during
+    # quiet hours cannot tell held debt from a stuck outbox (NO-10).
+    print(
+        f"Notification backlog: pending={dispatch['pending_total']} "
+        f"due_claimable={dispatch['due_claimable']} "
+        f"quiet_held={dispatch['quiet_held']} failed={dispatch['failed']} "
+        f"oldest_claimable={dispatch['oldest_claimable_due_age_s']:.0f}s"
+    )
+    if dispatch["failed_by_channel"]:
+        print("Notification failures: " + ", ".join(
+            f"{channel}={count}"
+            for channel, count in dispatch["failed_by_channel"].items()
+        ))
     print(f"External checks: {registry_status}")
     for name, channel in config.channels:
         # A stable code is useful to automation; resolver prose remains only a
@@ -855,6 +899,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             if notifier is None or not notifier.available:
                 status = "error (desktop_unavailable)"
         print(f"Notification {name}: {status}")
+    for problem in dispatch["problems"]:
+        print(f"Delivery problem: {problem}", file=sys.stderr)
     for error in config_errors:
         print(f"Config error: {error}", file=sys.stderr)
     if args.backup:

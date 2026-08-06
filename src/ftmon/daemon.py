@@ -48,7 +48,9 @@ from ftmon.sources.process import ProcessSampler
 from ftmon.sources.system import SystemSampler
 from ftmon.sources.unit import UnitSampler
 from ftmon.store import db as store_db
+from ftmon.store.db import is_locked_error
 from ftmon.store.outbox import DispatchWorker, Outbox
+from ftmon.store.outbox import backlog as outbox_backlog
 from ftmon.store.retention import BaselineLookup, Retention
 from ftmon.store.writer import TickWriter
 
@@ -117,6 +119,8 @@ class DaemonCore:
         self.platform = self.platform or current_platform()
         self.stats = SelfStats()
         self._delivery_failures: SimpleQueue[tuple[str, str, float]] = SimpleQueue()
+        # (category, fatal, ts) — the worker thread cannot touch the writer.
+        self._dispatch_faults: SimpleQueue[tuple[str, bool, float]] = SimpleQueue()
         self._reload_global_config = self.config is None
         if self._reload_global_config:
             self.config, config_warnings = load_config(self.paths.config_file)
@@ -194,13 +198,25 @@ class DaemonCore:
         if self.events_engine is not None and self.event_monitors:
             self._start_events()
         self.dispatch_worker: DispatchWorker | None = None
+        # PM-12: doctor reads only the database, so it cannot otherwise tell a
+        # controlled-clock run that has no worker by design from a worker that
+        # died. Recorded before the worker starts so the answer exists even if
+        # the worker never gets a connection.
+        self.writer.set_meta(
+            "notify_dispatch_mode",
+            "background" if self.background_dispatch else "synchronous",
+        )
         if self.background_dispatch:
             # Network adapters run only on this worker connection; sampling
-            # never waits for their ten-second timeout (DESIGN 10.7).
-            self.outbox.reset_inflight()
+            # never waits for their ten-second timeout (DESIGN 10.7). The
+            # worker owns reset_inflight too: doing it here first meant a lock
+            # on the main connection aborted startup before any recovery path
+            # existed (PM-12, issue #98).
             self.dispatch_worker = DispatchWorker(
                 self.paths.db_file, notifiers, self.clock.now,
                 quiet=self.config.quiet, on_terminal=self._record_delivery_failure,
+                on_store_error=self._record_dispatch_recovery,
+                on_fatal=self._record_dispatch_fatal,
             )
             self.dispatch_worker.start()
         else:
@@ -682,6 +698,20 @@ class DaemonCore:
                 event_id=None, severity=2,
                 message=f"notification channel {channel} failed: {reason}",
             ))
+        while not self._dispatch_faults.empty():
+            category, fatal, ts = self._dispatch_faults.get()
+            self.stats.count("notify_store_errors")
+            # The category is a closed vocabulary, so this event can never
+            # carry a path or credential out of an exception message (SE-04).
+            self.writer.add_event(EventRecord(
+                ts=ts, ingest_ts=ts, source="self", provider="ftmon.notify",
+                event_id=None, severity=3 if fatal else 2,
+                message=(
+                    f"notification dispatcher stopped: {category}" if fatal
+                    else f"notification dispatcher recovering: {category}"
+                ),
+            ))
+        self._sample_outbox_backlog(wall)
         self.stats.ring_mem_bytes = self.rings.mem_bytes()
         self.rings.evict_if_over(self._is_protected, self.stats.count)
         self.writer.set_meta("last_tick_ts", repr(wall))
@@ -689,7 +719,7 @@ class DaemonCore:
             self.writer.commit_tick()
         except sqlite3.OperationalError as exc:
             # PM-10: busy_timeout exceeded — drop this tick, stay alive.
-            if "locked" not in str(exc).lower():
+            if not is_locked_error(exc):
                 raise
             self.stats.count("sqlite_lock_errors")
             # Buffered for the next successful commit (same pattern as
@@ -749,6 +779,48 @@ class DaemonCore:
     def _record_delivery_failure(self, channel: str, reason: str) -> None:
         """NO-07: expose terminal delivery failure without recursive notify."""
         self._delivery_failures.put((channel, reason, self.clock.now()))
+
+    def _sample_outbox_backlog(self, wall: float) -> None:
+        """Fold delivery debt into the self source (NO-10).
+
+        Read on the daemon's own connection rather than giving SelfSampler a
+        second one: these are the same rows the tick is already free to read,
+        and an extra connection would only add contention. A read failure is
+        never worth dropping a tick over — the gauges simply keep their last
+        values, and the dispatcher's own state still tells doctor the truth.
+        """
+        try:
+            counts = outbox_backlog(self.conn, wall, self.config.quiet)
+        except sqlite3.Error:
+            return
+        self.stats.notify_pending_total = int(counts["pending_total"])
+        self.stats.notify_due_claimable = int(counts["due_claimable"])
+        self.stats.notify_quiet_held = int(counts["quiet_held"])
+        self.stats.notify_failed = int(counts["failed"])
+        self.stats.notify_oldest_claimable_due_age_s = float(
+            counts["oldest_claimable_due_age_s"]
+        )
+        worker = self.dispatch_worker
+        self.stats.notify_worker_alive = (
+            1.0 if worker is None or worker.alive() else 0.0
+        )
+
+    def _record_dispatch_recovery(self, category: str) -> None:
+        """PM-12: the dispatcher hit a store fault and is reconnecting."""
+        self._dispatch_faults.put((category, False, self.clock.now()))
+
+    def _record_dispatch_fatal(self, category: str) -> None:
+        """PM-12: the dispatcher stopped for good; nothing will deliver now.
+
+        Also goes to the daemon log, because doctor and `/self` only help
+        someone who is already looking — and issue #98's whole complaint was
+        that nobody was.
+        """
+        self._dispatch_faults.put((category, True, self.clock.now()))
+        _daemon_message(
+            f"notification dispatcher stopped: {category}; deliveries will not "
+            "drain until the daemon restarts (see `ftmon doctor`)"
+        )
 
     def _step_incidents(self, outcomes: list[EvalOutcome], wall: float) -> None:
         grouped: dict[IncidentKey, dict[str, inc.RungEval]] = {}

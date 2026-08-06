@@ -23,6 +23,104 @@ _BODY_MAX = 200
 _ERROR_MAX = 512
 _REMOTE_LIFETIME = 86_400
 _RETRY_DELAYS = (30, 120, 600, 3_600, 21_600)
+_BACKOFF_START_S = 0.5
+_BACKOFF_MAX_S = 5.0
+_HEARTBEAT_EVERY_S = 30.0
+_MAX_DISCONNECT_RETRIES = 5
+
+#: Dispatcher states published to ``meta`` for `ftmon doctor` (PM-12). A
+#: worker that has not yet opened its connection publishes nothing at all,
+#: which doctor reads as unknown — indistinguishable from, and as broken as,
+#: a worker still blocked on a startup lock.
+DISPATCH_STATES = ("running", "recovering", "stopped", "dead")
+
+
+class _Fatal(Exception):
+    """Carries an already-decided category out of the connect path."""
+
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
+
+def _classify(exc: BaseException) -> tuple[str, bool]:
+    """Map a store fault to a fixed category and whether retrying can help.
+
+    The category is a closed vocabulary rather than exception text because it
+    reaches SQLite and the daemon log, where a message could carry a path or
+    receiver-controlled content (SE-04). Retryable means "a different
+    connection or a later moment plausibly succeeds" — contention and a
+    severed handle. Corruption, a broken migration, and a failing device are
+    not improved by waiting, so they end the thread visibly instead.
+    """
+    from ftmon.store.db import is_disconnected_error, is_locked_error
+
+    if isinstance(exc, _Fatal):
+        return exc.category, False
+    if is_locked_error(exc):
+        return "store_locked", True
+    if is_disconnected_error(exc):
+        return "store_disconnect", True
+    if isinstance(exc, sqlite3.OperationalError):
+        return "store_io", False
+    if isinstance(exc, sqlite3.DatabaseError):
+        return "store_corrupt", False
+    return "store_bug", False
+
+
+def backlog(
+    conn: sqlite3.Connection, now: float, quiet: QuietHours | None = None
+) -> dict[str, object]:
+    """Quiet-aware view of durable delivery debt (NO-10), for doctor and self.
+
+    Splitting `quiet_held` out of the pending total is what stops an overnight
+    quiet window from reading as a stuck outbox: those rows are real debt but
+    are deliberately unclaimable until `_materialize_digest` replaces them, so
+    folding them into "overdue" would fire a nightly false alarm. The oldest
+    age is likewise measured over claimable rows only — it answers "is anything
+    draining?", which is the question a dead dispatcher makes urgent.
+    """
+    pending = conn.execute(
+        "SELECT d.next_attempt_ts AS due_ts, n.created_ts, n.severity "
+        "FROM notification_deliveries d JOIN notifications n ON n.id=d.notification_id "
+        "WHERE d.state='pending'"
+    ).fetchall()
+    def is_held(row: sqlite3.Row) -> bool:
+        return (
+            quiet is not None and int(row["severity"]) <= _QUIET_MAX_SEV
+            and quiet.active(float(row["created_ts"]))
+        )
+
+    held = [row for row in pending if is_held(row)]
+    due = [
+        row for row in pending
+        if not is_held(row) and row["due_ts"] is not None and float(row["due_ts"]) <= now
+    ]
+    oldest = max((now - float(row["due_ts"]) for row in due), default=0.0)
+    failed_by_channel = {
+        str(row["channel"]): int(row["n"]) for row in conn.execute(
+            "SELECT channel, COUNT(*) AS n FROM notification_deliveries "
+            "WHERE state='failed' GROUP BY channel ORDER BY channel"
+        )
+    }
+    return {
+        "pending_total": len(pending),
+        "due_claimable": len(due),
+        "quiet_held": len(held),
+        "failed": sum(failed_by_channel.values()),
+        "failed_by_channel": failed_by_channel,
+        "oldest_claimable_due_age_s": max(0.0, oldest),
+    }
+
+
+def _close_quietly(conn: sqlite3.Connection | None) -> None:
+    """Close a connection that may already be broken; always returns None."""
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001,S110 — the fault we are recovering from
+            pass
+    return None
 
 
 class Outbox:
@@ -282,24 +380,40 @@ class Outbox:
 
 
 class DispatchWorker:
-    """One background dispatcher with a lost-wakeup-safe one-second poll."""
+    """One background dispatcher with a lost-wakeup-safe one-second poll.
+
+    PM-12: a store fault here must not kill the only delivery path.  Python
+    never surfaces a thread's exception to the daemon loop, so an escaping
+    ``OperationalError`` used to leave sampling healthy, ``wake()`` addressing a
+    dead thread, and committed deliveries pending forever (issue #98).  Every
+    store access therefore sits inside one recovery boundary, and liveness is
+    published to ``meta`` because thread death is otherwise unobservable.
+    """
 
     def __init__(
         self, db_file, notifiers: Sequence[Notifier], clock: Callable[[], float],
         quiet: QuietHours | None = None,
         on_terminal: Callable[[str, str], None] | None = None,
+        on_store_error: Callable[[str], None] | None = None,
+        on_fatal: Callable[[str], None] | None = None,
     ) -> None:
         self._db_file = db_file
         self._notifiers = tuple(notifiers)
         self._clock = clock
         self._quiet = quiet
         self._on_terminal = on_terminal
+        self._on_store_error = on_store_error or (lambda _category: None)
+        self._on_fatal = on_fatal or (lambda _category: None)
         self._wake = threading.Condition()
         self._stop = False
+        self._last_heartbeat = 0.0
         self._thread = threading.Thread(target=self._run, name="ftmon-notify", daemon=True)
 
     def start(self) -> None:
         self._thread.start()
+
+    def alive(self) -> bool:
+        return self._thread.is_alive()
 
     def wake(self) -> None:
         with self._wake:
@@ -327,24 +441,144 @@ class DispatchWorker:
         self._thread.join(timeout=11)
 
     def _run(self) -> None:
+        conn: sqlite3.Connection | None = None
+        backoff = _BACKOFF_START_S
+        disconnects = 0
+        try:
+            while True:
+                try:
+                    if conn is None:
+                        conn = self._open()
+                        self._publish(conn, "running", force=True)
+                        backoff, disconnects = _BACKOFF_START_S, 0
+                    if not self._drain(conn):
+                        self._publish(conn, "stopped", force=True)
+                        return
+                except Exception as exc:  # noqa: BLE001 — classified below
+                    category, retryable = _classify(exc)
+                    if category == "store_disconnect":
+                        disconnects += 1
+                        # A connection we ourselves closed reads exactly like
+                        # one the OS invalidated. Retrying that forever would
+                        # hide a bug in this loop, so give up after a few.
+                        retryable = disconnects <= _MAX_DISCONNECT_RETRIES
+                    conn = _close_quietly(conn)
+                    if not retryable:
+                        self._die(category)
+                        return
+                    self._on_store_error(category)
+                    self._report(category, "recovering")
+                    if not self._pause(backoff):
+                        self._report(category, "stopped")
+                        return
+                    backoff = min(backoff * 2, _BACKOFF_MAX_S)
+        finally:
+            _close_quietly(conn)
+
+    def _open(self) -> sqlite3.Connection:
+        """Connect, migrate, and reclaim interrupted claims as one unit.
+
+        Every failure closes the connection before propagating: the pre-#98
+        code ran this outside any ``try``, so a startup lock both killed the
+        thread and leaked its handle until process exit.
+        """
         from ftmon.store.db import connect, migrate
 
         # Connection construction inside the thread gives SQLite one clear
         # owner instead of weakening its same-thread safety check.
         conn = connect(self._db_file)
-        migrate(conn)
-        Outbox(conn, self._notifiers, quiet=self._quiet).reset_inflight()
         try:
-            while True:
-                with self._wake:
-                    notifiers, quiet = self._notifiers, self._quiet
-                dispatcher = Outbox(
-                    conn, notifiers, quiet=quiet, on_terminal=self._on_terminal
-                )
-                dispatcher.flush(self._clock())
-                with self._wake:
-                    if self._stop:
-                        return
-                    self._wake.wait(timeout=1.0)
+            try:
+                migrate(conn)
+            except Exception as exc:
+                if _classify(exc)[1]:
+                    raise
+                raise _Fatal("store_migrate") from exc
+            # PM-12/NO-04: reclaiming `sending` after a fault is the same
+            # bounded duplicate window a restart already documents.
+            Outbox(conn, self._notifiers, quiet=self._quiet).reset_inflight()
+        except BaseException:
+            _close_quietly(conn)
+            raise
+        return conn
+
+    def _drain(self, conn: sqlite3.Connection) -> bool:
+        """Flush due work until stop is requested; False means stop."""
+        while True:
+            with self._wake:
+                if self._stop:
+                    return False
+                notifiers, quiet = self._notifiers, self._quiet
+            dispatcher = Outbox(
+                conn, notifiers, quiet=quiet, on_terminal=self._on_terminal
+            )
+            completed = dispatcher.flush(self._clock())
+            # Forced only when something actually happened: an unconditional
+            # write here would put a 1 Hz writer against the tick's
+            # BEGIN IMMEDIATE and manufacture the PM-10 contention this
+            # class exists to survive (DESIGN 10.7).
+            self._publish(conn, "running", force=completed > 0)
+            with self._wake:
+                if self._stop:
+                    return False
+                self._wake.wait(timeout=1.0)
+
+    def _pause(self, seconds: float) -> bool:
+        """Interruptible backoff; False when stop was requested meanwhile.
+
+        Waiting on the wakeup condition rather than sleeping keeps ``stop()``
+        and ``reconfigure()`` responsive during recovery.
+        """
+        with self._wake:
+            if self._stop:
+                return False
+            self._wake.wait(timeout=seconds)
+            return not self._stop
+
+    def _die(self, category: str) -> None:
+        """Publish a durable dead state, then let the thread end.
+
+        Retrying corruption or a failed migration forever would burn a core
+        without ever delivering; the honest outcome is to stop and be visibly
+        broken to `ftmon doctor` (PM-12).
+        """
+        self._report(category, "dead")
+        self._on_fatal(category)
+
+    def _report(self, category: str, state: str) -> None:
+        """Record dispatcher state on a connection opened just for this.
+
+        The working connection is gone by now — that is why we are here — and
+        a diagnostic write must not become a second failure, so every error is
+        swallowed. Losing the record degrades to doctor's missing-state
+        predicate, which already fails.
+        """
+        from ftmon.store.db import connect
+
+        conn = None
+        try:
+            conn = connect(self._db_file)
+            self._publish(conn, state, category=category, force=True)
+        except Exception:  # noqa: BLE001,S110 — best-effort diagnostics only
+            pass
         finally:
-            conn.close()
+            _close_quietly(conn)
+
+    def _publish(
+        self, conn: sqlite3.Connection, state: str, *,
+        category: str | None = None, force: bool = False,
+    ) -> None:
+        now = self._clock()
+        if not force and now - self._last_heartbeat < _HEARTBEAT_EVERY_S:
+            return
+        rows = [("notify_dispatch_state", state),
+                ("notify_dispatch_heartbeat_ts", repr(now))]
+        if category is not None:
+            rows += [("notify_dispatch_last_error_category", category),
+                     ("notify_dispatch_last_error_ts", repr(now))]
+        conn.executemany(
+            "INSERT INTO meta(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", rows,
+        )
+        conn.commit()
+        self._last_heartbeat = now

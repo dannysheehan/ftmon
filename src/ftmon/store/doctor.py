@@ -7,8 +7,69 @@ from pathlib import Path
 
 from ftmon.paths import set_private_permissions
 
+_DISPATCH_OVERDUE_S = 60.0
 
-def inspect(conn: sqlite3.Connection, *, now: float, deep: bool = False) -> dict:
+
+def _meta_float(meta: dict, key: str) -> float | None:
+    try:
+        return float(meta[key])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def dispatch_health(
+    conn: sqlite3.Connection, *, quiet: object | None = None,
+    daemon_live: bool = False,
+) -> dict:
+    """Judge delivery by what the dispatcher does, not how it is configured.
+
+    Issue #98 stayed silent precisely because doctor equated "channels
+    validate" with "notifications arrive". Ages here are measured against
+    `last_tick_ts`, not the caller's wall clock: both are written by the
+    daemon's injected clock, and under a controlled clock those two number
+    lines are unrelated (TS-03). `daemon_live` comes from the PM-02 lock rather
+    than a timestamp, so the answer holds whatever clock the daemon runs on.
+    """
+    from ftmon.store.outbox import backlog
+
+    meta = dict(conn.execute(
+        "SELECT key, value FROM meta WHERE key LIKE 'notify_dispatch_%' "
+        "OR key = 'last_tick_ts'"
+    ).fetchall())
+    daemon_ts = _meta_float(meta, "last_tick_ts")
+    heartbeat_ts = _meta_float(meta, "notify_dispatch_heartbeat_ts")
+    state = meta.get("notify_dispatch_state", "unknown")
+    mode = meta.get("notify_dispatch_mode", "unknown")
+    counts = backlog(conn, daemon_ts or 0.0, quiet)
+    oldest = float(counts["oldest_claimable_due_age_s"])
+    problems: list[str] = []
+    # A stopped daemon owes exactly the debt it owes, and nothing is draining
+    # it because nothing is running. Failing on that would break the documented
+    # "stop the daemon, then inspect the database" workflow for any non-empty
+    # outbox, so both predicates are gated on a daemon that should be working.
+    if daemon_live and mode == "background":
+        if state == "dead":
+            category = meta.get("notify_dispatch_last_error_category", "unknown")
+            problems.append(f"notification dispatcher dead ({category})")
+        elif state in ("unknown", "stopped"):
+            problems.append(f"notification dispatcher not running (state={state})")
+    if daemon_live and oldest > _DISPATCH_OVERDUE_S:
+        problems.append(f"oldest claimable delivery is {oldest:.0f}s overdue")
+    return {
+        **counts, "state": state, "mode": mode, "daemon_live": daemon_live,
+        "last_error_category": meta.get("notify_dispatch_last_error_category", ""),
+        "heartbeat_age_s": (
+            max(0.0, daemon_ts - heartbeat_ts)
+            if daemon_ts is not None and heartbeat_ts is not None else None
+        ),
+        "problems": problems,
+    }
+
+
+def inspect(
+    conn: sqlite3.Connection, *, now: float, deep: bool = False,
+    quiet: object | None = None, daemon_live: bool = False,
+) -> dict:
     """Run bounded health checks and return a stable, JSON-able report."""
     check = "integrity_check" if deep else "quick_check"
     integrity = [row[0] for row in conn.execute(f"PRAGMA {check}").fetchall()]
@@ -85,7 +146,9 @@ def inspect(conn: sqlite3.Connection, *, now: float, deep: bool = False) -> dict
     last_degradation_age_s = (
         max(0, now - last_degradation_ts) if last_degradation_ts is not None else None
     )
-    return {"check": check, "integrity": integrity, "checkpoint": checkpoint,
+    dispatch = dispatch_health(conn, quiet=quiet, daemon_live=daemon_live)
+    return {"dispatch": dispatch,
+            "check": check, "integrity": integrity, "checkpoint": checkpoint,
             "db_bytes": db_bytes, "used_bytes": used_bytes,
             "freelist_pages": freelist_count, "freelist_bytes": freelist_bytes,
             "freelist_fragment_pct": freelist_fragment_pct,
@@ -97,7 +160,8 @@ def inspect(conn: sqlite3.Connection, *, now: float, deep: bool = False) -> dict
             "last_reap_age_s": last_reap_age_s,
             "last_degradation_ts": last_degradation_ts,
             "last_degradation_age_s": last_degradation_age_s,
-            "ok": integrity == ["ok"] and not any(orphans.values())}
+            "ok": (integrity == ["ok"] and not any(orphans.values())
+                   and not dispatch["problems"])}
 
 
 def backup(conn: sqlite3.Connection, destination: Path) -> None:
