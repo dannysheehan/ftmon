@@ -16,7 +16,7 @@ process sources have few entities and persist everything.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 
 from ftmon.definitions.loader import MonitorDef
@@ -69,6 +69,11 @@ class Pipeline:
         # Gone entities this tick, drained by the daemon so the incident
         # engine can auto-clear (CA-08 -> IN-07).
         self._gone: list[tuple[str, str]] = []
+        # DM-16 pressure, per monitor. Counting what `_persist` actually wrote
+        # is the only honest answer to "how much catalog are we sustaining":
+        # `gone_ts IS NULL` counts every *running* process, because `seen` is
+        # populated for the whole snapshot rather than the selected subset.
+        self._persisted: dict[str, int] = {}
 
     def run_monitor(
         self,
@@ -148,6 +153,16 @@ class Pipeline:
     def promoted(self, monitor: str) -> set[str]:
         return set(self._state.get(monitor, _MonitorState()).promoted)
 
+    def persisted_entities(self, monitors: Iterable[str]) -> int:
+        """Entities currently being written durable history, over `monitors`.
+
+        The caller supplies the loaded set rather than this summing its own
+        dict: a removed definition stops contributing pressure immediately,
+        while a monitor whose interval means it did not run this tick keeps
+        its last count instead of dropping to zero (MD-09, DM-16).
+        """
+        return sum(self._persisted.get(name, 0) for name in monitors)
+
     def _ctx(self, mdef: MonitorDef, entity_id: str, attrs: Mapping, now: float) -> EntityCtx:
         ctx = EntityCtx(
             rings=self._rings,
@@ -173,6 +188,9 @@ class Pipeline:
     ) -> None:
         selected = self._select_persisted(mdef, snap, st, now)
         selected.difference_update(exempt_entities)
+        # Overwrite rather than accumulate: this is a gauge of current pressure,
+        # and a monitor that stops selecting an entity must stop counting it.
+        self._persisted[mdef.name] = len(selected)
         durable = mdef.source in _DURABLE_SOURCES
         for ent in snap.entities:
             if ent.entity_id in exempt_entities:

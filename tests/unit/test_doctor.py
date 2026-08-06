@@ -382,3 +382,94 @@ def test_doctor_reports_failures_per_channel_no_10(tmp_path):
     assert dispatch["failed"] == 2
     assert dispatch["failed_by_channel"] == {"file": 1, "ntfy": 1}
     conn.close()
+
+
+def test_self_source_reports_dm05_used_pages_not_file_allocation_dm_05(tmp_path, monkeypatch):
+    """[DM-05][RB-02] The budget signal measures used pages; file bytes stay separate."""
+    from ftmon.clock import FakeClock
+    from ftmon.daemon import _DB_BUDGET_BYTES, DaemonCore
+    from ftmon.paths import get_paths as _paths
+
+    for name in ("CONFIG", "DATA", "STATE", "RUNTIME"):
+        monkeypatch.setenv(f"FTMON_{name}_DIR", str(tmp_path / name.lower()))
+    paths = _paths()
+    paths.ensure()
+    paths.config_file.write_text("[notify.desktop]\nenabled=false\n")
+    paths.config_file.chmod(0o600)
+    core = DaemonCore(paths=paths, clock=FakeClock(wall=1_000, mono=1_000))
+    try:
+        core._sample_db_pages()
+        stats = core.stats
+        page_size = core.conn.execute("PRAGMA page_size").fetchone()[0]
+        pages = core.conn.execute("PRAGMA page_count").fetchone()[0]
+        free = core.conn.execute("PRAGMA freelist_count").fetchone()[0]
+        assert stats.db_file_bytes == pages * page_size
+        assert stats.db_used_bytes == (pages - free) * page_size
+        assert stats.db_freelist_bytes == free * page_size
+        # Used never exceeds file, and the two differ exactly by the freelist.
+        assert stats.db_used_bytes + stats.db_freelist_bytes == stats.db_file_bytes
+        # Headroom is signed against DM-05's target, not any alarm threshold.
+        assert stats.db_headroom_bytes == _DB_BUDGET_BYTES - stats.db_used_bytes
+        # D1: db_bytes keeps its historical file-allocation meaning.
+        metrics = core.samplers["self"].sample(1_000, 0.0, {}).entities[0].metrics
+        assert metrics["db_bytes"] == metrics["db_file_bytes"]
+        assert metrics["db_bytes"] != metrics["db_used_bytes"] or free == 0
+    finally:
+        core.conn.close()
+
+
+def test_freelist_growth_alone_does_not_consume_budget_dm_05(tmp_path, monkeypatch):
+    """[DM-05] Reusable pages are allocated but cost nothing against the budget.
+
+    This is the defect behind the flapping incident: an alarm on file bytes
+    counts pages that are immediately reusable, so it can fire while the
+    defined budget is healthy.
+    """
+    from ftmon.clock import FakeClock
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths as _paths
+
+    for name in ("CONFIG", "DATA", "STATE", "RUNTIME"):
+        monkeypatch.setenv(f"FTMON_{name}_DIR", str(tmp_path / name.lower()))
+    paths = _paths()
+    paths.ensure()
+    paths.config_file.write_text("[notify.desktop]\nenabled=false\n")
+    paths.config_file.chmod(0o600)
+    core = DaemonCore(paths=paths, clock=FakeClock(wall=1_000, mono=1_000))
+    try:
+        core.conn.execute("CREATE TABLE ballast(x TEXT)")
+        core.conn.executemany(
+            "INSERT INTO ballast(x) VALUES (?)", [("y" * 400,) for _ in range(4_000)]
+        )
+        core.conn.commit()
+        core._sample_db_pages()
+        grown_used = core.stats.db_used_bytes
+        core.conn.execute("DROP TABLE ballast")
+        core.conn.commit()
+        core._sample_db_pages()
+        assert core.stats.db_freelist_bytes > 0, "expected reclaimable pages"
+        # File allocation stays high while used bytes fall — the whole point.
+        assert core.stats.db_used_bytes < grown_used
+        assert core.stats.db_file_bytes > core.stats.db_used_bytes
+        assert core.stats.db_headroom_bytes > 0
+    finally:
+        core.conn.close()
+
+
+def test_persisted_catalog_excludes_running_but_unselected_entities_dm_16(tmp_path):
+    """[DM-16] Catalog pressure counts what is written, not what is running.
+
+    `gone_ts IS NULL` counts every sampled process because the pipeline marks
+    an entity seen for the whole snapshot; only `selected` reflects durable
+    history actually being maintained.
+    """
+    from ftmon.engine.pipeline import Pipeline
+    from ftmon.engine.rings import RingStore
+
+    pipe = Pipeline(samplers={}, rings=RingStore(), counter=lambda _n: None)
+    pipe._persisted = {"proc": 3, "disk": 2, "stale": 99}
+    # Only loaded monitors contribute, so a removed definition stops counting.
+    assert pipe.persisted_entities(["proc", "disk"]) == 5
+    assert pipe.persisted_entities([]) == 0
+    # A monitor that has never run contributes nothing rather than raising.
+    assert pipe.persisted_entities(["proc", "never-ran"]) == 3

@@ -56,6 +56,10 @@ from ftmon.store.writer import TickWriter
 
 _RESCAN_EVERY_S = 30.0  # PM-04
 _RETENTION_EVERY_S = 60.0  # DM-04: incremental; a minute cadence keeps passes tiny
+# DM-05's normative used-page budget. Headroom is reported against *this*, not
+# against whatever level a definition chooses to alarm at, so the reported
+# distance-to-budget stays stable when an alarm threshold is retuned (#104).
+_DB_BUDGET_BYTES = 200 * 1024 * 1024
 _LOG_MAX_BYTES = 10 * 1024 * 1024
 _LOG_BACKUPS = 3
 _DAEMON_LOG = logging.getLogger("ftmon.daemon.file")
@@ -151,7 +155,7 @@ class DaemonCore:
             "system": SystemSampler(self.clock),
             "unit": UnitSampler(self.clock),
             "net": NetSampler(self.clock),
-            "self": SelfSampler(self.stats, self.paths.db_file),
+            "self": SelfSampler(self.stats),
             "external": self.external_sampler,
         }
         # Rollups/retention/baselines (DM-04/05, CA-05) run in-daemon; the
@@ -657,6 +661,10 @@ class DaemonCore:
             self._reload_check_registry()
             self._load_definitions()
             self._refresh_acks()
+        # Before the samplers run, not after: the self sampler reads these
+        # straight out of SelfStats, so measuring later would publish last
+        # tick's database size against this tick's everything else.
+        self._sample_db_pages()
         cache: dict = {}
         outcomes: list[EvalOutcome] = []
         due_names = self.due.due(mono, lambda _n: self._overrun())
@@ -779,6 +787,31 @@ class DaemonCore:
     def _record_delivery_failure(self, channel: str, reason: str) -> None:
         """NO-07: expose terminal delivery failure without recursive notify."""
         self._delivery_failures.put((channel, reason, self.clock.now()))
+
+    def _sample_db_pages(self) -> None:
+        """Publish the DM-05 storage picture into the self source (#104).
+
+        DM-05 governs *used* pages, so an alarm on file allocation fires while
+        the defined budget is healthy — a freed page is immediately reusable
+        and costs nothing. The three PRAGMAs are cheap header reads on a
+        connection this thread already owns; a lock or error keeps the previous
+        values rather than publishing zero, since a momentary read failure is
+        not evidence that the database shrank.
+        """
+        try:
+            pages = self.conn.execute("PRAGMA page_count").fetchone()[0]
+            free = self.conn.execute("PRAGMA freelist_count").fetchone()[0]
+            size = self.conn.execute("PRAGMA page_size").fetchone()[0]
+        except sqlite3.Error:
+            return
+        used = (pages - free) * size
+        self.stats.db_file_bytes = float(pages * size)
+        self.stats.db_used_bytes = float(used)
+        self.stats.db_freelist_bytes = float(free * size)
+        # Signed against the normative DM-05 target, not the alarm threshold:
+        # "how far from the budget" must not move when an alarm is retuned.
+        self.stats.db_headroom_bytes = float(_DB_BUDGET_BYTES - used)
+        self.stats.entities_persisted = self.pipeline.persisted_entities(self.monitors)
 
     def _sample_outbox_backlog(self, wall: float) -> None:
         """Fold delivery debt into the self source (NO-10).
