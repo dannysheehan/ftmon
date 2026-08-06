@@ -554,5 +554,39 @@ bounded incremental vacuum catches up; that free space remains available to
 new observations, so a healthy database may stay near 200 MB as it replaces
 dead catalog overhead with useful retained history. `ftmon doctor` only
 reports this state; it does not trigger retention, catalog reaping, or
-compaction. Never run direct SQL or full `VACUUM` against the live daemon
+compaction.
+
+**The budget is measured on used pages, not file size.** DM-05 bounds the
+database at 200 MB counted as `(page_count - freelist_count) * page_size`;
+free pages sit in the freelist, are immediately reusable, and cost nothing
+against it. `ftmon doctor` prints `Database: file=X MB used=Y MB` alongside
+`Freelist: N pages` — `used` is the budget verdict, `file` is fragmentation
+context. `ftmon status` shows `Database: used=X MB (file=Y MB)`, and its
+`--json` output carries `db_used_bytes`, `db_freelist_bytes` and
+`db_freelist_pages` beside the existing `db_bytes`.
+
+Two thresholds govern it, and they mean different things. `db_budget_mb`
+(200) is the enforcement target retention works to hold the database under.
+`db_warn_mb` (230) is the alarm level. They differ deliberately: retention's
+job is to hold the footprint just under 200 MB, so an alarm set at 200 MB
+fires whenever retention is succeeding. Setting it higher makes the incident
+mean *retention is failing*. The three `self` budget rules also own separate
+incident groups — `cpu-budget`, `rss-budget`, `db-budget` — so a long
+incident is attributable to CPU, memory or storage rather than to all three
+at once.
+
+**After upgrading**, your own `self.toml` keeps whatever rule it had, because
+FTMON never overwrites a definition you already have. A rule carried over
+from before this change alarms on file size rather than used pages, so
+`ftmon doctor` prints a line beginning `Definition warning:` when it sees
+one. It does not affect doctor's exit code. To adopt the corrected rule,
+either re-run `ftmon init --force`, or edit your own copy to compare
+`db_used_bytes` against `db_warn_mb * MB`.
+
+Rules of your own can use `db_file_bytes`, `db_used_bytes`,
+`db_freelist_bytes`, `db_headroom_bytes` (signed — negative means over the
+DM-05 target), and `entities_persisted`, which counts the entities the daemon
+is currently writing durable history for against the DM-16 budget of 400.
+
+Never run direct SQL or full `VACUUM` against the live daemon
 database.
