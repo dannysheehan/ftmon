@@ -496,3 +496,49 @@ def test_persisted_catalog_excludes_running_but_unselected_entities_dm_16(tmp_pa
     assert pipe.persisted_entities([]) == 0
     # A monitor that has never run contributes nothing rather than raising.
     assert pipe.persisted_entities(["proc", "never-ran"]) == 3
+
+
+def test_stale_db_bytes_rule_is_warned_but_does_not_fail_doctor_dm_05(tmp_path, monkeypatch):
+    """[DM-05][CL-05] An un-upgraded budget rule is surfaced, not silently kept.
+
+    FS-02 forbids overwriting user config, so a shipped definition fix never
+    reaches an existing install by itself. Without this warning the operator's
+    alarm keeps measuring file allocation while DM-05 bounds used pages — the
+    exact silence this issue exists to remove. It must not fail doctor, though:
+    doctor's non-zero is for an installation that is broken, and every upgraded
+    host would otherwise start exiting 1 until someone edited a rule.
+    """
+    from ftmon.definitions import loader
+
+    monkeypatch.setenv("FTMON_CONFIG_DIR", str(tmp_path / "config"))
+    monitors = tmp_path / "config" / "monitors"
+    monitors.mkdir(parents=True)
+    (monitors / "stale.toml").write_text(
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "stale"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "self"\n'
+        '[parameters]\n'
+        'db_budget_mb = { value = 200, doc = "d" }\n'
+        '[[rule]]\n'
+        'id = "db-budget"\ngroup = "db-budget"\n'
+        "when = 'db_bytes > db_budget_mb * MB'\n"
+        'severity = "warning"\nconfirm_cycles = 1\nmessage = "over"\n'
+    )
+    defs, errors = loader.load_dir(monitors)
+    assert errors == []
+    warnings = loader.stale_metric_warnings(defs)
+    assert len(warnings) == 1
+    assert "stale/db-budget" in warnings[0]
+    assert "db_used_bytes" in warnings[0]
+
+    # The corrected rule is silent, and db_used_bytes must not itself match the
+    # db_bytes word-boundary probe.
+    (monitors / "stale.toml").write_text(
+        (monitors / "stale.toml").read_text().replace(
+            "db_bytes > db_budget_mb", "db_used_bytes > db_budget_mb"
+        )
+    )
+    fixed, errors = loader.load_dir(monitors)
+    assert errors == []
+    assert loader.stale_metric_warnings(fixed) == []

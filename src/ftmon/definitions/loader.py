@@ -16,9 +16,10 @@ from __future__ import annotations
 import difflib
 import hashlib
 import math
+import re
 import string
 import tomllib
-from collections.abc import Set
+from collections.abc import Iterable, Set
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,42 @@ __all__ = [
     "load_text",
     "load_file",
     "load_dir",
+    "stale_metric_warnings",
 ]
+
+#: metric -> (replacement, why the old one is the wrong question to ask).
+#: FS-02 forbids overwriting user config, so a shipped definition fix never
+#: reaches an existing install on its own; without this an operator's rule
+#: keeps silently measuring the wrong quantity, which is the defect issue #104
+#: exists to fix rather than something to reproduce in a new place.
+_STALE_RULE_METRICS = {
+    "db_bytes": (
+        "db_used_bytes",
+        "db_bytes is file allocation and counts reusable freelist pages, "
+        "while DM-05 bounds used pages",
+    ),
+}
+
+
+def stale_metric_warnings(defs: Iterable[MonitorDef]) -> list[str]:
+    """Rule conditions alarming on a metric that answers the wrong question.
+
+    Deliberately limited to `rule.when`: a derived metric or glance readout may
+    legitimately display file allocation, but a *condition* comparing it against
+    a budget is the specific mistake being warned about. Returns human-readable
+    lines; callers decide how loudly to present them.
+    """
+    warnings: list[str] = []
+    for mdef in defs:
+        for rule in mdef.rules:
+            for stale, (replacement, why) in _STALE_RULE_METRICS.items():
+                if re.search(rf"\b{stale}\b", rule.when.source):
+                    warnings.append(
+                        f"{mdef.name}/{rule.id} alarms on {stale}: {why}. "
+                        f"Use {replacement} — re-run `ftmon init --force` to take "
+                        f"the shipped definition, or edit the rule in place."
+                    )
+    return warnings
 
 
 @dataclass(frozen=True)

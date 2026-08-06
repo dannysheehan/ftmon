@@ -813,11 +813,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     }
     if any(warning.startswith("config.toml unreadable") for warning in config_warnings):
         channel_errors.update(name for name, _channel in config.channels)
-    _defs, definition_errors = loader.load_dir(
+    loaded_defs, definition_errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True,
         check_aliases=check_aliases, require_checks=True,
     )
     config_errors.extend(f"{path}: {error}" for path, error in definition_errors)
+    stale_metrics = loader.stale_metric_warnings(loaded_defs)
     conn = connect(paths.db_file)
     try:
         report = inspect(
@@ -905,6 +906,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             if notifier is None or not notifier.available:
                 status = "error (desktop_unavailable)"
         print(f"Notification {name}: {status}")
+    # Deliberately not folded into config_errors: an upgraded install keeps its
+    # own definitions (FS-02), so this would fail doctor on every host until the
+    # operator acts, and doctor's non-zero is reserved for an installation that
+    # is actually broken rather than one whose rule needs updating (CL-05).
+    for warning in stale_metrics:
+        print(f"Definition warning: {warning}", file=sys.stderr)
     for problem in dispatch["problems"]:
         print(f"Delivery problem: {problem}", file=sys.stderr)
     for error in config_errors:
