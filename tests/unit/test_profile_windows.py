@@ -269,7 +269,7 @@ class TestSelfWindowsProfile:
 
         conn = connect(paths.db_file, readonly=True)
         row = conn.execute(
-            "SELECT state FROM incidents WHERE state='open' AND grp='budget'"
+            "SELECT state FROM incidents WHERE state='open' AND grp='cpu-budget'"
         ).fetchone()
         conn.close()
         assert row is None
@@ -289,7 +289,7 @@ class TestSelfWindowsProfile:
 
         conn = connect(paths.db_file, readonly=True)
         row = conn.execute(
-            "SELECT state FROM incidents WHERE state='open' AND grp='budget'"
+            "SELECT state FROM incidents WHERE state='open' AND grp='cpu-budget'"
         ).fetchone()
         conn.close()
         assert row is not None
