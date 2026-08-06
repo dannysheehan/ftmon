@@ -579,9 +579,11 @@ at once.
 FTMON never overwrites a definition you already have. A rule carried over
 from before this change alarms on file size rather than used pages, so
 `ftmon doctor` prints a line beginning `Definition warning:` when it sees
-one. It does not affect doctor's exit code. To adopt the corrected rule,
-either re-run `ftmon init --force`, or edit your own copy to compare
-`db_used_bytes` against `db_warn_mb * MB`.
+one. It does not affect doctor's exit code. To adopt the corrected rule, edit
+your own copy to compare `db_used_bytes` against `db_warn_mb * MB` and add a
+`db_warn_mb` parameter. `ftmon init --force` will also do it, but it rewrites
+*every* built-in definition — on a host whose thresholds you have tuned, that
+discards the tuning, so prefer the targeted edit.
 
 Rules of your own can use `db_file_bytes`, `db_used_bytes`,
 `db_freelist_bytes`, `db_headroom_bytes` (signed — negative means over the

@@ -79,10 +79,16 @@ def stale_metric_warnings(defs: Iterable[MonitorDef]) -> list[str]:
         for rule in mdef.rules:
             for stale, (replacement, why) in _STALE_RULE_METRICS.items():
                 if re.search(rf"\b{stale}\b", rule.when.source):
+                    # Leads with the in-place edit deliberately. `init --force`
+                    # rewrites every built-in definition, so recommending it
+                    # first would cost a tuned host its calibration — and a
+                    # tuned host is exactly the kind most likely to see this.
                     warnings.append(
                         f"{mdef.name}/{rule.id} alarms on {stale}: {why}. "
-                        f"Use {replacement} — re-run `ftmon init --force` to take "
-                        f"the shipped definition, or edit the rule in place."
+                        f"Edit the rule to use {replacement}. "
+                        f"(`ftmon init --force` adopts the shipped definition "
+                        f"instead, but overwrites every built-in and discards "
+                        f"any local tuning.)"
                     )
     return warnings
 
