@@ -30,6 +30,7 @@ from ftmon.model import severity_name
 from ftmon.paths import Paths, get_paths
 from ftmon.sources.base import SOURCE_DECLS
 from ftmon.store.db import connect
+from ftmon.store.doctor import dispatch_health
 from ftmon.store.query import Query
 
 # macOS 12's stdlib maps .ico to image/x-icon while Linux maps it to the
@@ -1035,6 +1036,7 @@ async def self_page(request: Request):
         log_tail = "\n".join(paths.log_file.read_text(errors="replace").splitlines()[-200:])
     except OSError:
         log_tail = "No daemon log yet."
+    dispatch = None
     with _query(request) as q:
         status = _status(request, q)
         metrics_rows = [] if q is None else q._conn.execute(
@@ -1042,11 +1044,15 @@ async def self_page(request: Request):
             "WHERE se.monitor='self' AND s.ts="
             "(SELECT MAX(x.ts) FROM samples x WHERE x.series_id=se.id)"
         ).fetchall()
+        if q is not None:
+            # Read-side, so the per-channel split costs no persisted series
+            # against the DM-16 catalog budget (DESIGN 10.7).
+            dispatch = dispatch_health(q._conn)
     _defs, errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
     )
     return _render(
-        "self.html", request, title="Self", status=status,
+        "self.html", request, title="Self", status=status, dispatch=dispatch,
         metrics=metrics_rows, config_errors=errors, log_tail=log_tail,
         web_version=__version__, refresh_ms=15000,
     )

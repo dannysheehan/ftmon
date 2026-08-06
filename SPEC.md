@@ -1,6 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.44** — v0.44 completes issue #74 with explicit database
+Status: **DRAFT v0.45** — v0.45 extends PM-10's survive-the-lock discipline to
+the background notification dispatcher (PM-12): a store fault inside the worker
+thread must recover rather than silently kill the only delivery path, and a
+dead worker or overdue claimable backlog must fail `ftmon doctor` instead of
+reading as healthy from channel configuration alone (PM-12, NO-10, CL-05,
+issue #98). v0.44 completes issue #74 with explicit database
 pressure diagnostics and a bounded live-compaction policy: DM-05 measures used
 pages, keeps incremental vacuum in the retention pass, and rejects automatic
 full `VACUUM` while monitoring because its exclusive lock is disproportionate
@@ -285,6 +290,23 @@ support policy and packaging must be resolved before macOS is advertised.
   macOS LaunchAgent MUST preserve the same signal contract: sending SIGHUP to
   the launchd-managed PID reloads in place. `launchctl kickstart -k` is a
   restart (new PID), not a reload substitute.
+- **PM-12** When notification dispatch runs on a background worker, that worker
+  owns its own database connection, the startup `sending` → `pending` reset, and
+  the drain loop; the daemon's main connection MUST NOT perform that reset,
+  because a lock there aborts startup before any recovery path exists. The
+  worker MUST survive a transient store fault — the database reported locked or
+  busy after `busy_timeout`, or a connection invalidated underneath it — by
+  closing and recreating its connection, repeating the `sending` → `pending`
+  reset (the NO-04 duplicate window, bounded at one redelivery), and continuing
+  to drain. Recovery MUST count a `notify_store_errors` self-metric, record a
+  `self` event carrying a fixed redacted category rather than exception text,
+  and MUST NOT itself raise a notification. A fault that is not transient —
+  corruption, a failed migration, an unwritable or failing device, or an
+  unexpected exception — MUST end the thread deliberately after publishing a
+  durable dead state readable by `ftmon doctor` and reporting the same fixed
+  category to the daemon's log. The daemon MUST record which dispatch mode it
+  is running so a diagnostic reading only the database can distinguish "no
+  worker expected" from "worker died". Sampling MUST continue in every case.
 
 ### 4.3 Filesystem layout (Linux)
 
@@ -999,7 +1021,19 @@ message = "Disk {entity} at {used_pct:.0f}% used"
   invalid channel is disabled with a visible config error while monitoring and
   other delivery channels continue. `ftmon doctor` reports channel readiness
   without sending a test message or exposing credentials; an explicit future
-  `--send-test` operation is outside this milestone.
+  `--send-test` operation is outside this milestone. Configuration readiness
+  alone is not a delivery health claim: doctor MUST additionally report the
+  dispatcher state published under PM-12 and a backlog split of total pending,
+  claimable-due, quiet-held, and failed deliveries plus the age of the oldest
+  claimable-due delivery, and MUST fail when a live daemon's dispatcher is dead
+  or its oldest claimable-due delivery is overdue. Pending rows held by quiet
+  hours are durable debt but are not claimable and MUST NOT count as overdue.
+  Because these predicates describe a *running* daemon, they apply only while
+  the daemon is live; against a stopped daemon the backlog is reported without
+  failing. The `self` source exposes the same aggregates, the PM-12 store-error
+  counter, a worker-liveness gauge, and a bounded count of terminally failed
+  deliveries, and `/self` presents them with the per-channel breakdown, so a
+  broken notification path is observable without notifying about the notifier.
 
 ---
 
@@ -1369,6 +1403,24 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.45 (2026-08-06)** — closes issue #98. A live desktop kept sampling across a
+sleep/resume cycle while the background notification dispatcher was dead: six
+file and six desktop deliveries sat `pending` with `attempt_count=0` for nearly
+fourteen hours, and `doctor` still called both channels `ready` because it only
+read configuration. The cause is structural rather than platform-specific — the
+worker thread had no recovery boundary around its store access, so a SQLite
+lock or connection fault escaped a thread whose exceptions no one observes.
+**PM-12** gives the dispatcher the same survive-the-lock contract PM-10 already
+gives the tick loop, and makes its liveness durable so the failure is
+observable without recursively notifying about the notifier. **NO-10** gains
+the read side: doctor reports a quiet-safe backlog split and dispatcher state,
+and MUST NOT call delivery healthy when the worker is dead or claimable debt is
+overdue. Deliberately deferred: automatic respawn of a dead worker — durable
+state plus a failing doctor is this release's observability contract, and
+in-thread recovery already covers the transient paths that soak evidence shows.
+Quiet-held pending rows are explicitly *not* overdue debt, so overnight quiet
+hours cannot masquerade as a stuck outbox.
 
 **v0.44 (2026-08-04)** — completes issue #74 without adding a live full-
 `VACUUM` worker. PR #89's v0.43 catalog reap fixed the root unbounded-metadata

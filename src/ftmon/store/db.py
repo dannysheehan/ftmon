@@ -10,9 +10,37 @@ from pathlib import Path
 
 from ftmon.paths import set_private_permissions
 
-__all__ = ["connect", "migrate"]
+__all__ = ["connect", "is_disconnected_error", "is_locked_error", "migrate"]
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+
+
+def is_locked_error(exc: BaseException) -> bool:
+    """True when SQLite is reporting contention rather than a broken store.
+
+    Both survive-the-lock paths (PM-10's tick commit and PM-12's dispatcher)
+    ask this question, and they must answer it identically: two independent
+    spellings of "is this SQLite telling us it is busy" is exactly how the two
+    requirements would drift apart later. sqlite3 exposes contention only as
+    OperationalError message text, so matching the message is the available
+    test, not a shortcut.
+    """
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
+def is_disconnected_error(exc: BaseException) -> bool:
+    """True when the connection object itself is no longer usable.
+
+    Distinct from contention: the fix is a new connection, not waiting. Seen
+    after a suspend/resume cycle invalidates the file handle underneath a
+    long-lived worker connection (issue #98).
+    """
+    if not isinstance(exc, sqlite3.OperationalError | sqlite3.ProgrammingError):
+        return False
+    return "closed" in str(exc).lower()
 
 
 def connect(db_path: Path, readonly: bool = False) -> sqlite3.Connection:

@@ -231,3 +231,154 @@ def test_doctor_reports_redacted_channel_readiness_no_10(tmp_path, monkeypatch, 
     assert "Notification webhook: disabled" in captured.out
     assert "External checks: disabled (registry missing)" in captured.out
     assert "ABSENT_PRIVATE_TOKEN" not in captured.out + captured.err
+
+
+def _outbox_row(conn, *, state="pending", due=None, created=1_000, severity=3,
+                channel="file", note_id=1):
+    # The owning incident must exist or doctor's orphan check fails the report
+    # for an unrelated reason and hides what these tests are actually asserting.
+    conn.execute(
+        "INSERT OR IGNORE INTO incidents(id,monitor,grp,entity_id,state,severity,"
+        "opened_ts) VALUES (?,'m','g',?,'open',?,?)",
+        (note_id, f"e{note_id}", severity, created),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO notifications(id,incident_id,kind,severity,title,body,"
+        "monitor,entity_id,created_ts) VALUES (?,?,'open',?,'t','b','m','e',?)",
+        (note_id, note_id, severity, created),
+    )
+    conn.execute(
+        "INSERT INTO notification_deliveries(notification_id,channel,state,"
+        "attempt_count,next_attempt_ts) VALUES (?,?,?,0,?)",
+        (note_id, channel, state, due),
+    )
+    conn.commit()
+
+
+def _meta(conn, **pairs):
+    conn.executemany(
+        "INSERT INTO meta(key,value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        list(pairs.items()),
+    )
+    conn.commit()
+
+
+def _fresh(tmp_path, name="ftmon.db"):
+    conn = connect(tmp_path / name)
+    migrate(conn)
+    return conn
+
+
+def test_doctor_fails_on_dead_dispatcher_with_no_backlog_pm_12_no_10(tmp_path):
+    """[PM-12][NO-10] A dead worker fails doctor even with nothing owed.
+
+    This is issue #98's core complaint: every channel validated, so doctor said
+    ready while nothing had been delivered for fourteen hours.
+    """
+    conn = _fresh(tmp_path)
+    _meta(conn, last_tick_ts="1000.0", notify_dispatch_mode="background",
+          notify_dispatch_state="dead",
+          notify_dispatch_last_error_category="store_corrupt")
+    report = inspect(conn, now=1000, daemon_live=True)
+    assert not report["ok"]
+    assert report["dispatch"]["pending_total"] == 0
+    assert "store_corrupt" in report["dispatch"]["problems"][0]
+    conn.close()
+
+
+def test_doctor_fails_on_overdue_claimable_debt_no_10(tmp_path):
+    """[NO-10] Debt nobody is draining fails doctor regardless of worker state."""
+    conn = _fresh(tmp_path)
+    _outbox_row(conn, due=900)
+    _meta(conn, last_tick_ts="1000.0", notify_dispatch_mode="background",
+          notify_dispatch_state="running", notify_dispatch_heartbeat_ts="1000.0")
+    report = inspect(conn, now=1000, daemon_live=True)
+    assert not report["ok"]
+    assert report["dispatch"]["due_claimable"] == 1
+    assert report["dispatch"]["oldest_claimable_due_age_s"] == 100
+    assert "overdue" in report["dispatch"]["problems"][0]
+    conn.close()
+
+
+def test_doctor_tolerates_recent_claimable_debt_no_10(tmp_path):
+    """[NO-10] Normal in-flight retry backlog is not a failure."""
+    conn = _fresh(tmp_path)
+    _outbox_row(conn, due=990)
+    _meta(conn, last_tick_ts="1000.0", notify_dispatch_mode="background",
+          notify_dispatch_state="running", notify_dispatch_heartbeat_ts="1000.0")
+    report = inspect(conn, now=1000, daemon_live=True)
+    assert report["ok"]
+    assert report["dispatch"]["oldest_claimable_due_age_s"] == 10
+    conn.close()
+
+
+def test_doctor_does_not_blame_quiet_held_debt_no_10(tmp_path):
+    """[NO-10] Quiet-held rows are durable debt but never overdue.
+
+    Without this split an overnight quiet window looks exactly like a stuck
+    outbox, which would train operators to ignore the signal.
+    """
+    from datetime import UTC
+
+    from ftmon.config import QuietHours
+
+    midnight = 1_700_000_000 - (1_700_000_000 % 86400)
+    night = midnight + 23 * 3600
+    conn = _fresh(tmp_path)
+    _outbox_row(conn, due=night, created=night, severity=2)
+    _meta(conn, last_tick_ts=repr(float(night + 3600)),
+          notify_dispatch_mode="background", notify_dispatch_state="running",
+          notify_dispatch_heartbeat_ts=repr(float(night + 3600)))
+    quiet = QuietHours(22 * 60, 8 * 60, tz=UTC)
+    report = inspect(conn, now=night + 3600, quiet=quiet, daemon_live=True)
+    assert report["ok"]
+    assert report["dispatch"]["quiet_held"] == 1
+    assert report["dispatch"]["due_claimable"] == 0
+    assert report["dispatch"]["pending_total"] == 1
+    assert report["dispatch"]["oldest_claimable_due_age_s"] == 0
+    # The same rows without a quiet window are ordinary overdue debt.
+    assert not inspect(conn, now=night + 3600, daemon_live=True)["ok"]
+    conn.close()
+
+
+def test_doctor_spares_a_stopped_daemon_no_10(tmp_path):
+    """[NO-10] Predicates describe a running daemon; a stopped one just reports.
+
+    The project documents stopping the daemon before inspecting the database,
+    so failing on debt nobody is draining yet would punish the safe workflow.
+    """
+    conn = _fresh(tmp_path)
+    _outbox_row(conn, due=100)
+    _meta(conn, last_tick_ts="1000.0", notify_dispatch_mode="background",
+          notify_dispatch_state="stopped")
+    report = inspect(conn, now=1000, daemon_live=False)
+    assert report["ok"]
+    assert report["dispatch"]["due_claimable"] == 1
+    assert report["dispatch"]["problems"] == []
+    conn.close()
+
+
+def test_doctor_expects_no_worker_in_synchronous_mode_pm_12(tmp_path):
+    """[PM-12] Recorded dispatch mode separates "none expected" from "died"."""
+    conn = _fresh(tmp_path)
+    _meta(conn, last_tick_ts="1000.0", notify_dispatch_mode="synchronous")
+    assert inspect(conn, now=1000, daemon_live=True)["ok"]
+    _meta(conn, notify_dispatch_mode="background")
+    report = inspect(conn, now=1000, daemon_live=True)
+    assert not report["ok"]
+    assert "state=unknown" in report["dispatch"]["problems"][0]
+    conn.close()
+
+
+def test_doctor_reports_failures_per_channel_no_10(tmp_path):
+    """[NO-10] Terminal failures stay attributable to a channel."""
+    conn = _fresh(tmp_path)
+    _outbox_row(conn, state="failed", channel="file")
+    _outbox_row(conn, state="failed", channel="ntfy")
+    _meta(conn, last_tick_ts="1000.0", notify_dispatch_mode="background",
+          notify_dispatch_state="running", notify_dispatch_heartbeat_ts="1000.0")
+    dispatch = inspect(conn, now=1000, daemon_live=True)["dispatch"]
+    assert dispatch["failed"] == 2
+    assert dispatch["failed_by_channel"] == {"file": 1, "ntfy": 1}
+    conn.close()

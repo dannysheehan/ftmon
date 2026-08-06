@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.23**. Companion to `SPEC.md` v0.44 — every design element
+Status: **DRAFT v0.24**. Companion to `SPEC.md` v0.45 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -749,11 +749,48 @@ The contract follows ntfy's documented
 its [retention/privacy behavior](https://docs.ntfy.sh/privacy/) so choosing the
 public service is an informed data-egress decision rather than a silent default.
 
+The worker survives store faults the way the tick loop survives them (PM-12).
+`connect`/`migrate`/`reset_inflight` and the drain loop share one recovery
+boundary, so no path can exit the thread with its connection still open. A
+message-matched lock/busy or invalidated-connection fault closes the
+connection, waits an exponential backoff (0.5 s doubling to 5 s) *on the same
+condition the wakeups use* so `stop()` and `reconfigure()` interrupt it, then
+reconnects and repeats `reset_inflight`. Everything else — corruption, a failed
+migration, an I/O or permission error, an unexpected exception — is fatal: the
+thread publishes `dead` and exits rather than looping forever against a fault
+retrying cannot fix. The lock predicate is imported from the PM-10 tick path
+rather than restated, because two independent spellings of "is this SQLite
+telling us it is busy" is how PM-10 and PM-12 drift apart later.
+
+Liveness is durable because a Python thread's death is invisible to both the
+daemon loop and any later `wake()`. The worker writes `notify_dispatch_state`
+(`starting`/`running`/`recovering`/`stopped`/`dead`), `notify_dispatch_heartbeat_ts`,
+and the last error category/timestamp to `meta` on its own connection. The
+heartbeat is throttled to 30 s and forced on state changes and non-empty
+flushes: an unconditional per-poll write would put a 1 Hz writer against
+`commit_tick`'s `BEGIN IMMEDIATE`, manufacturing the very PM-10 contention this
+section exists to survive. The daemon records `notify_dispatch_mode`
+(`background`/`synchronous`) so doctor can tell a controlled-clock run with no
+worker from a worker that died, and both heartbeat and backlog ages are
+measured against `last_tick_ts` — the same injected-clock domain that wrote
+them — never against doctor's own wall clock.
+
 `ftmon doctor` resolves secret references and validates non-secret structure but
-reports only `ready`, `disabled`, or a stable error code. Delivery counters
-(`pending`, `failed`, age of oldest pending, failures by channel) join the self
-source and `/self` page; this makes a broken notification path observable
-without recursively notifying about notifier failure.
+reports only `ready`, `disabled`, or a stable error code. Because that says
+nothing about delivery, doctor also prints dispatcher state and a four-way
+backlog split — `pending`, `due_claimable`, `quiet_held`, `failed` — plus the
+oldest claimable-due age, and fails when a live daemon's worker is dead or that
+age exceeds 60 s. Quiet-held rows are excluded from both the claimable count
+and the age, so an overnight quiet window cannot read as a stuck outbox; the
+predicates are gated on a live daemon, so the documented "stop the daemon and
+inspect" workflow does not fail on debt no one is draining yet. The self source
+carries the aggregates, `notify_store_errors`, `notify_worker_alive`, and a
+bounded `notify_failed` total — bounded rather than per-channel because five
+extra persisted series bill against the same DM-16 catalog worksheet issue #74
+was spent defending; the per-channel breakdown is a read-side query on
+`notification_deliveries` for doctor and `/self`, which needs no series at all.
+Together these make a broken notification path observable without recursively
+notifying about notifier failure.
 
 The existing 30-second rescan also compares the `config.toml` file stamp. A
 changed valid file constructs a complete adapter snapshot, reconfigures the one

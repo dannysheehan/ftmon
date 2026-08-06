@@ -457,6 +457,32 @@ credential files, systemd credentials, and an offline loopback webhook smoke
 test. This separation exists so an operator can diagnose configuration without
 leaking a token or surprising recipients.
 
+Channel configuration is only half the picture — a channel can validate
+cleanly while the background dispatcher that actually drains queued
+notifications has stalled. `doctor` therefore also prints
+`Notification dispatcher: state=... mode=... heartbeat=...` (plus
+`last_error=...` once something has failed) and
+`Notification backlog: pending=N due_claimable=N quiet_held=N failed=N
+oldest_claimable=Ns`. Judge whether delivery is stuck by `due_claimable` and
+`oldest_claimable`, not `pending`: `quiet_held` is real durable debt, but it
+is deliberately withheld until the quiet window ends, so a large `pending`
+count overnight is expected. `doctor` fails — printing
+`Delivery problem: ...` to stderr — when a *running* daemon's dispatcher is
+dead or not running, or when the oldest claimable delivery is more than 60
+seconds overdue. Both checks apply only while the daemon holds its lock, so
+the safe stop-then-inspect workflow still reports the backlog without failing.
+
+The dispatcher survives a transient store fault — a lock outliving the 5 s
+`busy_timeout`, or a connection invalidated by suspend/resume — by
+reconnecting and reclaiming interrupted claims instead of dying. Delivery
+remains at-least-once, so a fault immediately after a channel already
+succeeded can redeliver that one notification once more. Corruption, a failed
+migration, or an I/O fault is not retried: the worker stops, records `dead`,
+and logs to the daemon log. The same figures are available as `self` metrics
+(`notify_pending_total`, `notify_due_claimable`, `notify_quiet_held`,
+`notify_failed`, `notify_oldest_claimable_due_age_s`, `notify_worker_alive`,
+`notify_store_errors`) if you want to alert on dispatcher health itself.
+
 Quiet hours are set in `config.toml`:
 
 ```toml
@@ -513,6 +539,7 @@ in `docs/install.md` when publishing or updating the site.
 | External check unavailable | Verify registry and executable with `doctor`. |
 | Plugin metric is absent | Compare the mapped label and UOM with plugin output. |
 | Too many notifications | Raise `confirm_cycles`, add an `exempt`, or ack. |
+| Notifications not arriving | Run `ftmon doctor`; check dispatcher `state` and `due_claimable` (§8), not `pending`. |
 | FTMON over budget | Open the Self page or inspect the incident. |
 | Database concerns | Run `ftmon doctor`; use its `--backup PATH` option. |
 

@@ -33,6 +33,12 @@ class SelfStats:
     events_unstored: int = 0
     ring_mem_bytes: int = 0
     source_activity_age_s: float = 0.0
+    notify_pending_total: int = 0
+    notify_due_claimable: int = 0
+    notify_quiet_held: int = 0
+    notify_failed: int = 0
+    notify_oldest_claimable_due_age_s: float = 0.0
+    notify_worker_alive: float = 1.0
     counters: dict[str, int] = field(default_factory=dict)
 
     def count(self, name: str) -> None:
@@ -68,6 +74,17 @@ class SelfSampler:
             "events_unstored": float(s.events_unstored),
             "ring_mem_bytes": float(s.ring_mem_bytes),
             "source_activity_age_s": s.source_activity_age_s,
+            "notify_pending_total": float(s.notify_pending_total),
+            "notify_due_claimable": float(s.notify_due_claimable),
+            "notify_quiet_held": float(s.notify_quiet_held),
+            # Bounded total rather than one series per channel: five extra
+            # persisted series bill against the same DM-16 catalog budget, and
+            # doctor/`/self` read the per-channel split straight from
+            # notification_deliveries, which needs no series at all.
+            "notify_failed": float(s.notify_failed),
+            "notify_oldest_claimable_due_age_s": s.notify_oldest_claimable_due_age_s,
+            "notify_worker_alive": s.notify_worker_alive,
+            "notify_store_errors": float(s.counters.get("notify_store_errors", 0)),
             "eval_unknown_total": float(s.counters.get("eval_unknown_total", 0)),
             "samples_rejected": float(s.counters.get("samples_rejected", 0)),
             "sqlite_lock_errors": float(s.counters.get("sqlite_lock_errors", 0)),
