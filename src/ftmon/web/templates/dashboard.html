@@ -26,9 +26,9 @@
       <span class="stat-value">{% if status.last_tick_age_s is none %}—{% else %}{{ '%.0f'|format(status.last_tick_age_s) }}s{% endif %}</span>
       <span class="stat-label">Last tick</span>
     </div>
-    <div class="stat stat-muted">
-      <span class="stat-value">{{ '%.1f'|format(status.db_bytes / 1048576) }}</span>
-      <span class="stat-label">Database MB</span>
+    <div class="stat stat-muted" title="File allocation {{ '%.1f'|format(status.db_bytes / 1048576) }} MB">
+      <span class="stat-value">{{ '%.1f'|format(status.db_used_bytes / 1048576) }}</span>
+      <span class="stat-label">Database MB (used)</span>
     </div>
   </section>
 </section>

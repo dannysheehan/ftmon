@@ -235,6 +235,16 @@ class TestGetStatus:
         leak = [m for m in res["monitors"] if m["name"] == "leak"]
         assert leak and leak[0]["enabled"] is True
 
+    def test_db_size_fields_lead_with_used_bytes_dm_05(self, populated):
+        """[DM-05][MC-01] get_status must carry the DM-05 used-pages figure
+        alongside the pre-existing file-allocation db_bytes, not just the
+        file size -- issue #104 found MCP callers with no way to see the
+        budget figure at all."""
+        _paths, _clock, api = populated
+        res = api.get_status()
+        assert res["db_used_bytes"] <= res["db_bytes"]
+        assert res["db_used_bytes"] + res["db_freelist_bytes"] == res["db_bytes"]
+
     def test_glance_fields_are_additive_and_bounded_mc_01(self, populated):
         """[MC-01] Pre-#64 keys survive; readout metadata is always present."""
         _paths, _clock, api = populated

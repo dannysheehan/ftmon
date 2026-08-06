@@ -429,7 +429,13 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(json.dumps({"status": "ok", "max_severity": max_severity, **info}))
         else:
             print(f"Last tick: {age:.0f}s ago" if age is not None else "Last tick: never")
-            print(f"Database: {info['db_bytes'] / 2**20:.1f} MB")
+            # DM-05's budget is used pages, not file allocation (issue #104);
+            # lead with the figure that verdict is judged on and keep file
+            # size as fragmentation context, not the headline.
+            print(
+                f"Database: used={info['db_used_bytes'] / 2**20:.1f} MB "
+                f"(file={info['db_bytes'] / 2**20:.1f} MB)"
+            )
             print(f"Open incidents: {info['open_incidents']}")
         return exit_code
 

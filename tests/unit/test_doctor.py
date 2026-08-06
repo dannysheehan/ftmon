@@ -5,7 +5,7 @@ import sqlite3
 from ftmon.cli import main
 from ftmon.paths import get_paths
 from ftmon.store.db import connect, migrate
-from ftmon.store.doctor import backup, inspect
+from ftmon.store.doctor import backup, db_size_report, inspect
 from tests.platform_permissions import assert_private
 
 
@@ -17,6 +17,29 @@ def test_doctor_clean_database_cl_05(tmp_path):
     assert report["integrity"] == ["ok"]
     assert "samples" in report["tables"]
     assert not any(report["orphans"].values())
+    conn.close()
+
+
+def test_db_size_report_is_the_one_dm05_arithmetic_issue_104(tmp_path):
+    """[DM-05][CL-05] doctor.inspect() and Query.status() must both read
+    db_size_report()'s figures rather than each re-deriving
+    (page_count - freelist_count) * page_size -- issue #104 exists because
+    that duplication is exactly how file-vs-used got confused before."""
+    from ftmon.store.query import Query
+
+    conn = connect(tmp_path / "ftmon.db")
+    migrate(conn)
+    conn.execute("INSERT INTO meta(key, value) VALUES ('last_tick_ts', '1000')")
+    conn.commit()
+
+    size = db_size_report(conn)
+    assert size["db_bytes"] == size["used_bytes"] + size["freelist_bytes"]
+
+    report = inspect(conn, now=1000)
+    status = Query(conn).status(now=1000)
+    assert report["db_bytes"] == size["db_bytes"] == status["db_bytes"]
+    assert report["used_bytes"] == size["used_bytes"] == status["db_used_bytes"]
+    assert report["freelist_bytes"] == size["freelist_bytes"] == status["db_freelist_bytes"]
     conn.close()
 
 

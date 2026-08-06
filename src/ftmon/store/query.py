@@ -999,8 +999,11 @@ class Query:
         last_tick_ts = float(row["value"]) if row is not None else None
         last_tick_age_s = (now - last_tick_ts) if last_tick_ts is not None else None
 
-        (page_count,) = self._conn.execute("PRAGMA page_count").fetchone()
-        (page_size,) = self._conn.execute("PRAGMA page_size").fetchone()
+        # db.db_size_report is the single DM-05 arithmetic implementation
+        # (issue #104); reporting and enforcement both read it rather than
+        # re-deriving used pages from PRAGMAs independently.
+        from ftmon.store.db import db_size_report
+        size = db_size_report(self._conn)
 
         (open_incidents,) = self._conn.execute(
             "SELECT COUNT(*) FROM incidents WHERE state != 'cleared'"
@@ -1009,7 +1012,13 @@ class Query:
         return {
             "last_tick_ts": last_tick_ts,
             "last_tick_age_s": last_tick_age_s,
-            "db_bytes": page_count * page_size,
+            # D1 (issue #104): db_bytes keeps its historical file-allocation
+            # meaning for pre-existing consumers and stored history; the DM-05
+            # budget verdict lives in db_used_bytes.
+            "db_bytes": size["db_bytes"],
+            "db_used_bytes": size["used_bytes"],
+            "db_freelist_bytes": size["freelist_bytes"],
+            "db_freelist_pages": size["freelist_pages"],
             "open_incidents": open_incidents,
         }
 

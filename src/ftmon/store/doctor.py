@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 from ftmon.paths import set_private_permissions
+from ftmon.store.db import db_size_report
 
 _DISPATCH_OVERDUE_S = 60.0
 
@@ -100,13 +101,7 @@ def inspect(
     orphans = {name: conn.execute(sql).fetchone()[0] for name, sql in orphan_queries.items()}
     cursors = [{"source": row["source"], "age_s": max(0, now-row["updated_ts"])}
                for row in conn.execute("SELECT source,updated_ts FROM cursors ORDER BY source")]
-    page_count = conn.execute("PRAGMA page_count").fetchone()[0]
-    freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
-    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-    db_bytes = page_count * page_size
-    freelist_bytes = freelist_count * page_size
-    used_bytes = db_bytes - freelist_bytes
-    freelist_fragment_pct = freelist_count / page_count if page_count else 0.0
+    size = db_size_report(conn)
     # DM-16's ~270/≤400 figures describe *active* catalog pressure, not a cap
     # on total retained rows (which legitimately grow under process churn even
     # with the MD-09 reap running); report the two counts separately (CL-05,
@@ -149,9 +144,7 @@ def inspect(
     dispatch = dispatch_health(conn, quiet=quiet, daemon_live=daemon_live)
     return {"dispatch": dispatch,
             "check": check, "integrity": integrity, "checkpoint": checkpoint,
-            "db_bytes": db_bytes, "used_bytes": used_bytes,
-            "freelist_pages": freelist_count, "freelist_bytes": freelist_bytes,
-            "freelist_fragment_pct": freelist_fragment_pct,
+            **size,
             "tables": row_counts,
             "orphans": orphans, "cursors": cursors,
             "entities_alive": entities_alive, "series_active": series_active,

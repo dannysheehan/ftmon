@@ -10,9 +10,41 @@ from pathlib import Path
 
 from ftmon.paths import set_private_permissions
 
-__all__ = ["connect", "is_disconnected_error", "is_locked_error", "migrate"]
+__all__ = [
+    "DB_BUDGET_BYTES", "connect", "db_size_report", "is_disconnected_error",
+    "is_locked_error", "migrate",
+]
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+
+#: DM-05's normative used-page budget. One definition, because retention
+#: enforces against it while doctor, `ftmon status`, MCP and the self source
+#: report distance to it — two constants that must agree is a latent drift.
+DB_BUDGET_BYTES = 200 * 2**20
+
+
+def db_size_report(cur) -> dict:
+    """DM-05's used-vs-file arithmetic, computed in exactly one place.
+
+    Accepts a connection or a cursor, because the enforcement path (retention's
+    degradation loop) already holds a cursor while the reporting paths hold
+    connections — and the whole point is that both ask the same question of the
+    same code. Independent re-derivations of
+    `(page_count - freelist_count) * page_size` are how a budget alarm came to
+    watch file allocation while DM-05 governed used pages (issue #104).
+    """
+    page_count = cur.execute("PRAGMA page_count").fetchone()[0]
+    freelist_count = cur.execute("PRAGMA freelist_count").fetchone()[0]
+    page_size = cur.execute("PRAGMA page_size").fetchone()[0]
+    db_bytes = page_count * page_size
+    freelist_bytes = freelist_count * page_size
+    return {
+        "db_bytes": db_bytes,
+        "used_bytes": db_bytes - freelist_bytes,
+        "freelist_pages": freelist_count,
+        "freelist_bytes": freelist_bytes,
+        "freelist_fragment_pct": freelist_count / page_count if page_count else 0.0,
+    }
 
 
 def is_locked_error(exc: BaseException) -> bool:

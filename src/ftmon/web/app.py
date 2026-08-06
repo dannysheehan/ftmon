@@ -199,6 +199,7 @@ def _status(request: Request, q: Query | None) -> dict:
     now = request.app.state.clock.now()
     if q is None:
         return {"daemon_stale": True, "last_tick_age_s": None, "db_bytes": 0,
+                "db_used_bytes": 0, "db_freelist_bytes": 0, "db_freelist_pages": 0,
                 "open_incidents": 0}
     out = q.status(now=now)
     out["daemon_stale"] = glance.daemon_stale(out["last_tick_age_s"])

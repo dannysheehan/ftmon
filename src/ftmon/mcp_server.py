@@ -209,7 +209,12 @@ class McpApi:
             "daemon_alive": glance.daemon_alive(age),
             "daemon_stale": glance.daemon_stale(age),
             "last_tick_age_s": age,
+            # D1 (issue #104): db_bytes is file allocation, kept for
+            # backward compatibility; db_used_bytes is the DM-05 budget
+            # figure a caller should judge headroom against.
             "db_bytes": info["db_bytes"],
+            "db_used_bytes": info["db_used_bytes"],
+            "db_freelist_bytes": info["db_freelist_bytes"],
             "open_incidents": info["open_incidents"],
             "self_metrics": {r["metric"]: r["value"] for r in rows},
             "glances": [_glance_json(r) for r in batch.readings],

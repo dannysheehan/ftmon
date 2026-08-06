@@ -168,3 +168,20 @@ def test_expr_package_is_stdlib_only():
         check=True,
     )
     assert out.stdout.strip() == ""
+
+
+def test_dm05_used_page_arithmetic_has_exactly_one_implementation():
+    """[DM-05][CL-05] Only store/db.py derives used pages from the freelist.
+
+    The defect behind issue #104 was a budget alarm watching file allocation
+    while DM-05 governs used pages. Enforcement (retention's degradation loop),
+    the self metrics, and every reporting surface must therefore ask the same
+    code the same question — a second derivation is how the two drifted apart
+    in the first place, and would drift again silently.
+    """
+    offenders = [
+        py.relative_to(SRC).as_posix()
+        for py in SRC.rglob("*.py")
+        if py.name != "db.py" and "PRAGMA freelist_count" in py.read_text()
+    ]
+    assert offenders == []

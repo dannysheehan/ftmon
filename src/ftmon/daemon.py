@@ -56,10 +56,11 @@ from ftmon.store.writer import TickWriter
 
 _RESCAN_EVERY_S = 30.0  # PM-04
 _RETENTION_EVERY_S = 60.0  # DM-04: incremental; a minute cadence keeps passes tiny
-# DM-05's normative used-page budget. Headroom is reported against *this*, not
-# against whatever level a definition chooses to alarm at, so the reported
-# distance-to-budget stays stable when an alarm threshold is retuned (#104).
-_DB_BUDGET_BYTES = 200 * 1024 * 1024
+# Headroom is reported against DM-05's normative target, not whatever level a
+# definition chooses to alarm at, so the reported distance-to-budget stays
+# stable when an alarm threshold is retuned (#104). The constant itself lives
+# with the arithmetic in store.db so enforcement and reporting cannot drift.
+_DB_BUDGET_BYTES = store_db.DB_BUDGET_BYTES
 _LOG_MAX_BYTES = 10 * 1024 * 1024
 _LOG_BACKUPS = 3
 _DAEMON_LOG = logging.getLogger("ftmon.daemon.file")
@@ -799,18 +800,15 @@ class DaemonCore:
         not evidence that the database shrank.
         """
         try:
-            pages = self.conn.execute("PRAGMA page_count").fetchone()[0]
-            free = self.conn.execute("PRAGMA freelist_count").fetchone()[0]
-            size = self.conn.execute("PRAGMA page_size").fetchone()[0]
+            size = store_db.db_size_report(self.conn)
         except sqlite3.Error:
             return
-        used = (pages - free) * size
-        self.stats.db_file_bytes = float(pages * size)
-        self.stats.db_used_bytes = float(used)
-        self.stats.db_freelist_bytes = float(free * size)
+        self.stats.db_file_bytes = float(size["db_bytes"])
+        self.stats.db_used_bytes = float(size["used_bytes"])
+        self.stats.db_freelist_bytes = float(size["freelist_bytes"])
         # Signed against the normative DM-05 target, not the alarm threshold:
         # "how far from the budget" must not move when an alarm is retuned.
-        self.stats.db_headroom_bytes = float(_DB_BUDGET_BYTES - used)
+        self.stats.db_headroom_bytes = float(_DB_BUDGET_BYTES - size["used_bytes"])
         self.stats.entities_persisted = self.pipeline.persisted_entities(self.monitors)
 
     def _sample_outbox_backlog(self, wall: float) -> None:
