@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.24**. Companion to `SPEC.md` v0.45 — every design element
+Status: **DRAFT v0.25**. Companion to `SPEC.md` v0.46 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -690,12 +690,39 @@ FTMON deliberately does not run full `VACUUM` while the daemon is live (v0.44, i
 
 ### 10.6 Self source (RB-02)
 
-Metrics: `cpu_pct, rss_bytes, db_bytes, cycle_s, sampler_s{per-source attr},
-tick_overruns, event_queue_depth, events_dropped, events_unstored,
-ring_mem_bytes, source_activity_age_s, eval_unknown_total, samples_rejected,
-external_checks_skipped, external_check_failures{category attr},
-external_perfdata_rejected{category attr}`. Fed from a `SelfStats` struct the
-daemon updates in place; sampled like any source.
+Metrics: `cpu_pct, rss_bytes, db_bytes, db_file_bytes, db_used_bytes,
+db_freelist_bytes, db_headroom_bytes, entities_persisted, cycle_s,
+sampler_s{per-source attr}, tick_overruns, event_queue_depth, events_dropped,
+events_unstored, ring_mem_bytes, source_activity_age_s, eval_unknown_total,
+samples_rejected, external_checks_skipped, external_check_failures{category
+attr}, external_perfdata_rejected{category attr}`. Fed from a `SelfStats`
+struct the daemon updates in place; sampled like any source.
+
+The database figures are four quantities rather than one because DM-05 bounds
+**used pages** — free pages are reclaimable and cost nothing against it — and
+an alarm on file allocation therefore fires while the defined budget is
+healthy. `db_headroom_bytes` is signed against DM-05's normative 200 MB target
+rather than any alarm level, so retuning a threshold cannot move the reported
+distance to the budget. `db_bytes` is retained meaning file allocation: its
+stored history means that, and redefining a persisted metric would introduce a
+step no database ever took (issue #104).
+
+Collecting them costs a design compromise. `SelfSampler` holds no connection
+and cannot run PRAGMAs, so the daemon reads `page_count`/`freelist_count`/
+`page_size` on its own connection and pushes the results into `SelfStats` —
+the same route the notification backlog gauges take. It runs *before* the
+sampler loop rather than after, since the sampler reads the struct directly and
+a later read would publish the previous tick's database size beside this tick's
+everything else. A failed read keeps the previous values instead of publishing
+zero: a momentary lock is not evidence that the database shrank.
+
+`entities_persisted` counts the pipeline's `selected` set, not entities with
+`gone_ts IS NULL`. Under SA-05 track-all every sampled entity is marked seen,
+so a presence-derived count answers "how many processes are running", which is
+roughly an order of magnitude larger than the persisted set DM-16's budget
+governs. The caller supplies the loaded monitor set, so a removed definition
+stops contributing immediately (MD-09) while a monitor whose interval skipped
+this tick keeps its last count rather than dropping to zero.
 
 ### 10.7 Notification fan-out and retry (DM-18, NO-04..10)
 

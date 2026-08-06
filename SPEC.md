@@ -1,6 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.45** — v0.45 extends PM-10's survive-the-lock discipline to
+Status: **DRAFT v0.46** — v0.46 makes the self-monitor's budget signals mean
+what the requirements they police actually say: DM-05 is measured on used
+pages everywhere it is reported, its alarm sits above the enforcement target
+rather than at it, DM-16 pressure counts entities that are persisted rather
+than merely running, and unrelated budgets stop sharing one incident group
+(DM-05, RB-02, DM-16, CL-05, issue #104). v0.45 extends PM-10's survive-the-lock discipline to
 the background notification dispatcher (PM-12): a store fault inside the worker
 thread must recover rather than silently kill the only delivery path, and a
 dead worker or overdue claimable backlog must fail `ftmon doctor` instead of
@@ -353,9 +358,9 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 ### 5.2 Retention and rollups
 
 - **DM-04** Raw samples are kept **48 h**. 5-minute rollups `(avg, min, max, last, count)` are kept **30 d**. 1-hour rollups are kept **400 d** for *durable* series (system, disk, self, and watchlist-synthetic entities) and **90 d** for process-sourced series (v0.3 amendment: the capacity worksheet shows process-entity churn makes 400 d hourly retention for all series infeasible within DM-05). Rollup jobs run in the daemon, incrementally, never more than 1 s of work per cycle.
-- **DM-05** The database's **used-page footprint** MUST stay under **200 MB**, measured as `(page_count − freelist_count) × page_size`. On breach the daemon degrades in this fixed order until under budget: (1) oldest raw samples beyond 24 h, (2) oldest events beyond 7 d, (3) oldest 5-min rollups, (4) oldest 1-h rollups. Incidents are never pruned. Each degradation step records a self-event and its timestamp. The DB is created with `auto_vacuum=INCREMENTAL`; bounded `PRAGMA incremental_vacuum(200)` runs after each retention transaction so reusable freelist pages progressively return to the filesystem. The main database file MAY temporarily exceed the used-page footprint while that bounded reclaim catches up; free pages remain immediately reusable and do not trigger further lossy degradation. FTMON MUST NOT run a full `VACUUM` automatically while the daemon is live: rebuilding this bounded local database requires an exclusive SQLite write lock whose sampling, retention, and notification availability cost is disproportionate to tighter physical packing. Offline full compaction is explicit operator maintenance, not part of the live retention path. (v0.44 amendment, issue #74.)
+- **DM-05** The database's **used-page footprint** MUST stay under **200 MB**, measured as `(page_count − freelist_count) × page_size`. On breach the daemon degrades in this fixed order until under budget: (1) oldest raw samples beyond 24 h, (2) oldest events beyond 7 d, (3) oldest 5-min rollups, (4) oldest 1-h rollups. Incidents are never pruned. Each degradation step records a self-event and its timestamp. The DB is created with `auto_vacuum=INCREMENTAL`; bounded `PRAGMA incremental_vacuum(200)` runs after each retention transaction so reusable freelist pages progressively return to the filesystem. The main database file MAY temporarily exceed the used-page footprint while that bounded reclaim catches up; free pages remain immediately reusable and do not trigger further lossy degradation. FTMON MUST NOT run a full `VACUUM` automatically while the daemon is live: rebuilding this bounded local database requires an exclusive SQLite write lock whose sampling, retention, and notification availability cost is disproportionate to tighter physical packing. Offline full compaction is explicit operator maintenance, not part of the live retention path. (v0.44 amendment, issue #74.) (v0.46 amendment, issue #104.) Every surface that reports database capacity — the `self` source, `ftmon doctor`, `ftmon status`, MCP, and the dashboard — MUST distinguish used pages from file allocation, and MUST present used pages as the budget figure; file allocation is fragmentation context and MUST NOT on its own indicate a breach. A definition alarming on this budget MUST compare used pages, and its alarm threshold MUST sit **above** the 200 MB target rather than at it: retention holds the footprint just under the target by design, so a rule tripping at the target fires precisely when retention is working, and an alarm must instead mean that retention is failing.
 - **DM-06** Queries spanning tiers (raw → 5 m → 1 h) MUST be answered transparently by the query layer choosing resolution by range; callers never pick tables. MCP `query_metrics` MAY apply a documented post-tier entity/point truncation with explicit metadata; it MUST NOT select a coarser retention table merely because many entities matched. The selected resolution MUST be reported even when no observations exist in the range. MCP MUST omit entities with no in-range observations (quiet windows are empty `series` with `empty_reason`, not empty-point shells).
-- **DM-16** The design document MUST include a capacity worksheet deriving RB-01/DM-05 feasibility from stated assumptions — max tracked entities (budget: 400 persisted), metrics per entity (≤ 10), sample width in bytes, rows/day at 60 s intervals, event rates, ring-buffer memory (CA-04) — and the worksheet's assumptions become validation limits (a definition exceeding them is rejected).
+- **DM-16** The design document MUST include a capacity worksheet deriving RB-01/DM-05 feasibility from stated assumptions — max tracked entities (budget: 400 persisted), metrics per entity (≤ 10), sample width in bytes, rows/day at 60 s intervals, event rates, ring-buffer memory (CA-04) — and the worksheet's assumptions become validation limits (a definition exceeding them is rejected). (v0.46 amendment, issue #104.) Because the budget counts **persisted** entities, pressure against it MUST be measured as those for which durable history is currently being written — not as entities merely present. A process the pipeline samples but does not select is running, not persisted: under SA-05 track-all every sampled entity is marked seen, so counting presence overstates storage pressure by the ratio of sampled to selected entities, which on a desktop is roughly an order of magnitude. A count derived from presence MAY still be reported, under a name that says so.
 - **DM-17** Historical chart queries MUST expose the selected rollup statistic (`avg|min|max|last`) and, when requested, the stored minimum/maximum envelope. Rates and projections MUST be computed from observations before display downsampling; presentation code MUST NOT derive them from the ≤2 000 rendered points. Missing intervals remain gaps rather than being interpolated.
 
 ### 5.3 Canonical event record
@@ -1141,7 +1146,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ## 13. Resource budget (self-enforced)
 
 - **RB-01** Daemon steady-state: ≤ 1 % of one CPU averaged over 10 m; RSS ≤ 100 MB; DB ≤ 200 MB (DM-05). Web UI and MCP processes: RSS ≤ 80 MB each. Feasibility is demonstrated, not asserted: DM-16's capacity worksheet.
-- **RB-02** The daemon samples **itself** (cpu, rss, cycle duration, per-source duration, DB size, event queue depth, ring-buffer memory, event_source_last_activity_age) into the built-in `self` monitor (§7.7) with rules that open a `warning` incident on sustained budget breach — the monitor must not become the hog, and if it does, it tells on itself.
+- **RB-02** The daemon samples **itself** (cpu, rss, cycle duration, per-source duration, DB size, event queue depth, ring-buffer memory, event_source_last_activity_age) into the built-in `self` monitor (§7.7) with rules that open a `warning` incident on sustained budget breach — the monitor must not become the hog, and if it does, it tells on itself. (v0.46 amendment, issue #104.) "DB size" is four distinct quantities, not one: file allocation, used pages, reusable freelist bytes, and signed headroom against DM-05's target. Headroom MUST be measured against that normative target rather than against whatever level a definition alarms at, so retuning a threshold cannot move the reported distance to the budget. The self source MUST also expose the count of entities for which durable history is currently being written (DM-16). Unrelated budgets MUST occupy distinct incident groups: a single group shared by CPU, memory and storage lets one incident stay open while ownership moves between them, so its duration and recovery history describe nothing in particular.
 - **RB-03** Tier-1 e2e tests assert cycle-time and DB-growth invariants under a synthetic 300-process, 10-events/s load (§16.4).
 
 ---
@@ -1187,7 +1192,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **CL-02** `ftmon check` validates all definitions (or one file) and exits non-zero on any error — the successor of legacy `-c`, and the pre-commit/CI hook for definitions.
 - **CL-03** Every list-producing subcommand supports `--json` (stable, documented shape shared with MCP responses) — the CLI is also scripting surface.
 - **CL-04** `ftmon status` is the legacy `-z` successor: one screen, exit code 0/1/2 mapping to (all-clear / warnings / errors+) for scripting.
-- **CL-05** `ftmon doctor`: runs `PRAGMA quick_check` (full `integrity_check` with `--deep`), WAL checkpoint, reports DB/table sizes, orphaned rows, cursor ages, and config errors; `ftmon doctor --backup <path>` produces a consistent snapshot via the SQLite backup API. Naive file-copy of the live WAL database is documented as unsupported (VC-03). Exit non-zero on any problem found. (v0.43 amendment, issue #74) Also reports active catalog pressure against the DM-16 worksheet — live (`gone_ts IS NULL`) entity and recently-active series counts against its ≤400/~270 assumptions — separately from total retained catalog rows (which legitimately exceed those assumptions under process churn even when reap is healthy; DM-16 §9), plus MD-09 reap recency (last pass timestamp and row count). (v0.44 amendment, issue #74) Database capacity is split into file allocation, used bytes, and reusable freelist pages/bytes/percentage, with last DM-05 degradation recency. Doctor MUST NOT collapse catalog assumptions or fragmentation into a single pass/fail flag: active counts, used-page budget, and physical packing are distinct signals, and only integrity/orphan/config failures affect doctor health.
+- **CL-05** `ftmon doctor`: runs `PRAGMA quick_check` (full `integrity_check` with `--deep`), WAL checkpoint, reports DB/table sizes, orphaned rows, cursor ages, and config errors; `ftmon doctor --backup <path>` produces a consistent snapshot via the SQLite backup API. Naive file-copy of the live WAL database is documented as unsupported (VC-03). Exit non-zero on any problem found. (v0.43 amendment, issue #74) Also reports active catalog pressure against the DM-16 worksheet — live (`gone_ts IS NULL`) entity and recently-active series counts against its ≤400/~270 assumptions — separately from total retained catalog rows (which legitimately exceed those assumptions under process churn even when reap is healthy; DM-16 §9), plus MD-09 reap recency (last pass timestamp and row count). (v0.44 amendment, issue #74) Database capacity is split into file allocation, used bytes, and reusable freelist pages/bytes/percentage, with last DM-05 degradation recency. Doctor MUST NOT collapse catalog assumptions or fragmentation into a single pass/fail flag: active counts, used-page budget, and physical packing are distinct signals, and only integrity/orphan/config failures affect doctor health. (v0.46 amendment, issue #104.) The same used-vs-file split doctor already makes MUST hold across `ftmon status`, MCP, and the dashboard, so an operator cannot reach a different conclusion about capacity depending on which surface they consult.
 - **CL-06** `ftmon paths` prints the resolved filesystem layout an author or operator needs — config dir, monitors dir, drafts dir, actions dir, check registry file, data dir, database file, state dir, log and notifications files, runtime dir and lock file — honoring the `FTMON_*` overrides, with `--json` (CL-03). Works with the daemon down (PM-01); prints paths only, never file contents.
 - **CL-07** `ftmon monitor rescan` requests an immediate PM-11 reload from the running daemon instead of waiting out the PM-04 window, using the daemon pid recorded in the PM-02 lock file. When no daemon is running (lock not held), it exits non-zero with a clear message rather than signalling a stale pid.
 - **CL-08** `ftmon check trust <path>` evaluates the shared executable trust policy (EC-01/SE-07 — the same predicate the registry and runner enforce) and reports **every** failed condition by name (absolute path, symlink-free, regular file, trusted owner, no group/other write, executable), exiting 0 when trusted and 1 otherwise. It never executes the candidate.
@@ -1403,6 +1408,37 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.46 (2026-08-06)** — closes issue #104, the first of four workstreams split
+out of #97. A live desktop held an endlessly flapping `self/budget` incident
+while the database was, by the definition DM-05 actually gives, healthy: the
+rule compared file allocation at 209,743,872 bytes against a 209,715,200 byte
+threshold while used pages stood at 209,100,800 — seven pages over, on the
+wrong side of a quantity that had never been breached, with a fully reclaimed
+freelist. Two independent defects had to be fixed together, because correcting
+either alone leaves the alarm useless. The rule measured the wrong quantity;
+and `db_budget_mb` was simultaneously the DM-05 target and the alarm level, so
+even measured correctly it would oscillate, since retention's whole purpose is
+to hold the footprint just under that target. The alarm now sits above the
+target and means *retention is failing*, not *retention is working*.
+
+Two further corrections came out of the same investigation. Catalog pressure
+was reported as entities with `gone_ts IS NULL`, which under SA-05 track-all
+counts every sampled process rather than those actually being persisted — it
+read 2,246 against a 400 budget on a host whose persisted set was far smaller,
+so the headline "5.6× over capacity" was an artefact of the measure, not a
+finding. And CPU, memory and storage rules shared one incident group, letting a
+single incident stay open while ownership moved between them.
+
+Deliberately not done: `db_bytes` was **not** aliased to used bytes. Aliasing
+would have made every installed definition DM-05-correct on upgrade at no
+apparent cost, but the persisted `db_bytes` series holds historical points
+meaning file allocation, and redefining it would put a step into every chart
+spanning the upgrade that no database ever took. This issue exists because a
+budget signal silently measured the wrong thing; the cure must not repeat that
+in the opposite direction. The consequence — installs keep alarming on file
+bytes until their definition is updated, since FS-02 forbids overwriting user
+config — is covered by a loader warning rather than left silent.
 
 **v0.45 (2026-08-06)** — closes issue #98. A live desktop kept sampling across a
 sleep/resume cycle while the background notification dispatcher was dead: six
