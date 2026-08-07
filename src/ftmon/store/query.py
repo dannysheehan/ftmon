@@ -24,7 +24,15 @@ __all__ = [
 
 _RAW_RECENT_S = 48 * 3600
 _RAW_MAX_SPAN_S = 12 * 3600
-_ROLLUP5M_MAX_SPAN_S = 30 * 86400
+# DM-06 tier boundaries, matched to DM-04's retention. These are *ages*, not
+# span limits: what decides whether a tier can answer a query is whether its
+# oldest requested point still exists, and a narrow window far in the past has
+# a short span but old data. Split per DM-04's durable/process retention
+# (issue #102) — a 5-minute tier chosen for a process series beyond 7 d
+# selects a table whose rows were pruned, and silently returns a truncated
+# answer while the hourly tier still holds the history.
+_R5M_KEEP_DURABLE_S = 30 * 86400
+_R5M_KEEP_PROCESS_S = 7 * 86400
 _ROLLUP5M_S = 300
 _BASELINE_MIN_UPDATES = 240
 _BASELINE_DEFAULT_LIMIT = 100
@@ -401,17 +409,81 @@ class Query:
             history_truncated=history_truncated,
         )
 
-    def _resolution(self, now: float, start: float, end: float) -> str:
-        span = end - start
-        if end > now - _RAW_RECENT_S and span <= _RAW_MAX_SPAN_S:
+    def _cohort_all_durable(
+        self,
+        *,
+        monitor: str | None = None,
+        metric: str | None = None,
+        entity_id: str | None = None,
+        series_id: int | None = None,
+    ) -> bool | None:
+        """True when every series in scope is durable; False if any is not.
+
+        None means the scope matches no series, which is treated as
+        indeterminate rather than durable: reporting a tier the data cannot
+        support would make an empty answer look like a complete one.
+        """
+        where, params = ["1=1"], []
+        if series_id is not None:
+            where.append("id=?")
+            params.append(series_id)
+        if monitor is not None:
+            where.append("monitor=?")
+            params.append(monitor)
+        if metric is not None:
+            where.append("metric=?")
+            params.append(metric)
+        if entity_id is not None:
+            where.append("entity_id=?")
+            params.append(entity_id)
+        row = self._conn.execute(
+            f"SELECT COUNT(*) AS n, MIN(durable) AS lo FROM series "  # noqa: S608
+            f"WHERE {' AND '.join(where)}",
+            params,
+        ).fetchone()
+        if row is None or not row["n"]:
+            return None
+        return bool(row["lo"])
+
+    def _resolution(
+        self, now: float, start: float, end: float, *, all_durable: bool | None = None
+    ) -> str:
+        """DM-06 tier choice, by the age of the oldest requested point.
+
+        A mixed cohort takes the shorter window: one resolution has to serve
+        every series in the answer, and truncating the process ones silently
+        is the failure this guards against. An indeterminate cohort takes it
+        too, so the tier a caller is told about is one the data can support.
+        """
+        if start >= now - _RAW_RECENT_S and (end - start) <= _RAW_MAX_SPAN_S:
             return "raw"
-        if span <= _ROLLUP5M_MAX_SPAN_S:
+        keep_5m = _R5M_KEEP_DURABLE_S if all_durable else _R5M_KEEP_PROCESS_S
+        if start >= now - keep_5m:
             return "5m"
         return "1h"
 
-    def resolution_for(self, now: float, start: float, end: float) -> str:
-        """Public DM-06 tier choice (used by MCP even when no series rows exist)."""
-        return self._resolution(now, start, end)
+    def resolution_for(
+        self,
+        now: float,
+        start: float,
+        end: float,
+        *,
+        monitor: str | None = None,
+        metric: str | None = None,
+        entity_id: str | None = None,
+    ) -> str:
+        """Public DM-06 tier choice (used by MCP even when no series rows exist).
+
+        Scope arguments are optional so an unscoped caller still gets the safe
+        answer; supplying them lets an all-durable cohort keep 5-minute
+        resolution out to 30 days.
+        """
+        return self._resolution(
+            now, start, end,
+            all_durable=self._cohort_all_durable(
+                monitor=monitor, metric=metric, entity_id=entity_id
+            ),
+        )
 
     def _tier_table(self, resolution: str) -> tuple[str, str]:
         return {
@@ -422,7 +494,9 @@ class Query:
 
     def series_catalog(self, *, now: float, start: float, end: float) -> list[sqlite3.Row]:
         """Series with observations in the tier the requested range will query."""
-        resolution = self._resolution(now, start, end)
+        resolution = self._resolution(
+            now, start, end, all_durable=self._cohort_all_durable()
+        )
         table, time_column = self._tier_table(resolution)
         return self._conn.execute(
             "SELECT s.monitor, s.entity_id, s.metric FROM series s "
@@ -455,7 +529,12 @@ class Query:
         Catalog-only rows with no in-range observations are omitted so MCP can
         treat quiet windows as empty without materializing point arrays.
         """
-        resolution = self._resolution(now, start, end)
+        resolution = self._resolution(
+            now, start, end,
+            all_durable=self._cohort_all_durable(
+                monitor=monitor, metric=metric, entity_id=entity_id
+            ),
+        )
         table, time_column = self._tier_table(resolution)
         sql = (
             "SELECT s.id, s.entity_id FROM series s "
@@ -481,7 +560,11 @@ class Query:
         max_points: int = 2000,
     ) -> int:
         """Capped observation count for preflight (no point materialization)."""
-        resolution = self._resolution(now, start, end)
+        # Preflight must agree with retrieval, or a caller sizes a request
+        # against one tier and receives another (DM-06).
+        resolution = self._resolution(
+            now, start, end, all_durable=self._cohort_all_durable(series_id=series_id)
+        )
         table, time_column = self._tier_table(resolution)
         istart, iend = round(start), round(end)
         if resolution == "raw":
@@ -519,7 +602,9 @@ class Query:
         ).fetchone()
         if meta is None:
             raise ValueError(f"unknown series_id {series_id}")
-        resolution = self._resolution(now, start, end)
+        resolution = self._resolution(
+            now, start, end, all_durable=self._cohort_all_durable(series_id=series_id)
+        )
         istart, iend = round(start), round(end)
         points, envelope = self._load_points(
             series_id, resolution, istart, iend, statistic
@@ -601,7 +686,14 @@ class Query:
         sql += " ORDER BY entity_id"
         series_rows = self._conn.execute(sql, params).fetchall()
 
-        resolution = self._resolution(now, start, end)
+        # Same scope as the row selection above, so every result in this
+        # answer is reported at a tier that can actually serve it.
+        resolution = self._resolution(
+            now, start, end,
+            all_durable=self._cohort_all_durable(
+                monitor=monitor, metric=metric, entity_id=entity_id
+            ),
+        )
         istart, iend = round(start), round(end)
 
         results = []

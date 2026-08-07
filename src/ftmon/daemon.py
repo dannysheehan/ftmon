@@ -774,9 +774,15 @@ class DaemonCore:
             # hour, which buries the transition that actually mattered. The
             # gauge above carries the signal; these stay as forensic detail.
             if wall - self._last_degradation_event >= _DEGRADE_EVENT_EVERY_S:
-                summary = "; ".join(notes)
-                if self._degraded_passes > 1:
-                    summary += f" ({self._degraded_passes} degrading passes since last report)"
+                # Always stated, including for a single pass: DM-05 requires
+                # every report to say what it covers, and a reader cannot tell
+                # "one pass" from "count omitted" if the count only appears
+                # when it exceeds one.
+                passes = self._degraded_passes
+                summary = "; ".join(notes) + (
+                    f" ({passes} degrading pass{'es' if passes != 1 else ''} "
+                    "covered by this report)"
+                )
                 self.writer.add_event(EventRecord(
                     ts=wall, ingest_ts=wall, source="self",
                     provider="ftmon.retention", event_id=None, severity=1,

@@ -242,7 +242,12 @@ class McpApi:
         # One WAL read snapshot for observed-list / preflight / fetch so an
         # intervening daemon write cannot inflate points past the hard cap.
         with q.read_snapshot():
-            resolution = q.resolution_for(now, start, end)
+            # Same scope as the discovery call below, so an empty window
+            # reports the tier that would have served it rather than a more
+            # optimistic one (DM-06, issue #102).
+            resolution = q.resolution_for(
+                now, start, end, monitor=monitor, metric=metric, entity_id=entity,
+            )
             observed = q.list_observed_series_entities(
                 monitor, metric, now=now, start=start, end=end, entity_id=entity,
             )

@@ -874,9 +874,9 @@ class TestDegradationVisibility:
             ).fetchall()
             # 30 passes at a 600 s throttle: far fewer than one event each.
             assert 1 <= len(events) <= 4, f"expected throttled events, got {len(events)}"
-            # Nothing is hidden: a report says how many passes it stands for.
-            assert any("degrading passes since last report" in r["message"]
-                       for r in events)
+            # DM-05: *every* report says what it covers, including the first.
+            # `any` would pass while the first report omitted its count.
+            assert all("covered by this report" in r["message"] for r in events)
             # Every pass still counts, so a rate is recoverable from the metric.
             assert core.stats.counters["db_degradations"] == 30
         finally:

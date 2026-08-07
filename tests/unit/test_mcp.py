@@ -318,7 +318,14 @@ class TestQueryMetrics:
         assert res["resolution"] == "raw"
 
     def test_quiet_window_no_data_in_range(self, populated):
-        """[DM-06][MC-01] known metric, no observations → no_data_in_range."""
+        """[DM-06][MC-01] known metric, no observations → no_data_in_range.
+
+        The window is an hour wide but years old, so the reported tier is
+        hourly: DM-06 selects by the age of the oldest requested point, not by
+        span. Asserting 5m here would claim a tier whose rows for 2020 were
+        pruned long ago — the same class of silent truncation issue #102's
+        retention split exposed for process series (query.py._resolution).
+        """
         _paths, _clock, api = populated
         res = api.query_metrics(
             "leak", "rss_bytes",
@@ -326,7 +333,7 @@ class TestQueryMetrics:
         )
         assert res["series"] == []
         assert res["empty_reason"] == "no_data_in_range"
-        assert res["resolution"] == "5m"
+        assert res["resolution"] == "1h"
         assert "empty_reason" in res
 
     def test_empty_resolution_hourly_tier(self, populated):
