@@ -531,7 +531,9 @@ def test_monitor_loads_keeps_last_20(tmp_path):
 
 
 def test_status(tmp_path):
-    """status() reports last tick age, db size, and open incident count."""
+    """[DM-05][CL-05] status() reports last tick age, db size (file and
+    DM-05 used-pages figures, not just the file allocation issue #104 found
+    consumers conflating), and open incident count."""
     conn = _fresh(tmp_path)
     w = TickWriter(conn)
     w.set_meta("last_tick_ts", str(NOW))
@@ -553,6 +555,15 @@ def test_status(tmp_path):
     assert status["last_tick_age_s"] == 30
     assert status["db_bytes"] > 0
     assert status["open_incidents"] == 1
+    # [DM-05] used pages never exceed the file allocation, and the two
+    # differ by exactly the freelist -- the same identity doctor.inspect()
+    # pins, now read from the one shared arithmetic (db_size_report).
+    # The identity holds against *allocated*, never against db_bytes: db_bytes
+    # is the main file's stat() size and WAL mode lets it lag logical
+    # allocation between checkpoints (issue #104 review).
+    assert status["db_used_bytes"] <= status["db_allocated_bytes"]
+    assert (status["db_used_bytes"] + status["db_freelist_bytes"]
+            == status["db_allocated_bytes"])
 
 
 def _insert_incident(conn, incident_id, *, monitor="leak", grp="rss", entity_id="firefox:7:1"):

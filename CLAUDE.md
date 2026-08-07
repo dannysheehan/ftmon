@@ -29,7 +29,7 @@ uv run pytest -q tests/ai_skills                       # shared-skill contract
 uv run pytest -q tests/extra_monitors tests/exchange  # recipe/publication contract
 uv run pytest tests/unit/test_expr_eval.py -q          # one file
 uv run ftmon init --profile desktop|server             # write config + builtin definitions
-uv run ftmon check             # one-shot sample/evaluate
+uv run ftmon check             # validate monitor definitions (CL-02) — not a sampler
 uv run ftmon daemon            # the monitor loop
 uv run ftmon web               # dashboard on http://127.0.0.1:8420/ (loopback only)
 uv run ftmon doctor            # DB/config diagnostics

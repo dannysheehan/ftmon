@@ -545,9 +545,7 @@ def test_self_source_exposes_backlog_and_worker_liveness_no_10(tmp_path, monkeyp
     stats.notify_oldest_claimable_due_age_s = 900.0
     stats.notify_worker_alive = 0.0
     stats.count("notify_store_errors")
-    metrics = SelfSampler(stats, tmp_path / "absent.db").sample(
-        1_000, 0.0, {}
-    ).entities[0].metrics
+    metrics = SelfSampler(stats).sample(1_000, 0.0, {}).entities[0].metrics
     assert metrics["notify_pending_total"] == 4
     assert metrics["notify_due_claimable"] == 3
     assert metrics["notify_quiet_held"] == 1

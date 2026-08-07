@@ -37,7 +37,7 @@ schema = 1
 [monitor]
 name = "self"
 description = "FTMON watches its own resource budget and pipeline health"
-version = 3
+version = 4
 enabled = true
 platforms = ["windows"]
 interval = "60s"
@@ -46,12 +46,19 @@ source = "self"
 [parameters]
 cpu_budget_pct = { value = 30, doc = "Warn when daemon CPU%% (10m avg) exceeds this -- recalibrated for measured Windows ProcessSampler overhead, RB-01's cross-platform target is 1.0" }
 rss_budget_mb = { value = 100, doc = "Warn when daemon RSS exceeds this (MB)" }
-db_budget_mb = { value = 200, doc = "Warn when database exceeds this (MB)" }
+db_budget_mb = { value = 200, doc = "DM-05's normative enforcement target (used pages, not file size); retention is tuned to hold used bytes just under this" }
+# DM-05 defines the budget as USED pages, (page_count - freelist_count) *
+# page_size -- free pages are already reclaimed and cost nothing against it.
+# db_warn_mb sits ~15%% above db_budget_mb on purpose: db_budget_mb is the
+# target retention holds the footprint under, so an alarm AT that value
+# fires every time retention is doing its job correctly. db_warn_mb means
+# "retention is failing," not "retention is working."
+db_warn_mb = { value = 230, doc = "Alarm threshold for db-budget, deliberately above db_budget_mb (see comment above)" }
 stall_s = { value = 5400, doc = "Warn when the event reader has been silent this long (s) -- recalibrated from the generic 600s default for Windows System/Application channels' observed idle gaps (up to 58 min over 48h)" }
 
 [[rule]]
 id = "cpu-budget"
-group = "budget"
+group = "cpu-budget"
 when = 'avg(cpu_pct, "10m") > cpu_budget_pct'
 severity = "warning"
 confirm_cycles = 3
@@ -59,19 +66,23 @@ message = "FTMON over CPU budget: {cpu_10m:.1f}% (10m avg)"
 
 [[rule]]
 id = "rss-budget"
-group = "budget"
+group = "rss-budget"
 when = 'rss_bytes > rss_budget_mb * MB'
 severity = "warning"
 confirm_cycles = 5
 message = "FTMON over memory budget: {rss_mb:.0f} MB RSS"
 
+# Fires on db_used_bytes (DM-05: used pages), not db_bytes (file size) --
+# free pages are immediately reusable and cost nothing against the budget,
+# so gating on file size flapped on a live host that was over the file
+# threshold while comfortably under the used-bytes budget.
 [[rule]]
 id = "db-budget"
-group = "budget"
-when = 'db_bytes > db_budget_mb * MB'
+group = "db-budget"
+when = 'db_used_bytes > db_warn_mb * MB'
 severity = "warning"
 confirm_cycles = 3
-message = "FTMON database over budget: {db_mb:.0f} MB (pruning should engage)"
+message = "FTMON database over budget: {db_used_mb:.0f} MB used (pruning should engage)"
 
 [[rule]]
 id = "event-stall"
@@ -89,5 +100,5 @@ name = "rss_mb"
 expr = 'rss_bytes / MB'
 
 [[derived]]
-name = "db_mb"
-expr = 'db_bytes / MB'
+name = "db_used_mb"
+expr = 'db_used_bytes / MB'

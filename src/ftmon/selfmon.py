@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import ClassVar
 
 import psutil
@@ -39,6 +38,18 @@ class SelfStats:
     notify_failed: int = 0
     notify_oldest_claimable_due_age_s: float = 0.0
     notify_worker_alive: float = 1.0
+    # DM-05 is defined on *used* pages, which only a database connection can
+    # report; the sampler has none, so the daemon reads the page counts on its
+    # own connection each tick. Zero until the first successful read.
+    db_file_bytes: float = 0.0
+    db_allocated_bytes: float = 0.0
+    db_used_bytes: float = 0.0
+    db_freelist_bytes: float = 0.0
+    db_headroom_bytes: float = 0.0
+    # None until a tick has run: publishing 0 on the first tick after a
+    # restart would look like a measurement of nothing persisted.
+    entities_persisted: int | None = None
+    series_persisted: int | None = None
     counters: dict[str, int] = field(default_factory=dict)
 
     def count(self, name: str) -> None:
@@ -49,21 +60,30 @@ class SelfStats:
 class SelfSampler:
     decl: ClassVar[SourceDecl] = SOURCE_DECLS["self"]
 
-    def __init__(self, stats: SelfStats, db_file: Path):
+    def __init__(self, stats: SelfStats):
         self._stats = stats
-        self._db_file = db_file
         self._proc = psutil.Process()
 
     def sample(self, now: float, deadline_mono: float, options: Mapping) -> Snapshot:
         s = self._stats
-        try:
-            db_bytes = float(self._db_file.stat().st_size)
-        except OSError:
-            db_bytes = 0.0
         metrics: dict[str, float] = {
             "cpu_pct": float(self._proc.cpu_percent(None)),
             "rss_bytes": float(self._proc.memory_info().rss),
-            "db_bytes": db_bytes,
+            # db_bytes is stat() of the main file — exactly what this metric
+            # measured before #104, so its stored history stays continuous
+            # (decision D1). db_allocated_bytes is SQLite's logical size.
+            # These are NOT the same in WAL mode: the main file lags logical
+            # allocation between checkpoints (measured ~1 MB on a live FTMON
+            # database), which is why the earlier attempt to serve both from
+            # one value broke the very continuity D1 promised.
+            # Neither is the budget signal: DM-05 rules use db_used_bytes.
+            "db_bytes": s.db_file_bytes,
+            "db_allocated_bytes": s.db_allocated_bytes,
+            "db_used_bytes": s.db_used_bytes,
+            "db_freelist_bytes": s.db_freelist_bytes,
+            # Signed: negative means over budget, which is the interesting case
+            # and would be erased by clamping at zero.
+            "db_headroom_bytes": s.db_headroom_bytes,
             "cycle_s": s.cycle_s,
             "tick_overruns": float(s.tick_overruns),
             "event_queue_depth": float(s.event_queue_depth),
@@ -103,5 +123,11 @@ class SelfSampler:
                 if name.startswith("external_perfdata_rejected:")
             )),
         }
+        # Omitted rather than zeroed while unknown: EX-06 makes a missing
+        # metric UNKNOWN, which is what "no tick has run yet" means.
+        if s.entities_persisted is not None:
+            metrics["entities_persisted"] = float(s.entities_persisted)
+        if s.series_persisted is not None:
+            metrics["series_persisted"] = float(s.series_persisted)
         entity = EntitySample(entity_id="ftmon", attrs={}, metrics=metrics)
         return Snapshot(source=self.decl.name, ts=now, entities=(entity,))
