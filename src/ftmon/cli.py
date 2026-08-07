@@ -853,10 +853,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     def _budget(value, limit):
         return "unknown (no daemon has published it)" if value is None else f"{value}/{limit}"
 
+    # DM-16 states the entity figure as a budget but derives ~270 series from
+    # a worksheet whose scope does not reconcile with 400 entities at >=1
+    # metric each. Until #103 settles that, the series limit is reported as an
+    # assumption rather than asserted as a bound the daemon is violating.
     print(
-        "Catalog persisted (DM-16 budget): "
-        f"entities={_budget(dm16['entities_persisted'], dm16['max_entities_persisted'])} "
+        "Catalog persisted vs DM-16: "
+        f"entities={_budget(dm16['entities_persisted'], dm16['max_entities_persisted'])}"
+        " (budget) "
         f"series={_budget(dm16['series_persisted'], dm16['max_series_persisted'])}"
+        " (worksheet assumption)"
     )
     # Presence and retention, deliberately without a budget comparison: these
     # count what is running and what is retained, neither of which is the

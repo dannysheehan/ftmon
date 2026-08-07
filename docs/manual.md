@@ -597,8 +597,11 @@ discards the tuning, so prefer the targeted edit.
 Rules of your own can use `db_allocated_bytes`, `db_used_bytes`,
 `db_freelist_bytes`, `db_headroom_bytes` (signed — negative means over the
 DM-05 target), and `entities_persisted` / `series_persisted`, which count what
-the daemon is currently writing durable history for, against the DM-16 budgets
-of 400 entities and ~270 series. Those two count *selection*, not what happens
+the daemon is currently writing durable history for. DM-16 budgets 400
+persisted entities; its ~270 series figure is a capacity-worksheet assumption
+rather than a settled bound, so `doctor` labels the two differently and a
+series count above ~270 is worth understanding rather than treating as a
+breach. Those two count *selection*, not what happens
 to be running: a process FTMON samples but does not persist costs nothing
 against the catalog, so a much larger "running" count is normal and `doctor`
 reports it separately, without a budget comparison.
