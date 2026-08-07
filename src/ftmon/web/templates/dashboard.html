@@ -34,7 +34,10 @@
     <div class="stat stat-{{ item.tone if item.tone != 'unknown' else 'muted' }}"
          title="{{ item.title }}">
       <span class="stat-value">{{ item.value }}</span>
-      <span class="stat-label"><a href="/self">{{ item.label }}</a></span>
+      {# The demo serves no /self page (UI-15), so the figure stays and the
+         link does not: a dead link on a public demo is worse than none. #}
+      <span class="stat-label">{% if demo %}{{ item.label }}{%
+        else %}<a href="/self">{{ item.label }}</a>{% endif %}</span>
     </div>
     {% endfor %}
     {% endif %}
