@@ -71,7 +71,12 @@ def _win_owner_sid(path: Path) -> str | None:
 
 
 def _win_trusted_owner(path: Path) -> bool:
-    """SE-07: owner SID is the current process's user, or SYSTEM/Administrators."""
+    """SE-07: owner SID is the current process's user, or SYSTEM/Administrators.
+
+    TrustedInstaller is intentionally absent. Windows exposes the real owner
+    SID, so the POSIX-only workaround for systemd-masked distro ownership must
+    not become a general "System32 paths are trusted" exception (#108).
+    """
     owner = _win_owner_sid(path)
     if owner is None:
         return False

@@ -74,6 +74,14 @@ monitor tree for the current operating system. On Windows they resolve to
 `windesktop` and `winserver`; on macOS they resolve to `macdesktop` and
 `macserver`. The explicit platform names remain available for automation.
 
+Windows external checks use SID ownership and NTFS DACLs rather than POSIX
+uids and mode bits. In particular, stock `C:\Windows\System32` executables are
+usually TrustedInstaller-owned and are deliberately rejected as direct check
+executables. Before adding an alias to `checks.toml`, follow the
+[Windows check location and trust guidance](check-authoring.md#windows-why-system32-executables-are-rejected)
+and verify the candidate with `ftmon check trust <absolute-path>`; the command
+does not execute it.
+
 On macOS choose `macdesktop` (file audit plus best-effort Notification Center
 delivery) or `macserver` (file audit only). Desktop notifications appear under
 **Script Editor** in System Settings because the zero-bundle adapter uses
