@@ -11,10 +11,10 @@
 </p>
 <!-- markdownlint-enable MD033 -->
 
-FTMON is a lightweight, local systems monitor for Linux desktops, workstations,
-and standalone servers. It detects problems such as memory leaks, CPU hogs,
-disks filling, service failures, and notable journal events while keeping
-bounded metric history on the monitored machine.
+FTMON is a lightweight, local systems monitor for Linux, Windows, and macOS
+desktops, workstations, and standalone servers. It detects problems such as
+memory leaks, CPU hogs, disks filling, service failures, and notable journal /
+Event Log events while keeping bounded metric history on the monitored machine.
 
 It is designed for people who need more history and alerting than `htop` or
 `btop`, but do not need a central monitoring stack such as Nagios, Zabbix, or
@@ -93,9 +93,24 @@ command or credentials. See [External checks](https://github.com/dannysheehan/ft
 
 ## Quick start
 
-### Install from PyPI
+### Install
 
-FTMON requires Python 3.11 or newer and
+**Windows:** download the per-user x64 MSI from the
+[GitHub Releases](https://github.com/dannysheehan/ftmon/releases) page
+(`ftmon-<version>-windows-x64.msi`), install it (no elevation), then:
+
+```powershell
+ftmon init --profile desktop
+Install-FTMONTasks.ps1
+Start-ScheduledTask -TaskName 'FTMON daemon'
+ftmon web   # optional; or Install-FTMONTasks.ps1 -IncludeWeb for logon start
+```
+
+Open <http://127.0.0.1:8420/>. Full MSI, Task Scheduler, upgrade, and uninstall
+steps are in the
+[installation guide](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md#windows-msi--task-scheduler).
+
+**Linux / macOS / Windows with Python:** FTMON requires Python 3.11 or newer and
 [uv](https://docs.astral.sh/uv/). The recommended operator install uses an
 isolated tool environment from
 [PyPI](https://pypi.org/project/ftmon/):
@@ -115,8 +130,8 @@ ftmon web
 
 Then open <http://127.0.0.1:8420/>. FTMON binds only to loopback and the web UI
 loads no external assets. Prefer `uv tool` or `pipx` over a bare
-`pip install ftmon` into a shared environment. Upgrade, systemd, and server
-account setup are in the
+`pip install ftmon` into a shared environment. Upgrade, systemd, launchd, Task
+Scheduler, and server account setup are in the
 [installation guide](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md).
 
 For a headless single server, initialize with `--profile server`. This writes

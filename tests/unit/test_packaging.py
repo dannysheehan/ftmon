@@ -107,6 +107,21 @@ def test_versioned_demo_scenario_is_packaged_ui_16():
     assert '"scenario":"demo-v1"' in scenario.splitlines()[0]
 
 
+def test_windows_task_helpers_are_packaged_pl_01():
+    """[PL-01][DO-02] Task Scheduler helpers ship as package data + shared-scripts."""
+    install = files("ftmon").joinpath("windows/Install-FTMONTasks.ps1").read_text(encoding="utf-8")
+    runner = files("ftmon").joinpath("windows/Invoke-FTMONTask.ps1").read_text(encoding="utf-8")
+    assert "FTMON daemon" in install
+    assert "AtLogOn" in install
+    assert "ValidateSet('daemon', 'web')" in runner or "daemon" in runner and "web" in runner
+    assert "0.0.0.0" not in install
+
+    root = Path(__file__).parents[2]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    shared = project["tool"]["hatch"]["build"]["targets"]["wheel"]["shared-scripts"]
+    assert shared["src/ftmon/windows/Install-FTMONTasks.ps1"] == "Install-FTMONTasks.ps1"
+
+
 def test_canonical_authoring_guides_are_force_included_in_wheel_mc_05():
     """[MC-05] Wheel data comes from canonical docs, not maintained copies."""
     root = Path(__file__).parents[2]
