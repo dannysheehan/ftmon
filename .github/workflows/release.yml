@@ -204,7 +204,10 @@ jobs:
           case "${GITHUB_REF_NAME}" in
             *a*|*b*|*rc*) prerelease="--prerelease" ;;
           esac
-          gh release create "${GITHUB_REF_NAME}" dist/* dist/windows/* \
+          # Upload files only: bare `dist/*` would expand to the `dist/windows`
+          # directory and make `gh release create` fail.
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/*.whl dist/*.tar.gz dist/windows/* \
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes ${prerelease}
