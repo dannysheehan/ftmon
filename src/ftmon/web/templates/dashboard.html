@@ -38,10 +38,7 @@
     </div>
     {% endfor %}
     {% endif %}
-    <div class="stat stat-muted" title="File allocation {{ '%.1f'|format(status.db_bytes / 1048576) }} MB">
-      <span class="stat-value">{{ '%.1f'|format(status.db_used_bytes / 1048576) }}</span>
-      <span class="stat-label">Database MB (used)</span>
-    </div>
+
   </section>
 </section>
 {% macro render_tile(tile, mode) -%}

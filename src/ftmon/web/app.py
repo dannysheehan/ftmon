@@ -248,8 +248,11 @@ async def dashboard(request: Request):
         self_params = next(
             (dict(d.parameters) for d in defs if d.name == "self"), {}
         )
+        db_warn_mb = self_params.get("db_warn_mb") or self_params.get("db_budget_mb")
         self_budget = _self_budget_stats(
-            _self_panel(self_metrics, self_params, None)
+            _self_panel(self_metrics, self_params, None),
+            db_used_bytes=status.get("db_used_bytes"),
+            db_warn_bytes=(db_warn_mb or 0) * 1024 * 1024 or None,
         )
     return _render(
         "dashboard.html", request, title="Dashboard", status=status,
@@ -1149,12 +1152,22 @@ def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
     }
 
 
-def _self_budget_stats(panel: dict | None) -> list[dict]:
+def _self_budget_stats(
+    panel: dict | None, *, db_used_bytes: float | None = None,
+    db_warn_bytes: float | None = None,
+) -> list[dict]:
     """Compact strip figures for the dashboard (#105).
 
-    The same three readings /self expands on, reduced to a value and a tone.
+    The same readings /self expands on, reduced to a value and a tone.
     Thresholds are not repeated here: the strip answers "is FTMON itself
     healthy" and links onward for "against what".
+
+    The database figure comes from the live status read rather than the
+    sampled metric — it is always available and a sample fresher — but it is
+    toned by the same `_budget_row` rule the panel uses. Sharing the *rule*
+    is what stops the two surfaces disagreeing about whether the daemon is
+    inside its database budget; sharing the input would trade a fresher
+    number for nothing.
     """
     if not panel:
         return []
@@ -1173,6 +1186,20 @@ def _self_budget_stats(panel: dict | None) -> list[dict]:
         ) + (f" ({fmt(limit)})" if limit else "")
         out.append({"label": label, "value": fmt(row["value"]),
                     "tone": row["tone"], "title": title})
+    if db_used_bytes is not None:
+        db_row = _budget_row("database", "Database MB (used)", db_used_bytes,
+                             db_warn_bytes, "bytes")
+        allocated = (panel.get("database") or {}).get("allocated")
+        title = (
+            f"{db_row['pct']:.0f}% of the threshold set on this host "
+            f"({db_warn_bytes / 1048576:.0f} MB)"
+            if db_row["pct"] is not None else "no threshold configured"
+        )
+        if allocated:
+            title += f"; file allocation {allocated / 1048576:.1f} MB"
+        out.append({"label": "Database MB (used)",
+                    "value": f"{db_used_bytes / 1048576:.1f}",
+                    "tone": db_row["tone"], "title": title})
     return out
 
 

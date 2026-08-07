@@ -1063,3 +1063,64 @@ def test_dashboard_strip_omits_self_budgets_when_unmeasured_ui_02(tmp_path):
     page = client.get("/", headers={"host": "localhost:8420"}).text
     assert "Self CPU %" not in page
     assert "Self RSS MB" not in page
+
+
+def test_dashboard_database_tile_shows_the_breach_state_dm_05(tmp_path):
+    """[DM-05][UI-04] Both surfaces must agree the database is over budget.
+
+    The tile was permanently `stat-muted`: /self could mark 240 MB against a
+    230 MB threshold as an error while the dashboard showed the same figure
+    with no state at all. Sharing the composer is pointless if the strip then
+    discards what it composed.
+    """
+    client, paths = _client(tmp_path)
+    (paths.monitors_dir / "self.toml").write_text(
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "self"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "self"\n'
+        '[parameters]\n'
+        'db_warn_mb = { value = 230, doc = "d" }\n'
+        '[[rule]]\n'
+        'id = "db-budget"\ngroup = "db-budget"\n'
+        "when = 'db_used_bytes > db_warn_mb * MB'\n"
+        'severity = "warning"\nconfirm_cycles = 3\nmessage = "m"\n',
+        encoding="utf-8",
+    )
+    conn = connect(paths.db_file)
+    # Push the live used-page figure past the threshold.
+    conn.execute("CREATE TABLE ballast(payload BLOB)")
+    conn.executemany(
+        "INSERT INTO ballast(payload) VALUES (zeroblob(65536))",
+        [() for _ in range(64)],
+    )
+    conn.commit()
+    conn.close()
+
+    page = client.get("/", headers={"host": "localhost:8420"}).text
+    assert "Database MB (used)" in page, "the DM-05 figure stays the headline"
+    # With a tiny threshold the tile must carry state, not stay muted.
+    assert "of the threshold set on this host" in page, (
+        "the tile reports what it is measured against"
+    )
+
+
+def test_dashboard_database_tile_is_toned_by_the_shared_rule_dm_05(tmp_path):
+    """[DM-05][UI-04] A used figure over the threshold tones the tile as error."""
+    client, paths = _client(tmp_path)
+    (paths.monitors_dir / "self.toml").write_text(
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "self"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "self"\n'
+        '[parameters]\n'
+        # A threshold below any real database size, so the live read breaches.
+        'db_warn_mb = { value = 0.01, doc = "d" }\n'
+        '[[rule]]\n'
+        'id = "db-budget"\ngroup = "db-budget"\n'
+        "when = 'db_used_bytes > db_warn_mb * MB'\n"
+        'severity = "warning"\nconfirm_cycles = 3\nmessage = "m"\n',
+        encoding="utf-8",
+    )
+    page = client.get("/", headers={"host": "localhost:8420"}).text
+    assert "stat-error" in page, "an over-budget database must not read as muted"
