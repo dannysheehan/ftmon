@@ -30,7 +30,7 @@ from ftmon.model import severity_name
 from ftmon.paths import Paths, get_paths
 from ftmon.sources.base import SOURCE_DECLS
 from ftmon.store.db import connect
-from ftmon.store.doctor import dispatch_health
+from ftmon.store.doctor import catalog_report, dispatch_health
 from ftmon.store.query import Query
 
 # macOS 12's stdlib maps .ico to image/x-icon while Linux maps it to the
@@ -235,10 +235,29 @@ async def dashboard(request: Request):
             tile for tile in tiles
             if tile.state == "disabled" and not tile.incident_count
         ]
+        # Same composer as /self, so the strip and the panel cannot disagree
+        # about whether the daemon is inside its own budgets (#105).
+        self_metrics = {} if q is None else {
+            r["metric"]: r["value"] for r in q._conn.execute(
+                "SELECT se.metric, s.value FROM series se "
+                "JOIN samples s ON s.series_id=se.id "
+                "WHERE se.monitor='self' AND s.ts="
+                "(SELECT MAX(x.ts) FROM samples x WHERE x.series_id=se.id)"
+            )
+        }
+        self_params = next(
+            (dict(d.parameters) for d in defs if d.name == "self"), {}
+        )
+        db_warn_mb = self_params.get("db_warn_mb") or self_params.get("db_budget_mb")
+        self_budget = _self_budget_stats(
+            _self_panel(self_metrics, self_params, None),
+            db_used_bytes=status.get("db_used_bytes"),
+            db_warn_bytes=(db_warn_mb or 0) * 1024 * 1024 or None,
+        )
     return _render(
         "dashboard.html", request, title="Dashboard", status=status,
         tiles=tiles, attention_tiles=attention, clear_tiles=clear,
-        disabled_tiles=disabled,
+        disabled_tiles=disabled, self_budget=self_budget,
         summary=summary, config_errors=errors, incidents=incidents,
         refresh_ms=5000,
     )
@@ -1032,6 +1051,158 @@ async def monitor_action(request: Request):
     return RedirectResponse("/monitors", status_code=303)
 
 
+# RB-01's normative targets. The self definition may carry a looser calibrated
+# threshold (the Windows profile runs at 30% for measured sampler overhead), so
+# the panel shows both: what this host alarms at, and what the spec asks for.
+_RB01_CPU_PCT = 1.0
+_RB01_RSS_BYTES = 100 * 1024 * 1024
+
+
+def _budget_row(row_id, label, value, limit, unit, *, spec=None,
+                higher_is_worse=True):
+    """One panel row: the number, what it is measured against, and how close.
+
+    `pct` is the true utilization and may exceed 100 — a CPU average of 6%
+    against a 1.5% threshold is 400% of budget, and clamping that for display
+    would under-report the breach it exists to show. `fill_pct` is clamped
+    because it is SVG geometry, not a reading.
+
+    Every row also carries text (UI-09): colour and bar length are never the
+    only carriers.
+    """
+    if value is None:
+        return {"id": row_id, "label": label, "value": None, "limit": limit,
+                "unit": unit, "pct": None, "fill_pct": None,
+                "tone": "unknown", "spec": spec}
+    if not limit:
+        # A missing *threshold* must not erase a known *measurement*: the
+        # reading is reported without a comparison rather than as absent.
+        return {"id": row_id, "label": label, "value": value, "limit": None,
+                "unit": unit, "pct": None, "fill_pct": None,
+                "tone": "unknown", "spec": spec}
+    pct = 100.0 * value / limit
+    tone = "ok"
+    if higher_is_worse:
+        tone = "error" if value >= limit else "warn" if pct >= 80 else "ok"
+    return {"id": row_id, "label": label, "value": value, "limit": limit,
+            "unit": unit, "pct": pct, "fill_pct": max(0.0, min(100.0, pct)),
+            "tone": tone, "spec": spec}
+
+
+def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
+    """Compose the operational Self panel (#105) from already-read values.
+
+    Deliberately consumes metrics and thresholds rather than recomputing
+    anything: the DM-05 arithmetic has one implementation in store.db and the
+    catalog figures one in store.doctor, and a view that re-derived either
+    would be the drift issue #104 removed.
+
+    Missing metrics render as unavailable rather than zero. The stage timings
+    #106 will add do not exist yet, and a panel that showed them as 0 would be
+    asserting a measurement nobody made.
+    """
+    def m(name):
+        value = metrics.get(name)
+        return None if value is None else float(value)
+
+    cpu_budget = params.get("cpu_budget_pct")
+    rss_budget_mb = params.get("rss_budget_mb")
+    db_warn_mb = params.get("db_warn_mb") or params.get("db_budget_mb")
+    dm16 = (catalog or {}).get("dm16", {})
+    return {
+        "cpu": {
+            "current": m("cpu_pct"),
+            "avg10m": m("cpu_10m"),
+            "row": _budget_row("cpu", "CPU", m("cpu_10m") if m("cpu_10m") is not None
+                               else m("cpu_pct"), cpu_budget, "%",
+                               spec=_RB01_CPU_PCT),
+        },
+        "memory": {
+            "row": _budget_row(
+                "memory", "Memory", m("rss_bytes"),
+                (rss_budget_mb or 0) * 1024 * 1024 or None, "bytes",
+                spec=_RB01_RSS_BYTES),
+        },
+        "database": {
+            "used": m("db_used_bytes"),
+            "allocated": m("db_allocated_bytes"),
+            "freelist": m("db_freelist_bytes"),
+            "headroom": m("db_headroom_bytes"),
+            "row": _budget_row(
+                "database", "Database (used pages)", m("db_used_bytes"),
+                (db_warn_mb or 0) * 1024 * 1024 or None, "bytes"),
+        },
+        "catalog": {
+            "entities_persisted": dm16.get("entities_persisted"),
+            "max_entities_persisted": dm16.get("max_entities_persisted"),
+            "series_persisted": dm16.get("series_persisted"),
+            "max_series_persisted": dm16.get("max_series_persisted"),
+            "entities_not_gone": dm16.get("entities_not_gone"),
+            "series_not_gone": dm16.get("series_not_gone"),
+            "reap_age_s": (catalog or {}).get("last_reap_age_s"),
+            "reap_count": (catalog or {}).get("last_reap_count"),
+            "degradation_age_s": (catalog or {}).get("last_degradation_age_s"),
+        },
+        # #106 supplies these; absent until then, and shown as such.
+        "stages": [
+            {"name": name, "seconds": m(name)}
+            for name in ("sample_process_s", "pipeline_s", "commit_s",
+                         "actions_outbox_s", "retention_s", "prune_s", "reap_s")
+        ],
+    }
+
+
+def _self_budget_stats(
+    panel: dict | None, *, db_used_bytes: float | None = None,
+    db_warn_bytes: float | None = None,
+) -> list[dict]:
+    """Compact strip figures for the dashboard (#105).
+
+    The same readings /self expands on, reduced to a value and a tone.
+    Thresholds are not repeated here: the strip answers "is FTMON itself
+    healthy" and links onward for "against what".
+
+    The database figure comes from the live status read rather than the
+    sampled metric — it is always available and a sample fresher — but it is
+    toned by the same `_budget_row` rule the panel uses. Sharing the *rule*
+    is what stops the two surfaces disagreeing about whether the daemon is
+    inside its database budget; sharing the input would trade a fresher
+    number for nothing.
+    """
+    if not panel:
+        return []
+    out = []
+    for key, label, fmt in (
+        ("cpu", "Self CPU %", lambda v: f"{v:.1f}"),
+        ("memory", "Self RSS MB", lambda v: f"{v / 1048576:.0f}"),
+    ):
+        row = panel[key]["row"]
+        if row["value"] is None:
+            continue
+        limit = row["limit"]
+        title = (
+            f"{row['pct']:.0f}% of the threshold set on this host" if row["pct"] is not None
+            else "no threshold configured"
+        ) + (f" ({fmt(limit)})" if limit else "")
+        out.append({"label": label, "value": fmt(row["value"]),
+                    "tone": row["tone"], "title": title})
+    if db_used_bytes is not None:
+        db_row = _budget_row("database", "Database MB (used)", db_used_bytes,
+                             db_warn_bytes, "bytes")
+        allocated = (panel.get("database") or {}).get("allocated")
+        title = (
+            f"{db_row['pct']:.0f}% of the threshold set on this host "
+            f"({db_warn_bytes / 1048576:.0f} MB)"
+            if db_row["pct"] is not None else "no threshold configured"
+        )
+        if allocated:
+            title += f"; file allocation {allocated / 1048576:.1f} MB"
+        out.append({"label": "Database MB (used)",
+                    "value": f"{db_used_bytes / 1048576:.1f}",
+                    "tone": db_row["tone"], "title": title})
+    return out
+
+
 async def self_page(request: Request):
     paths = request.app.state.paths
     try:
@@ -1046,17 +1217,28 @@ async def self_page(request: Request):
             "WHERE se.monitor='self' AND s.ts="
             "(SELECT MAX(x.ts) FROM samples x WHERE x.series_id=se.id)"
         ).fetchall()
+        catalog = None
         if q is not None:
             # Read-side, so the per-channel split costs no persisted series
             # against the DM-16 catalog budget (DESIGN 10.7).
             dispatch = dispatch_health(q._conn)
-    _defs, errors = loader.load_dir(
+            catalog = catalog_report(q._conn, now=request.app.state.clock.now())
+    defs, errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
+    )
+    # Thresholds come from the loaded self definition, not from constants
+    # here: an operator who retunes cpu_budget_pct must see the panel compare
+    # against what their daemon actually alarms at (MD-01).
+    self_params = next(
+        (dict(d.parameters) for d in defs if d.name == "self"), {}
+    )
+    panel = _self_panel(
+        {r["metric"]: r["value"] for r in metrics_rows}, self_params, catalog
     )
     return _render(
         "self.html", request, title="Self", status=status, dispatch=dispatch,
         metrics=metrics_rows, config_errors=errors, log_tail=log_tail,
-        web_version=__version__, refresh_ms=15000,
+        panel=panel, web_version=__version__, refresh_ms=15000,
     )
 
 

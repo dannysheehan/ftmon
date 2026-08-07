@@ -1,1 +1,144 @@
-{% extends "base.html" %}{% block content %}<h1>FTMON self-monitoring</h1><p><strong>Web process version</strong> {{ web_version }}.</p><p>Database: {{ status.db_used_bytes }} bytes used (DM-05 budget figure) of {{ status.db_bytes }} bytes file allocation; {{ status.db_freelist_bytes }} bytes reusable.</p><h2>Self metrics</h2><table>{% for row in metrics %}<tr><th>{{ row.metric }}</th><td>{{ row.value }}</td></tr>{% else %}<tr><td>No self metrics yet.</td></tr>{% endfor %}</table><h2>Notification delivery</h2>{% if dispatch %}<table><tr><th>Dispatcher</th><td>{{ dispatch.state }} ({{ dispatch.mode }}){% if dispatch.last_error_category %} — last error {{ dispatch.last_error_category }}{% endif %}</td></tr><tr><th>Pending</th><td>{{ dispatch.pending_total }} ({{ dispatch.due_claimable }} due, {{ dispatch.quiet_held }} held by quiet hours)</td></tr><tr><th>Oldest claimable</th><td>{{ dispatch.oldest_claimable_due_age_s|round|int }}s</td></tr><tr><th>Failed</th><td>{{ dispatch.failed }}{% if dispatch.failed_by_channel %} — {% for channel, count in dispatch.failed_by_channel.items() %}{{ channel }}={{ count }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</td></tr></table>{% else %}<p>No database yet.</p>{% endif %}<h2>Configuration errors</h2>{% for path,error in config_errors %}<pre>{{ path.name }}: {{ error }}</pre>{% else %}<p>None.</p>{% endfor %}<h2>Daemon log tail</h2><pre>{{ log_tail }}</pre>{% endblock %}
+{% extends "base.html" %}
+{% import "_panel.html" as panel_macros %}
+{% block content %}
+<h1>FTMON self-monitoring</h1>
+<p><strong>Web process version</strong> {{ web_version }}.</p>
+
+<h2>Budgets</h2>
+{% if panel %}
+{% macro history(metric, label) -%}
+<a class="panel-history" href="/metrics?monitor=self&amp;entity=ftmon&amp;metric={{ metric }}&amp;range=6h">6h</a>
+<a class="panel-history" href="/metrics?monitor=self&amp;entity=ftmon&amp;metric={{ metric }}&amp;range=24h">24h</a>
+<span class="panel-limit">history for {{ label }}</span>
+{%- endmacro %}
+<table class="panel">
+  <caption class="panel-caption">
+    Measured against this host's <code>self.toml</code> thresholds. RB-01's
+    cross-platform targets are shown where they differ.
+  </caption>
+  <tbody>
+    {{ panel_macros.budget_row(
+         panel.cpu.row,
+         '%.1f%%'|format(panel.cpu.row.value) if panel.cpu.row.value is not none else '',
+         '%.1f%%'|format(panel.cpu.row.limit) if panel.cpu.row.limit else 'no threshold') }}
+    <tr class="panel-note">
+      <td colspan="3">
+        Current {% if panel.cpu.current is none %}—{% else %}{{ '%.1f'|format(panel.cpu.current) }}%{% endif %},
+        10-minute average {% if panel.cpu.avg10m is none %}—{% else %}{{ '%.1f'|format(panel.cpu.avg10m) }}%{% endif %}.
+        RB-01 target {{ '%.1f'|format(panel.cpu.row.spec) }}% of one core.
+        {{ history('cpu_10m', 'CPU') }}
+      </td>
+    </tr>
+    {{ panel_macros.budget_row(
+         panel.memory.row,
+         panel_macros.bytes_mb(panel.memory.row.value),
+         panel_macros.bytes_mb(panel.memory.row.limit)) }}
+    <tr class="panel-note"><td colspan="3">{{ history('rss_bytes', 'RSS') }}</td></tr>
+    {{ panel_macros.budget_row(
+         panel.database.row,
+         panel_macros.bytes_mb(panel.database.row.value),
+         panel_macros.bytes_mb(panel.database.row.limit)) }}
+    <tr class="panel-note">
+      <td colspan="3">
+        Used pages are the DM-05 figure. File allocation
+        {{ panel_macros.bytes_mb(panel.database.allocated) }},
+        of which {{ panel_macros.bytes_mb(panel.database.freelist) }} is reusable.
+        Headroom to the 200 MB target
+        {% if panel.database.headroom is none %}—{%
+        else %}{{ panel_macros.bytes_mb(panel.database.headroom) }}{% endif %}.
+        {{ history('db_used_bytes', 'used pages') }}
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Catalog</h2>
+<table class="panel">
+  <tbody>
+    <tr>
+      <th scope="row">Persisted</th>
+      <td colspan="2">
+        {% if panel.catalog.entities_persisted is none %}
+        <span class="panel-absent">not available yet</span> — no daemon has published it
+        {% else %}
+        <strong>{{ panel.catalog.entities_persisted }}</strong> entities
+        of {{ panel.catalog.max_entities_persisted }} (DM-16 budget),
+        <strong>{{ panel.catalog.series_persisted }}</strong> series
+        of {{ panel.catalog.max_series_persisted }} (worksheet assumption)
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th scope="row">Running</th>
+      <td colspan="2">
+        {{ panel.catalog.entities_not_gone }} entities,
+        {{ panel.catalog.series_not_gone }} series
+        <span class="panel-limit">— present, not persisted; not budget figures</span>
+      </td>
+    </tr>
+    <tr>
+      <th scope="row">Reap</th>
+      <td colspan="2">
+        {{ panel_macros.age(panel.catalog.reap_age_s) }}{%
+        if panel.catalog.reap_count is not none %}, {{ panel.catalog.reap_count }} removed{% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th scope="row">Degradation</th>
+      <td colspan="2">{{ panel_macros.age(panel.catalog.degradation_age_s) }}</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Where the tick goes</h2>
+{# rejectattr('seconds','none'), not selectattr: a measured 0.0 is a
+   reading. Truthiness here would report real zero timings as uncollected,
+   defeating the absent-vs-zero distinction this panel exists to keep. #}
+{% if panel.stages | rejectattr('seconds', 'none') | list %}
+<table class="panel">
+  <tbody>
+    {% for stage in panel.stages if stage.seconds is not none %}
+    <tr><th scope="row">{{ stage.name }}</th>
+        <td colspan="2">{{ '%.1f'|format(stage.seconds * 1000) }} ms</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="panel-absent">
+  Per-stage timings are not collected yet. Until they are, the budgets above
+  say whether the daemon is within its limits but not where its time goes.
+</p>
+{% endif %}
+{% else %}
+<p>No database yet.</p>
+{% endif %}
+
+<h2>Notification delivery</h2>
+{% if dispatch %}
+<table class="panel">
+  <tbody>
+    <tr><th scope="row">Dispatcher</th>
+        <td colspan="2">{{ dispatch.state }} ({{ dispatch.mode }}){%
+          if dispatch.last_error_category %} — last error {{ dispatch.last_error_category }}{% endif %}</td></tr>
+    <tr><th scope="row">Pending</th>
+        <td colspan="2">{{ dispatch.pending_total }}
+          ({{ dispatch.due_claimable }} due, {{ dispatch.quiet_held }} held by quiet hours)</td></tr>
+    <tr><th scope="row">Oldest claimable</th>
+        <td colspan="2">{{ dispatch.oldest_claimable_due_age_s|round|int }}s</td></tr>
+    <tr><th scope="row">Failed</th>
+        <td colspan="2">{{ dispatch.failed }}{% if dispatch.failed_by_channel %} — {%
+          for channel, count in dispatch.failed_by_channel.items() %}{{ channel }}={{ count }}{%
+          if not loop.last %}, {% endif %}{% endfor %}{% endif %}</td></tr>
+  </tbody>
+</table>
+{% else %}<p>No database yet.</p>{% endif %}
+
+<h2>All self metrics</h2>
+<table>{% for row in metrics %}<tr><th>{{ row.metric }}</th><td>{{ row.value }}</td></tr>{% else %}<tr><td>No self metrics yet.</td></tr>{% endfor %}</table>
+
+<h2>Configuration errors</h2>
+{% for path,error in config_errors %}<pre>{{ path.name }}: {{ error }}</pre>{% else %}<p>None.</p>{% endfor %}
+
+<h2>Daemon log tail</h2>
+<pre>{{ log_tail }}</pre>
+{% endblock %}

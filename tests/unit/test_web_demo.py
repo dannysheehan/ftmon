@@ -218,3 +218,18 @@ def test_demo_rejects_symlink_database_ui_15(tmp_path):
     symlink_or_skip(link, target)
     with pytest.raises(ValueError, match="non-symlink"):
         create_demo_app(link, "demo.ftmon.org")
+
+
+def test_demo_budget_stats_carry_no_self_link_ui_15(tmp_path):
+    """[UI-15] The demo shows the figures but not a link to a page it lacks.
+
+    The dashboard budget stats link onward to /self, which the demo does not
+    serve. Dropping the figures would lose real information; dropping the
+    link keeps the strip honest on a public surface.
+    """
+    db = _demo_db(tmp_path)
+    app = create_demo_app(db, "demo.ftmon.org")
+    client = TestClient(app)
+    page = client.get("/", headers={"host": "demo.ftmon.org"}).text
+    assert "Database MB (used)" in page, "the figure survives in the demo"
+    assert 'href="/self"' not in page
