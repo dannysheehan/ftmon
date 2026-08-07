@@ -46,8 +46,10 @@ class SelfStats:
     db_used_bytes: float = 0.0
     db_freelist_bytes: float = 0.0
     db_headroom_bytes: float = 0.0
-    entities_persisted: int = 0
-    series_persisted: int = 0
+    # None until a tick has run: publishing 0 on the first tick after a
+    # restart would look like a measurement of nothing persisted.
+    entities_persisted: int | None = None
+    series_persisted: int | None = None
     counters: dict[str, int] = field(default_factory=dict)
 
     def count(self, name: str) -> None:
@@ -82,8 +84,6 @@ class SelfSampler:
             # Signed: negative means over budget, which is the interesting case
             # and would be erased by clamping at zero.
             "db_headroom_bytes": s.db_headroom_bytes,
-            "entities_persisted": float(s.entities_persisted),
-            "series_persisted": float(s.series_persisted),
             "cycle_s": s.cycle_s,
             "tick_overruns": float(s.tick_overruns),
             "event_queue_depth": float(s.event_queue_depth),
@@ -123,5 +123,11 @@ class SelfSampler:
                 if name.startswith("external_perfdata_rejected:")
             )),
         }
+        # Omitted rather than zeroed while unknown: EX-06 makes a missing
+        # metric UNKNOWN, which is what "no tick has run yet" means.
+        if s.entities_persisted is not None:
+            metrics["entities_persisted"] = float(s.entities_persisted)
+        if s.series_persisted is not None:
+            metrics["series_persisted"] = float(s.series_persisted)
         entity = EntitySample(entity_id="ftmon", attrs={}, metrics=metrics)
         return Snapshot(source=self.decl.name, ts=now, entities=(entity,))

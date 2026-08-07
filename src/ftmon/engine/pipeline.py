@@ -157,6 +157,15 @@ class Pipeline:
     def promoted(self, monitor: str) -> set[str]:
         return set(self._state.get(monitor, _MonitorState()).promoted)
 
+    def has_persisted_data(self) -> bool:
+        """False until a monitor has actually run (RB-02).
+
+        Distinguishes "no tick has recorded anything yet" from "this tick
+        persisted nothing", so a restart publishes no reading rather than a
+        zero that reads as a measurement.
+        """
+        return bool(self._persisted)
+
     def persisted_series(self, monitors: Iterable[str]) -> int:
         """Series written durable history this tick, over `monitors` (DM-16)."""
         return sum(self._persisted_series.get(name, 0) for name in monitors)

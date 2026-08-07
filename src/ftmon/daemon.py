@@ -811,8 +811,9 @@ class DaemonCore:
         # stable when a threshold is retuned. The constant lives with the
         # arithmetic in store.db so enforcement and reporting cannot drift.
         self.stats.db_headroom_bytes = float(store_db.DB_BUDGET_BYTES - size["used_bytes"])
-        self.stats.entities_persisted = self.pipeline.persisted_entities(self.monitors)
-        self.stats.series_persisted = self.pipeline.persisted_series(self.monitors)
+        if self.pipeline.has_persisted_data():
+            self.stats.entities_persisted = self.pipeline.persisted_entities(self.monitors)
+            self.stats.series_persisted = self.pipeline.persisted_series(self.monitors)
 
     def _sample_outbox_backlog(self, wall: float) -> None:
         """Fold delivery debt into the self source (NO-10).

@@ -191,3 +191,29 @@ def test_cpu_rss_and_db_breaches_are_independent_groups_md_06(tmp_path):
     for group in ("db-budget", "cpu-budget", "rss-budget"):
         rules = {rule for _state, rule in _incidents(paths, group)}
         assert rules == {group}, f"{group} must be owned only by its own rule"
+
+
+def test_catalog_gauges_are_absent_until_a_tick_has_run_rb_02(tmp_path):
+    """[RB-02][DM-16] Before any monitor runs, catalog pressure is unknown.
+
+    Publishing 0 would read as a measurement — "nothing is persisted" — when
+    the truth is that nothing has been counted yet. Observed on the canary:
+    the first sample after a restart reported 0 and the next reported 78, and
+    doctor reads the latest sample, so a diagnostic run in that window showed
+    0/400. A missing metric is UNKNOWN under EX-06, which is what this means.
+    """
+    from ftmon.selfmon import SelfSampler, SelfStats
+
+    stats = SelfStats()
+    assert stats.entities_persisted is None
+    metrics = SelfSampler(stats).sample(1_000, 0.0, {}).entities[0].metrics
+    assert "entities_persisted" not in metrics
+    assert "series_persisted" not in metrics
+
+    # Once a tick has counted, the gauges appear -- including a genuine zero,
+    # which is a real measurement rather than an absence of one.
+    stats.entities_persisted = 0
+    stats.series_persisted = 0
+    metrics = SelfSampler(stats).sample(1_000, 0.0, {}).entities[0].metrics
+    assert metrics["entities_persisted"] == 0.0
+    assert metrics["series_persisted"] == 0.0
