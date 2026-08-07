@@ -299,7 +299,12 @@ class TestBaseline:
 
 class TestPruneAndDegrade:
     def test_normal_retention_windows(self, conn):
-        """[DM-04] raw 48h; 5m 30d; 1h 400d durable / 90d process; events 30d."""
+        """[DM-04] raw 48h; 5m 30d durable / 7d process; 1h 400d/90d; events 30d.
+
+        The 5-minute tier gained the durable/process split in issue #102 for
+        the same reason the hourly tier has had it since v0.3 -- process churn
+        makes one window infeasible -- so both sides are exercised here.
+        """
         now = T0 + 500 * 86400
         add_series(conn, 1, durable=1)
         add_series(conn, 2, monitor="leak", entity="p", durable=0)
@@ -307,7 +312,11 @@ class TestPruneAndDegrade:
         conn.executemany(
             "INSERT INTO rollup5m(series_id, bucket, avg, min, max, last, cnt) "
             "VALUES (?,?,1,1,1,1,1)",
-            [(1, now - 31 * 86400), (1, now - 86400)])
+            [(1, now - 31 * 86400),   # durable, past 30d -> pruned
+             (1, now - 8 * 86400),    # durable, inside 30d -> kept
+             (1, now - 86400),
+             (2, now - 8 * 86400),    # process, past 7d -> pruned
+             (2, now - 3 * 86400)])   # process, inside 7d -> kept
         conn.executemany(
             "INSERT INTO rollup1h(series_id, bucket, avg, min, max, last, cnt) "
             "VALUES (?,?,1,1,1,1,1)",
@@ -322,8 +331,15 @@ class TestPruneAndDegrade:
         notes = Retention(conn).run(now=now)
         assert notes == []  # normal windows are silent; notes are DM-05 only
         assert [r["ts"] for r in conn.execute("SELECT ts FROM samples")] == [now - 3600]
-        assert conn.execute("SELECT COUNT(*) FROM rollup5m WHERE bucket < ?",
-                            (now - 30 * 86400,)).fetchone()[0] == 0
+        kept_5m = {(r["series_id"], r["bucket"]) for r in
+                   conn.execute("SELECT series_id, bucket FROM rollup5m")}
+        assert (1, now - 31 * 86400) not in kept_5m  # durable past 30d
+        assert (1, now - 8 * 86400) in kept_5m       # durable inside 30d
+        # The split: the same 8-day bucket is kept for a durable series and
+        # pruned for a process one. Without it, half of rollup5m on a real
+        # desktop is 5-minute detail for processes that no longer exist.
+        assert (2, now - 8 * 86400) not in kept_5m
+        assert (2, now - 3 * 86400) in kept_5m
         kept_1h = {(r["series_id"], r["bucket"]) for r in
                    conn.execute("SELECT series_id, bucket FROM rollup1h")}
         assert (1, now - 200 * 86400) in kept_1h
@@ -751,7 +767,8 @@ class TestReapCacheInvalidation:
         # DM-04's real 48h/30d/90d windows -- same technique the churn
         # integration test above uses for _reap_scan.
         core.retention._raw_keep = 1
-        core.retention._r5m_keep = 1
+        core.retention._r5m_keep_durable = 1
+        core.retention._r5m_keep_process = 1
         core.retention._r1h_keep_durable = 1
         core.retention._r1h_keep_process = 1
 
@@ -800,3 +817,67 @@ class TestReapCacheInvalidation:
         )
         report = doctor_inspect(core.conn, now=clock.now())
         assert report["orphans"]["samples"] == 0
+
+
+class TestDegradationVisibility:
+    """[DM-05] Issue #102: durable degradation must be a state, not a stream."""
+
+    def _core(self, tmp_path, monkeypatch):
+        for name in ("CONFIG", "DATA", "STATE", "RUNTIME"):
+            monkeypatch.setenv(f"FTMON_{name}_DIR", str(tmp_path / name.lower()))
+        from ftmon.paths import get_paths
+
+        paths = get_paths()
+        paths.ensure()
+        paths.config_file.write_text("[notify.desktop]\nenabled=false\n")
+        paths.config_file.chmod(0o600)
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        return DaemonCore(paths=paths, clock=clock, platform="linux"), clock
+
+    def test_degrading_gauge_tracks_the_last_pass_dm_05(self, tmp_path, monkeypatch):
+        """[DM-05][RB-02] A 0/1 gauge, so rules window it rather than the
+        daemon hard-coding what "persistently degrading" means."""
+        core, clock = self._core(tmp_path, monkeypatch)
+        try:
+            assert core.stats.db_degrading == 0.0
+            core.retention.run = lambda now: ["db over budget: pruned 5000 rows (x)"]
+            core._run_retention(clock.now())
+            assert core.stats.db_degrading == 1.0
+            assert core.stats.counters["db_degradations"] == 1
+
+            core.retention.run = lambda now: []
+            core._run_retention(clock.now() + 60.0)
+            assert core.stats.db_degrading == 0.0, "gauge follows the last pass"
+            # The counter is monotonic; only the gauge falls back.
+            assert core.stats.counters["db_degradations"] == 1
+        finally:
+            core.conn.close()
+
+    def test_degradation_events_are_throttled_dm_05(self, tmp_path, monkeypatch):
+        """[DM-05] A permanently degrading daemon emitted ~15 events an hour.
+
+        That buried the transition worth noticing under a stream nobody reads,
+        which is the observability half of issue #102. The events remain as
+        forensic detail, rate-limited, and report how many passes they cover.
+        """
+        core, clock = self._core(tmp_path, monkeypatch)
+        try:
+            core.retention.run = lambda now: ["db over budget: pruned 5000 rows (x)"]
+            wall = clock.now()
+            for i in range(30):  # 30 minutes of degrading passes
+                core._run_retention(wall + i * 60.0)
+            core.writer.commit_tick()
+
+            events = core.conn.execute(
+                "SELECT message FROM events WHERE provider='ftmon.retention' "
+                "ORDER BY ts"
+            ).fetchall()
+            # 30 passes at a 600 s throttle: far fewer than one event each.
+            assert 1 <= len(events) <= 4, f"expected throttled events, got {len(events)}"
+            # Nothing is hidden: a report says how many passes it stands for.
+            assert any("degrading passes since last report" in r["message"]
+                       for r in events)
+            # Every pass still counts, so a rate is recoverable from the metric.
+            assert core.stats.counters["db_degradations"] == 30
+        finally:
+            core.conn.close()

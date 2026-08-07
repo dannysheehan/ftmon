@@ -58,7 +58,8 @@ class Retention:
         *,
         budget_bytes: int = DB_BUDGET_BYTES,  # DM-05
         raw_keep_s: int = 48 * 3600,  # DM-04
-        r5m_keep_s: int = 30 * _DAY,
+        r5m_keep_durable_s: int = 30 * _DAY,
+        r5m_keep_process_s: int = 7 * _DAY,
         r1h_keep_durable_s: int = 400 * _DAY,
         r1h_keep_process_s: int = 90 * _DAY,
         events_keep_s: int = 30 * _DAY,  # DM-09
@@ -74,7 +75,8 @@ class Retention:
         self._conn = conn
         self._budget = budget_bytes
         self._raw_keep = raw_keep_s
-        self._r5m_keep = r5m_keep_s
+        self._r5m_keep_durable = r5m_keep_durable_s
+        self._r5m_keep_process = r5m_keep_process_s
         self._r1h_keep_durable = r1h_keep_durable_s
         self._r1h_keep_process = r1h_keep_process_s
         self._events_keep = events_keep_s
@@ -264,12 +266,23 @@ class Retention:
             "(SELECT series_id, ts FROM samples WHERE ts < ? LIMIT ?)",
             (int(now) - self._raw_keep,),
         )
-        self._delete_batch(
-            cur,
-            "DELETE FROM rollup5m WHERE (series_id, bucket) IN "
-            "(SELECT series_id, bucket FROM rollup5m WHERE bucket < ? LIMIT ?)",
-            (int(now) - self._r5m_keep,),
-        )
+        # DM-04 retention split, extended to the 5-minute tier (issue #102).
+        # The hourly tier has split durable from process since v0.3 because
+        # process-entity churn made one window infeasible; that reasoning
+        # applies with more force here, since 5-minute buckets are twelve
+        # times denser and this tier is the largest table in the database.
+        # No rule reads this far back either way: CA-04 caps expression
+        # windows at 6 h, and CA-05 baselines step incrementally as rollups
+        # are produced rather than re-reading history.
+        for durable, keep in ((1, self._r5m_keep_durable), (0, self._r5m_keep_process)):
+            self._delete_batch(
+                cur,
+                "DELETE FROM rollup5m WHERE (series_id, bucket) IN "
+                "(SELECT r.series_id, r.bucket FROM rollup5m r "
+                " JOIN series s ON s.id = r.series_id "
+                " WHERE s.durable = ? AND r.bucket < ? LIMIT ?)",
+                (durable, int(now) - keep),
+            )
         # DM-04 retention split: durable series (system/disk/self/watchlist)
         # keep hourly history ~13 months; churny process series keep 90 d.
         for durable, keep in ((1, self._r1h_keep_durable), (0, self._r1h_keep_process)):
