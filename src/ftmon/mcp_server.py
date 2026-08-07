@@ -248,8 +248,13 @@ class McpApi:
             resolution = q.resolution_for(
                 now, start, end, monitor=monitor, metric=metric, entity_id=entity,
             )
+            # One tier for the whole answer: discovery, preflight and every
+            # fetch below are handed the cohort resolution rather than each
+            # re-deriving one, which for a mixed cohort would let a durable
+            # member drop to 5m while the response reports 1h (DM-06).
             observed = q.list_observed_series_entities(
                 monitor, metric, now=now, start=start, end=end, entity_id=entity,
+                resolution=resolution,
             )
             keep = self._attr_filter(q, monitor, filter_expr, now)
             if isinstance(keep, dict):
@@ -293,6 +298,7 @@ class McpApi:
                     budget = q.series_point_budget(
                         sid, now=now, start=start, end=end,
                         max_points=_QM_MAX_POINTS_PER_ENTITY,
+                        resolution=resolution,
                     )
                     if points_returned + budget > _QM_MAX_TOTAL_POINTS:
                         truncated = True
@@ -300,6 +306,7 @@ class McpApi:
                     res = q.series_points(
                         sid, now=now, start=start, end=end,
                         max_points=_QM_MAX_POINTS_PER_ENTITY,
+                        resolution=resolution,
                     )
                     n = len(res.points)
                     # Belt-and-suspenders if preflight ever under-counts.
@@ -315,6 +322,7 @@ class McpApi:
                     res = q.series_points(
                         sid, now=now, start=start, end=end,
                         max_points=_QM_MAX_POINTS_PER_ENTITY,
+                        resolution=resolution,
                     )
                     if res.points:
                         vals = [p.value for p in res.points]

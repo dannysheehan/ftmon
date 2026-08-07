@@ -523,13 +523,14 @@ class Query:
         start: float,
         end: float,
         entity_id: str | None = None,
+        resolution: str | None = None,
     ) -> list[tuple[int, str]]:
         """Observed `(series_id, entity_id)` in the DM-06 tier/window, ordered.
 
         Catalog-only rows with no in-range observations are omitted so MCP can
         treat quiet windows as empty without materializing point arrays.
         """
-        resolution = self._resolution(
+        resolution = resolution or self._resolution(
             now, start, end,
             all_durable=self._cohort_all_durable(
                 monitor=monitor, metric=metric, entity_id=entity_id
@@ -558,11 +559,16 @@ class Query:
         start: float,
         end: float,
         max_points: int = 2000,
+        resolution: str | None = None,
     ) -> int:
-        """Capped observation count for preflight (no point materialization)."""
-        # Preflight must agree with retrieval, or a caller sizes a request
-        # against one tier and receives another (DM-06).
-        resolution = self._resolution(
+        """Capped observation count for preflight (no point materialization).
+
+        `resolution` carries a cohort tier already resolved by the caller. A
+        multi-series answer must use one tier for every member (DM-06); left
+        to resolve alone, a durable series in a mixed cohort would preflight
+        against 5-minute data the response does not claim to be serving.
+        """
+        resolution = resolution or self._resolution(
             now, start, end, all_durable=self._cohort_all_durable(series_id=series_id)
         )
         table, time_column = self._tier_table(resolution)
@@ -592,8 +598,14 @@ class Query:
         end: float,
         max_points: int = 2000,
         statistic: str = "avg",
+        resolution: str | None = None,
     ) -> SeriesResult:
-        """Materialize one series with per-entity LTTB (MCP fetch path)."""
+        """Materialize one series with per-entity LTTB (MCP fetch path).
+
+        `resolution` is the cohort tier when this series is one member of a
+        multi-series answer, so retrieval cannot silently use a finer tier
+        than the one reported (DM-06).
+        """
         if statistic not in {"avg", "min", "max", "last"}:
             raise ValueError("statistic must be avg, min, max, or last")
         meta = self._conn.execute(
@@ -602,7 +614,7 @@ class Query:
         ).fetchone()
         if meta is None:
             raise ValueError(f"unknown series_id {series_id}")
-        resolution = self._resolution(
+        resolution = resolution or self._resolution(
             now, start, end, all_durable=self._cohort_all_durable(series_id=series_id)
         )
         istart, iend = round(start), round(end)
