@@ -88,27 +88,68 @@ while read-only/nobrowse disk images are excluded.
 See [macOS monitoring rationale](macos-monitoring.md) for the rule-by-rule
 selection and deliberately deferred Apple-native signals.
 
-For persistent per-user services, copy the packaged daemon and web
-LaunchAgents to `~/Library/LaunchAgents/`. Replace
-`/Users/REPLACE_ME/.local/bin/ftmon` in both files with the absolute result of
-`command -v ftmon`, and replace `REPLACE_ME` in both services' log paths with
-the account name:
+### macOS (Homebrew + launchd)
+
+On macOS, the most reliable setup is to install Homebrew first, then install
+`uv` and FTMON into the account that will own the monitor state. If you are
+building from a checkout instead of PyPI, the same commands work; just replace
+`uv tool install ftmon` with `uv tool install .` from the repository root.
 
 ```sh
-cp /path/to/ftmon/launchd/org.ftmon.{daemon,web}.plist ~/Library/LaunchAgents/
-plutil -lint ~/Library/LaunchAgents/org.ftmon.daemon.plist
-plutil -lint ~/Library/LaunchAgents/org.ftmon.web.plist
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/org.ftmon.daemon.plist
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/org.ftmon.web.plist
+# Install Homebrew if it is not already present:
+# /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+brew install uv openssl@3 pkg-config
+export PATH="$HOME/.local/bin:$PATH"
+export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH"
+export OPENSSL_DIR="$(brew --prefix openssl@3)"
+
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+uv tool install ftmon
+ftmon init --profile macserver    # or: ftmon init --profile macdesktop
+ftmon check
 ```
 
-Send SIGHUP to the managed PID to reload in place. `launchctl kickstart -k`
-is an explicit restart with a new PID, not a reload substitute. The web
-LaunchAgent binds to the CLI's loopback-only default. The daemon writes its
+If the install fails while building the `cryptography` dependency, the missing
+OpenSSL headers are the usual cause. The `brew install openssl@3 pkg-config`
+step and the two `export` lines above are the fix that worked in practice.
+
+For persistent per-user services, render the bundled launchd plist templates
+into `~/Library/LaunchAgents/` with the actual `ftmon` path and log directory
+for this account. The repository templates live in `src/ftmon/launchd/`.
+
+```sh
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+FTMON_BIN="$(command -v ftmon || echo "$HOME/.local/bin/ftmon")"
+
+for name in daemon web; do
+  sed \
+    -e "s|/Users/REPLACE_ME/.local/bin/ftmon|$FTMON_BIN|" \
+    -e "s|/Users/REPLACE_ME/Library/Logs|$HOME/Library/Logs|" \
+    "src/ftmon/launchd/org.ftmon.${name}.plist" \
+    > "$HOME/Library/LaunchAgents/org.ftmon.${name}.plist"
+done
+
+plutil -lint "$HOME/Library/LaunchAgents/org.ftmon.daemon.plist"
+plutil -lint "$HOME/Library/LaunchAgents/org.ftmon.web.plist"
+
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/org.ftmon.daemon.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/org.ftmon.web.plist"
+
+launchctl print "gui/$(id -u)/org.ftmon.daemon" >/dev/null
+launchctl print "gui/$(id -u)/org.ftmon.web" >/dev/null
+```
+
+The web UI stays on the CLI's loopback-only default. To reach it remotely, use
+an SSH tunnel such as `ssh -L 8420:127.0.0.1:8420 <host>`. The daemon writes its
 rotating operational log to the `ftmon paths` `log_file`; launchd also captures
-failures before that logger starts in
-`~/Library/Logs/ftmon-daemon-launchd.log`. Web process output goes to
-`~/Library/Logs/ftmon-web.log`.
+failures before that logger starts in `~/Library/Logs/ftmon-daemon-launchd.log`.
+Web process output goes to `~/Library/Logs/ftmon-web.log`.
+
+Send SIGHUP to the daemon's managed PID to reload in place. `launchctl kickstart
+-k` is an explicit restart with a new PID, not a reload substitute.
 
 ## Upgrade
 
