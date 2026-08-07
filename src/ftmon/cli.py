@@ -429,7 +429,13 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(json.dumps({"status": "ok", "max_severity": max_severity, **info}))
         else:
             print(f"Last tick: {age:.0f}s ago" if age is not None else "Last tick: never")
-            print(f"Database: {info['db_bytes'] / 2**20:.1f} MB")
+            # DM-05's budget is used pages, not file allocation (issue #104);
+            # lead with the figure that verdict is judged on and keep file
+            # size as fragmentation context, not the headline.
+            print(
+                f"Database: used={info['db_used_bytes'] / 2**20:.1f} MB "
+                f"(file={info['db_bytes'] / 2**20:.1f} MB)"
+            )
             print(f"Open incidents: {info['open_incidents']}")
         return exit_code
 
@@ -807,11 +813,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     }
     if any(warning.startswith("config.toml unreadable") for warning in config_warnings):
         channel_errors.update(name for name, _channel in config.channels)
-    _defs, definition_errors = loader.load_dir(
+    loaded_defs, definition_errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True,
         check_aliases=check_aliases, require_checks=True,
     )
     config_errors.extend(f"{path}: {error}" for path, error in definition_errors)
+    stale_metrics = loader.stale_metric_warnings(loaded_defs)
     conn = connect(paths.db_file)
     try:
         report = inspect(
@@ -839,11 +846,31 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     )
     print("Tables: " + ", ".join(f"{k}={v}" for k, v in report["tables"].items()))
     dm16 = report["dm16"]
+    # DM-16 counts *persisted* entities, so that is the figure shown against
+    # the budget. entities_not_gone counts running processes and is an order
+    # of magnitude larger; printing it against the budget read as a breach on
+    # a host that was well inside it (issue #104).
+    def _budget(value, limit):
+        return "unknown (no daemon has published it)" if value is None else f"{value}/{limit}"
+
+    # DM-16 states the entity figure as a budget but derives ~270 series from
+    # a worksheet whose scope does not reconcile with 400 entities at >=1
+    # metric each. Until #103 settles that, the series limit is reported as an
+    # assumption rather than asserted as a bound the daemon is violating.
     print(
-        "Catalog (active/total, DM-16 worksheet "
-        f"≤{dm16['max_entities_active']}/~{dm16['max_series_active']}): "
-        f"entities={dm16['entities_active']}/{report['tables']['entities']} "
-        f"series={dm16['series_active']}/{report['tables']['series']}"
+        "Catalog persisted vs DM-16: "
+        f"entities={_budget(dm16['entities_persisted'], dm16['max_entities_persisted'])}"
+        " (budget) "
+        f"series={_budget(dm16['series_persisted'], dm16['max_series_persisted'])}"
+        " (worksheet assumption)"
+    )
+    # Presence and retention, deliberately without a budget comparison: these
+    # count what is running and what is retained, neither of which is the
+    # pressure DM-16 bounds (#104).
+    print(
+        "Catalog running/total (not budget figures): "
+        f"entities={dm16['entities_not_gone']}/{report['tables']['entities']} "
+        f"series={dm16['series_not_gone']}/{report['tables']['series']}"
     )
     if report["last_reap_ts"] is None:
         print("Reap: last ran never")
@@ -899,6 +926,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             if notifier is None or not notifier.available:
                 status = "error (desktop_unavailable)"
         print(f"Notification {name}: {status}")
+    # Deliberately not folded into config_errors: an upgraded install keeps its
+    # own definitions (FS-02), so this would fail doctor on every host until the
+    # operator acts, and doctor's non-zero is reserved for an installation that
+    # is actually broken rather than one whose rule needs updating (CL-05).
+    for warning in stale_metrics:
+        print(f"Definition warning: {warning}", file=sys.stderr)
     for problem in dispatch["problems"]:
         print(f"Delivery problem: {problem}", file=sys.stderr)
     for error in config_errors:

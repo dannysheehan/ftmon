@@ -151,7 +151,7 @@ class DaemonCore:
             "system": SystemSampler(self.clock),
             "unit": UnitSampler(self.clock),
             "net": NetSampler(self.clock),
-            "self": SelfSampler(self.stats, self.paths.db_file),
+            "self": SelfSampler(self.stats),
             "external": self.external_sampler,
         }
         # Rollups/retention/baselines (DM-04/05, CA-05) run in-daemon; the
@@ -657,6 +657,10 @@ class DaemonCore:
             self._reload_check_registry()
             self._load_definitions()
             self._refresh_acks()
+        # Before the samplers run, not after: the self sampler reads these
+        # straight out of SelfStats, so measuring later would publish last
+        # tick's database size against this tick's everything else.
+        self._sample_db_pages()
         cache: dict = {}
         outcomes: list[EvalOutcome] = []
         due_names = self.due.due(mono, lambda _n: self._overrun())
@@ -779,6 +783,37 @@ class DaemonCore:
     def _record_delivery_failure(self, channel: str, reason: str) -> None:
         """NO-07: expose terminal delivery failure without recursive notify."""
         self._delivery_failures.put((channel, reason, self.clock.now()))
+
+    def _sample_db_pages(self) -> None:
+        """Publish the DM-05 storage picture into the self source (#104).
+
+        DM-05 governs *used* pages, so an alarm on file allocation fires while
+        the defined budget is healthy — a freed page is immediately reusable
+        and costs nothing. The three PRAGMAs are cheap header reads on a
+        connection this thread already owns; a lock or error keeps the previous
+        values rather than publishing zero, since a momentary read failure is
+        not evidence that the database shrank.
+        """
+        try:
+            size = store_db.db_size_report(self.conn)
+        except sqlite3.Error:
+            return
+        self.stats.db_allocated_bytes = float(size["allocated_bytes"])
+        self.stats.db_used_bytes = float(size["used_bytes"])
+        self.stats.db_freelist_bytes = float(size["freelist_bytes"])
+        # stat() of the main file, which in WAL mode lags logical allocation
+        # between checkpoints. Kept separate precisely because they differ:
+        # db_bytes is what the pre-#104 metric measured and must keep meaning.
+        if size["file_bytes"] is not None:
+            self.stats.db_file_bytes = float(size["file_bytes"])
+        # Signed against DM-05's normative target, not whatever level a
+        # definition alarms at, so the reported distance to the budget stays
+        # stable when a threshold is retuned. The constant lives with the
+        # arithmetic in store.db so enforcement and reporting cannot drift.
+        self.stats.db_headroom_bytes = float(store_db.DB_BUDGET_BYTES - size["used_bytes"])
+        if self.pipeline.has_persisted_data():
+            self.stats.entities_persisted = self.pipeline.persisted_entities(self.monitors)
+            self.stats.series_persisted = self.pipeline.persisted_series(self.monitors)
 
     def _sample_outbox_backlog(self, wall: float) -> None:
         """Fold delivery debt into the self source (NO-10).

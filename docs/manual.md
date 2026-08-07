@@ -554,5 +554,57 @@ bounded incremental vacuum catches up; that free space remains available to
 new observations, so a healthy database may stay near 200 MB as it replaces
 dead catalog overhead with useful retained history. `ftmon doctor` only
 reports this state; it does not trigger retention, catalog reaping, or
-compaction. Never run direct SQL or full `VACUUM` against the live daemon
+compaction.
+
+**The budget is measured on used pages, not file size.** DM-05 bounds the
+database at 200 MB counted as `(page_count - freelist_count) * page_size`;
+free pages sit in the freelist, are immediately reusable, and cost nothing
+against it. `ftmon doctor` prints `Database: file=X MB used=Y MB` alongside
+`Freelist: N pages` — `used` is the budget verdict, the rest is fragmentation
+context. `ftmon status` shows `Database: used=X MB (file=Y MB)`, and its
+`--json` output carries `db_allocated_bytes`, `db_used_bytes`,
+`db_freelist_bytes` and `db_freelist_pages` beside the existing `db_bytes`.
+
+Two of those need distinguishing. `db_bytes` is the size of the database file
+on disk; `db_allocated_bytes` is how much SQLite has logically allocated.
+FTMON runs in WAL mode, so pages committed since the last checkpoint live in
+a separate `-wal` file and the main file lags behind — the two figures can
+differ by around a megabyte, converging at each checkpoint. Only
+`used + freelist == allocated` holds. If you are writing a rule about
+capacity, use `db_used_bytes`; `db_bytes` is there because it is what the
+metric has always meant and its recorded history depends on that.
+
+Two thresholds govern it, and they mean different things. `db_budget_mb`
+(200) is the enforcement target retention works to hold the database under.
+`db_warn_mb` (230) is the alarm level. They differ deliberately: retention's
+job is to hold the footprint just under 200 MB, so an alarm set at 200 MB
+fires whenever retention is succeeding. Setting it higher makes the incident
+mean *retention is failing*. The three `self` budget rules also own separate
+incident groups — `cpu-budget`, `rss-budget`, `db-budget` — so a long
+incident is attributable to CPU, memory or storage rather than to all three
+at once.
+
+**After upgrading**, your own `self.toml` keeps whatever rule it had, because
+FTMON never overwrites a definition you already have. A rule carried over
+from before this change alarms on file size rather than used pages, so
+`ftmon doctor` prints a line beginning `Definition warning:` when it sees
+one. It does not affect doctor's exit code. To adopt the corrected rule, edit
+your own copy to compare `db_used_bytes` against `db_warn_mb * MB` and add a
+`db_warn_mb` parameter. `ftmon init --force` will also do it, but it rewrites
+*every* built-in definition — on a host whose thresholds you have tuned, that
+discards the tuning, so prefer the targeted edit.
+
+Rules of your own can use `db_allocated_bytes`, `db_used_bytes`,
+`db_freelist_bytes`, `db_headroom_bytes` (signed — negative means over the
+DM-05 target), and `entities_persisted` / `series_persisted`, which count what
+the daemon is currently writing durable history for. DM-16 budgets 400
+persisted entities; its ~270 series figure is a capacity-worksheet assumption
+rather than a settled bound, so `doctor` labels the two differently and a
+series count above ~270 is worth understanding rather than treating as a
+breach. Those two count *selection*, not what happens
+to be running: a process FTMON samples but does not persist costs nothing
+against the catalog, so a much larger "running" count is normal and `doctor`
+reports it separately, without a budget comparison.
+
+Never run direct SQL or full `VACUUM` against the live daemon
 database.

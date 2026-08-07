@@ -4,7 +4,8 @@ import sqlite3
 
 from ftmon.cli import main
 from ftmon.paths import get_paths
-from ftmon.store.db import connect, migrate
+from ftmon.sources.base import SOURCE_DECLS
+from ftmon.store.db import connect, db_size_report, migrate
 from ftmon.store.doctor import backup, inspect
 from tests.platform_permissions import assert_private
 
@@ -17,6 +18,31 @@ def test_doctor_clean_database_cl_05(tmp_path):
     assert report["integrity"] == ["ok"]
     assert "samples" in report["tables"]
     assert not any(report["orphans"].values())
+    conn.close()
+
+
+def test_db_size_report_is_the_one_dm05_arithmetic_issue_104(tmp_path):
+    """[DM-05][CL-05] doctor.inspect() and Query.status() must both read
+    db_size_report()'s figures rather than each re-deriving
+    (page_count - freelist_count) * page_size -- issue #104 exists because
+    that duplication is exactly how file-vs-used got confused before."""
+    from ftmon.store.query import Query
+
+    conn = connect(tmp_path / "ftmon.db")
+    migrate(conn)
+    conn.execute("INSERT INTO meta(key, value) VALUES ('last_tick_ts', '1000')")
+    conn.commit()
+
+    size = db_size_report(conn)
+    assert size["allocated_bytes"] == size["used_bytes"] + size["freelist_bytes"]
+
+    report = inspect(conn, now=1000)
+    status = Query(conn).status(now=1000)
+    assert (report["allocated_bytes"] == size["allocated_bytes"]
+            == status["db_allocated_bytes"])
+    assert report["used_bytes"] == size["used_bytes"] == status["db_used_bytes"]
+    assert (report["freelist_bytes"] == size["freelist_bytes"]
+            == status["db_freelist_bytes"])
     conn.close()
 
 
@@ -37,18 +63,22 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
     conn = connect(tmp_path / "ftmon.db")
     migrate(conn)
     report = inspect(conn, now=1000)
-    assert report["entities_alive"] == 0
-    assert report["series_active"] == 0
+    assert report["entities_not_gone"] == 0
+    assert report["series_not_gone"] == 0
     assert report["dm16"] == {
-        "max_entities_active": 400,
-        "entities_active": 0,
-        "max_series_active": 270,
-        "series_active": 0,
+        "max_entities_persisted": 400,
+        "max_series_persisted": 270,
+        # No daemon has published the DM-16 figures on a fresh database, and
+        # doctor says so rather than substituting the counts DM-16 rejects.
+        "entities_persisted": None,
+        "series_persisted": None,
+        "entities_not_gone": 0,
+        "series_not_gone": 0,
     }
     assert report["last_reap_ts"] is None
     assert report["last_reap_count"] is None
     assert report["last_reap_age_s"] is None
-    assert report["used_bytes"] + report["freelist_bytes"] == report["db_bytes"]
+    assert report["used_bytes"] + report["freelist_bytes"] == report["allocated_bytes"]
     assert report["freelist_pages"] >= 0
     assert 0.0 <= report["freelist_fragment_pct"] <= 1.0
     assert report["last_degradation_ts"] is None
@@ -56,7 +86,7 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
     conn.close()
 
 
-def test_doctor_catalog_splits_active_from_total_cl_05_dm_16(tmp_path):
+def test_doctor_catalog_splits_presence_from_total_cl_05_dm_16(tmp_path):
     """[CL-05][DM-16] Active counts (alive entities, sampled series) differ from
     the total row counts already reported under `tables` — that split is the
     whole point of the reap-visibility feature (issue #74)."""
@@ -94,16 +124,16 @@ def test_doctor_catalog_splits_active_from_total_cl_05_dm_16(tmp_path):
     conn.commit()
 
     report = inspect(conn, now=1000)
-    assert report["entities_alive"] == 2
-    assert report["series_active"] == 2
+    assert report["entities_not_gone"] == 2
+    assert report["series_not_gone"] == 2
     assert report["tables"]["entities"] == 5
     assert report["tables"]["series"] == 4
-    assert report["dm16"]["entities_active"] == 2
-    assert report["dm16"]["series_active"] == 2
+    assert report["dm16"]["entities_not_gone"] == 2
+    assert report["dm16"]["series_not_gone"] == 2
     conn.close()
 
 
-def test_doctor_series_active_excludes_gone_entity_with_sample_cl_05_dm_16(tmp_path):
+def test_doctor_series_not_gone_excludes_gone_entity_with_sample_cl_05_dm_16(tmp_path):
     """[CL-05][DM-16] A series still holding a raw sample doesn't count as
     active once its owning entity is gone: DM-04 keeps the sample around
     until it ages out (or MD-09 reap catches up), so bare sample presence
@@ -129,7 +159,7 @@ def test_doctor_series_active_excludes_gone_entity_with_sample_cl_05_dm_16(tmp_p
     conn.commit()
 
     report = inspect(conn, now=1000)
-    assert report["series_active"] == 1
+    assert report["series_not_gone"] == 1
     assert report["tables"]["series"] == 2
     conn.close()
 
@@ -168,10 +198,10 @@ def test_doctor_reports_used_and_free_database_pages_cl_05(tmp_path):
 
     assert report["freelist_pages"] > 0
     assert report["freelist_bytes"] > 0
-    assert report["used_bytes"] < report["db_bytes"]
-    assert report["used_bytes"] + report["freelist_bytes"] == report["db_bytes"]
+    assert report["used_bytes"] < report["allocated_bytes"]
+    assert report["used_bytes"] + report["freelist_bytes"] == report["allocated_bytes"]
     assert report["freelist_fragment_pct"] == (
-        report["freelist_bytes"] / report["db_bytes"]
+        report["freelist_bytes"] / report["allocated_bytes"]
     )
     assert report["ok"]
     conn.close()
@@ -382,3 +412,261 @@ def test_doctor_reports_failures_per_channel_no_10(tmp_path):
     assert dispatch["failed"] == 2
     assert dispatch["failed_by_channel"] == {"file": 1, "ntfy": 1}
     conn.close()
+
+
+def test_self_source_reports_dm05_used_pages_not_file_allocation_dm_05(tmp_path, monkeypatch):
+    """[DM-05][RB-02] The budget signal measures used pages; file bytes stay separate."""
+    from ftmon.clock import FakeClock
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths as _paths
+    from ftmon.store.db import DB_BUDGET_BYTES
+
+    for name in ("CONFIG", "DATA", "STATE", "RUNTIME"):
+        monkeypatch.setenv(f"FTMON_{name}_DIR", str(tmp_path / name.lower()))
+    paths = _paths()
+    paths.ensure()
+    paths.config_file.write_text("[notify.desktop]\nenabled=false\n")
+    paths.config_file.chmod(0o600)
+    core = DaemonCore(paths=paths, clock=FakeClock(wall=1_000, mono=1_000))
+    try:
+        core._sample_db_pages()
+        stats = core.stats
+        page_size = core.conn.execute("PRAGMA page_size").fetchone()[0]
+        pages = core.conn.execute("PRAGMA page_count").fetchone()[0]
+        free = core.conn.execute("PRAGMA freelist_count").fetchone()[0]
+        assert stats.db_allocated_bytes == pages * page_size
+        assert stats.db_used_bytes == (pages - free) * page_size
+        assert stats.db_freelist_bytes == free * page_size
+        # Used never exceeds file, and the two differ exactly by the freelist.
+        assert (stats.db_used_bytes + stats.db_freelist_bytes
+                == stats.db_allocated_bytes)
+        # Headroom is signed against DM-05's target, not any alarm threshold.
+        assert stats.db_headroom_bytes == DB_BUDGET_BYTES - stats.db_used_bytes
+        # D1: db_bytes keeps its historical file-allocation meaning.
+        metrics = core.samplers["self"].sample(1_000, 0.0, {}).entities[0].metrics
+        assert metrics["db_allocated_bytes"] == stats.db_allocated_bytes
+        assert metrics["db_used_bytes"] == stats.db_used_bytes
+    finally:
+        core.conn.close()
+
+
+def test_freelist_growth_alone_does_not_consume_budget_dm_05(tmp_path, monkeypatch):
+    """[DM-05] Reusable pages are allocated but cost nothing against the budget.
+
+    This is the defect behind the flapping incident: an alarm on file bytes
+    counts pages that are immediately reusable, so it can fire while the
+    defined budget is healthy.
+    """
+    from ftmon.clock import FakeClock
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths as _paths
+
+    for name in ("CONFIG", "DATA", "STATE", "RUNTIME"):
+        monkeypatch.setenv(f"FTMON_{name}_DIR", str(tmp_path / name.lower()))
+    paths = _paths()
+    paths.ensure()
+    paths.config_file.write_text("[notify.desktop]\nenabled=false\n")
+    paths.config_file.chmod(0o600)
+    core = DaemonCore(paths=paths, clock=FakeClock(wall=1_000, mono=1_000))
+    try:
+        core.conn.execute("CREATE TABLE ballast(x TEXT)")
+        core.conn.executemany(
+            "INSERT INTO ballast(x) VALUES (?)", [("y" * 400,) for _ in range(4_000)]
+        )
+        core.conn.commit()
+        core._sample_db_pages()
+        grown_used = core.stats.db_used_bytes
+        core.conn.execute("DROP TABLE ballast")
+        core.conn.commit()
+        core._sample_db_pages()
+        assert core.stats.db_freelist_bytes > 0, "expected reclaimable pages"
+        # Allocation stays high while used bytes fall — the whole point.
+        assert core.stats.db_used_bytes < grown_used
+        assert core.stats.db_allocated_bytes > core.stats.db_used_bytes
+        assert core.stats.db_headroom_bytes > 0
+    finally:
+        core.conn.close()
+
+
+def test_run_monitor_publishes_persisted_gauges_dm_16(tmp_path, monkeypatch):
+    """[DM-16] The production path publishes selection-based pressure.
+
+    Drives `run_monitor` with a real sampler and a real TickWriter rather than
+    calling `_select_persisted` and assigning the gauge by hand: the defect
+    being guarded is that the *published* figure could drift back to a
+    presence count, and only the production assignment inside `_persist`
+    proves it does not.
+    """
+    from ftmon.definitions import loader
+    from ftmon.engine.pipeline import Pipeline
+    from ftmon.engine.rings import RingStore
+    from ftmon.model import EntitySample, Snapshot
+    from ftmon.store.writer import TickWriter
+
+    class TwelveProcesses:
+        decl = SOURCE_DECLS["process"]
+
+        def sample(self, now, deadline_mono, options):
+            return Snapshot(source="process", ts=now, entities=tuple(
+                EntitySample(
+                    entity_id=f"p{i}", attrs={"name": f"p{i}"},
+                    metrics={"cpu_pct": float(i), "rss_bytes": float(i)},
+                )
+                for i in range(12)
+            ))
+
+    mdef = loader.load_text(
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "proc"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "process"\n'
+        '[source_options]\n'
+        'top_n = 5\n'
+        '[[rule]]\n'
+        'id = "r"\ngroup = "g"\nwhen = \'cpu_pct > 99999\'\n'
+        'severity = "warning"\nconfirm_cycles = 1\nmessage = "m"\n'
+    )
+
+    conn = connect(tmp_path / "p.db")
+    migrate(conn)
+    writer = TickWriter(conn)
+    pipe = Pipeline(
+        samplers={"process": TwelveProcesses()}, rings=RingStore(),
+        counter=lambda _n: None,
+    )
+    pipe.run_monitor(mdef, 1_000.0, 0.0, writer, {})
+    writer.commit_tick()
+
+    # All twelve are sampled and marked seen -- which is exactly what a
+    # presence-derived count would report. cpu_pct and rss_bytes rank
+    # identically here, so top_n=5 selects five of them.
+    assert len(pipe._state["proc"].seen) == 12
+    persisted = pipe.persisted_entities(["proc"])
+    assert persisted == 5
+
+    # The gauge matches what actually reached the database, which is the
+    # property that matters -- a presence count could not satisfy this.
+    written = conn.execute(
+        "SELECT COUNT(DISTINCT entity_id) FROM series WHERE monitor='proc'"
+    ).fetchone()[0]
+    assert persisted == written
+    series_rows = conn.execute(
+        "SELECT COUNT(*) FROM series WHERE monitor='proc'"
+    ).fetchone()[0]
+    assert pipe.persisted_series(["proc"]) == series_rows
+    # An unloaded monitor stops contributing pressure immediately (MD-09).
+    assert pipe.persisted_entities([]) == 0
+    conn.close()
+
+
+def test_db_bytes_and_allocated_diverge_under_wal_issue_104(tmp_path):
+    """[DM-05] db_bytes is the file; allocated is SQLite's logical size.
+
+    They are not interchangeable in WAL mode, which FTMON always uses: pages
+    committed since the last checkpoint live in the -wal file, so the main
+    file lags allocation. Only used + freelist == allocated holds. Substituting
+    db_bytes into the budget arithmetic is the mistake this pins against.
+    """
+    conn = connect(tmp_path / "wal.db")
+    migrate(conn)
+    conn.execute("CREATE TABLE ballast(payload BLOB)")
+    conn.executemany(
+        "INSERT INTO ballast(payload) VALUES (zeroblob(4096))",
+        [() for _ in range(200)],
+    )
+    conn.commit()
+
+    size = db_size_report(conn)
+    assert size["used_bytes"] + size["freelist_bytes"] == size["allocated_bytes"]
+    # The divergence is real, not theoretical: the main file has not yet
+    # received these pages, so it is smaller than what SQLite reports.
+    assert size["file_bytes"] < size["allocated_bytes"]
+    # A checkpoint converges them, which is why the gap is transient rather
+    # than unbounded under FTMON's default auto-checkpointing.
+    conn.execute("PRAGMA wal_checkpoint(FULL)")
+    assert db_size_report(conn)["file_bytes"] == size["allocated_bytes"]
+    conn.close()
+
+
+def test_stale_db_bytes_rule_is_warned_but_does_not_fail_doctor_dm_05(tmp_path, monkeypatch):
+    """[DM-05][CL-05] An un-upgraded budget rule is surfaced, not silently kept.
+
+    FS-02 forbids overwriting user config, so a shipped definition fix never
+    reaches an existing install by itself. Without this warning the operator's
+    alarm keeps measuring file allocation while DM-05 bounds used pages — the
+    exact silence this issue exists to remove. It must not fail doctor, though:
+    doctor's non-zero is for an installation that is broken, and every upgraded
+    host would otherwise start exiting 1 until someone edited a rule.
+    """
+    from ftmon.definitions import loader
+
+    monkeypatch.setenv("FTMON_CONFIG_DIR", str(tmp_path / "config"))
+    monitors = tmp_path / "config" / "monitors"
+    monitors.mkdir(parents=True)
+    (monitors / "stale.toml").write_text(
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "stale"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "self"\n'
+        '[parameters]\n'
+        'db_budget_mb = { value = 200, doc = "d" }\n'
+        '[[rule]]\n'
+        'id = "db-budget"\ngroup = "db-budget"\n'
+        "when = 'db_bytes > db_budget_mb * MB'\n"
+        'severity = "warning"\nconfirm_cycles = 1\nmessage = "over"\n'
+    )
+    defs, errors = loader.load_dir(monitors)
+    assert errors == []
+    warnings = loader.stale_metric_warnings(defs)
+    assert len(warnings) == 1
+    assert "stale/db-budget" in warnings[0]
+    assert "db_used_bytes" in warnings[0]
+
+    # The corrected rule is silent, and db_used_bytes must not itself match the
+    # db_bytes word-boundary probe.
+    (monitors / "stale.toml").write_text(
+        (monitors / "stale.toml").read_text().replace(
+            "db_bytes > db_budget_mb", "db_used_bytes > db_budget_mb"
+        )
+    )
+    fixed, errors = loader.load_dir(monitors)
+    assert errors == []
+    assert loader.stale_metric_warnings(fixed) == []
+
+
+def _self_rule(when: str) -> str:
+    return (
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "selfbudget"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "self"\n'
+        '[parameters]\n'
+        'db_budget_mb = { value = 200, doc = "d" }\n'
+        '[[rule]]\n'
+        'id = "r"\ngroup = "g"\n'
+        f"when = '{when}'\n"
+        'severity = "warning"\nconfirm_cycles = 1\nmessage = "m"\n'
+    )
+
+
+def test_stale_metric_warning_matches_only_the_budget_shape_dm_05():
+    """[DM-05] Warn on the legacy budget comparison, not any db_bytes mention.
+
+    A rule that derives the right quantity the long way is doing nothing
+    wrong, and telling it to substitute db_used_bytes would change what it
+    computes. Matching the bare name would have given that advice.
+    """
+    from ftmon.definitions import loader
+
+    def warns(when: str) -> bool:
+        return bool(loader.stale_metric_warnings([loader.load_text(_self_rule(when))]))
+
+    # The shape this exists to catch.
+    assert warns("db_bytes > db_budget_mb * MB")
+    assert warns("db_bytes > 200000000")
+    # Deriving used pages by hand is correct; substituting would break it.
+    assert not warns("db_bytes - db_freelist_bytes > db_budget_mb * MB")
+    # A fragmentation ratio is a legitimate use of the raw quantity.
+    assert not warns("db_bytes / db_allocated_bytes > 0.5")
+    # Already correct.
+    assert not warns("db_used_bytes > db_budget_mb * MB")

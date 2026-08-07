@@ -521,6 +521,30 @@ class TestStatus:
         except json.JSONDecodeError:
             pytest.fail(f"status --json did not output valid JSON: {captured.out}")
 
+    def test_status_leads_with_used_bytes_not_file_allocation_dm_05(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """[DM-05][CL-01] The DM-05 budget is judged on used pages; the
+        text and --json status output must both surface that figure, not
+        just the file allocation issue #104 found being presented as if it
+        were the budget verdict."""
+        def seed(conn):
+            conn.execute("INSERT INTO meta(key, value) VALUES ('last_tick_ts', '1000')")
+
+        _seed_db(tmp_path, monkeypatch, seed)
+
+        rc = main(["status"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "used=" in out
+        assert "file=" in out
+
+        rc = main(["status", "--json"])
+        assert rc == 0
+        obj = json.loads(capsys.readouterr().out)
+        assert obj["db_used_bytes"] <= obj["db_bytes"]
+        assert obj["db_used_bytes"] + obj["db_freelist_bytes"] == obj["db_bytes"]
+
 
 class TestDoctor:
     """[CL-05][PL-01] ftmon doctor subcommand."""

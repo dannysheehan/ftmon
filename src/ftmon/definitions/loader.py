@@ -16,9 +16,10 @@ from __future__ import annotations
 import difflib
 import hashlib
 import math
+import re
 import string
 import tomllib
-from collections.abc import Set
+from collections.abc import Iterable, Set
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,62 @@ __all__ = [
     "load_text",
     "load_file",
     "load_dir",
+    "stale_metric_warnings",
 ]
+
+#: metric -> (replacement, why the old one is the wrong question to ask).
+#: FS-02 forbids overwriting user config, so a shipped definition fix never
+#: reaches an existing install on its own; without this an operator's rule
+#: keeps silently measuring the wrong quantity, which is the defect issue #104
+#: exists to fix rather than something to reproduce in a new place.
+_STALE_RULE_METRICS = {
+    "db_bytes": (
+        "db_used_bytes",
+        "db_bytes is the database file and counts reusable freelist pages, "
+        "while DM-05 bounds used pages",
+    ),
+}
+
+#: The legacy budget-rule shape, with the stale metric substituted for "@":
+#: the metric compared directly against a size limit, optionally scaled by a
+#: unit constant. Matching the shape rather than the bare name keeps a rule
+#: that legitimately *derives* something from the raw quantity — say
+#: `db_bytes - db_freelist_bytes` — from being told to substitute a metric
+#: that would change what it computes.
+_BUDGET_COMPARISON = re.compile(
+    r"(^|[\s(])@\s*[<>]=?\s*[\w.]+(\s*\*\s*[\w.]+)?\s*($|[\s)])"
+)
+
+
+def stale_metric_warnings(defs: Iterable[MonitorDef]) -> list[str]:
+    """Rule conditions alarming on a metric that answers the wrong question.
+
+    Deliberately narrow on two axes. Only `rule.when` is examined: a derived
+    metric or glance readout may legitimately display the raw quantity, and a
+    *condition* comparing it against a budget is the specific mistake. And only
+    the budget-comparison *shape* matches — a rule doing arithmetic such as
+    `db_bytes - db_freelist_bytes` is deriving the right quantity the long way
+    and would be actively misled by advice to substitute a different metric.
+
+    Returns human-readable lines; callers decide how loudly to present them.
+    """
+    warnings: list[str] = []
+    for mdef in defs:
+        for rule in mdef.rules:
+            for stale, (replacement, why) in _STALE_RULE_METRICS.items():
+                if _BUDGET_COMPARISON.search(rule.when.source.replace(stale, "@")):
+                    # Leads with the in-place edit deliberately. `init --force`
+                    # rewrites every built-in definition, so recommending it
+                    # first would cost a tuned host its calibration — and a
+                    # tuned host is exactly the kind most likely to see this.
+                    warnings.append(
+                        f"{mdef.name}/{rule.id} alarms on {stale}: {why}. "
+                        f"Edit the rule to use {replacement}. "
+                        f"(`ftmon init --force` adopts the shipped definition "
+                        f"instead, but overwrites every built-in and discards "
+                        f"any local tuning.)"
+                    )
+    return warnings
 
 
 @dataclass(frozen=True)

@@ -154,7 +154,22 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
         metrics=(
             _m("cpu_pct", "%", "gauge", "Daemon CPU percent"),
             _m("rss_bytes", "bytes", "gauge", "Daemon RSS"),
-            _m("db_bytes", "bytes", "gauge", "Database file size"),
+            _m("db_bytes", "bytes", "gauge",
+               "Main database file size on disk (stat); pre-#104 meaning retained "
+               "— DM-05 rules MUST use db_used_bytes"),
+            _m("db_allocated_bytes", "bytes", "gauge",
+               "SQLite logical size (page_count x page_size); in WAL mode this "
+               "exceeds db_bytes until the next checkpoint"),
+            _m("db_used_bytes", "bytes", "gauge",
+               "Used pages excluding the freelist — the quantity DM-05 bounds"),
+            _m("db_freelist_bytes", "bytes", "gauge",
+               "Reusable free pages; allocated but costs nothing against DM-05"),
+            _m("db_headroom_bytes", "bytes", "gauge",
+               "Signed bytes remaining under the DM-05 target; negative means over"),
+            _m("entities_persisted", "count", "gauge",
+               "Entities being written durable history now, against the DM-16 budget"),
+            _m("series_persisted", "count", "gauge",
+               "Series written this tick, against DM-16's ~270 series worksheet"),
             _m("cycle_s", "s", "gauge", "Last full tick duration"),
             _m("tick_overruns", "count", "counter", "Cycles skipped due to overrun (SA-01)"),
             _m("event_queue_depth", "count", "gauge", "Queued undrained events"),

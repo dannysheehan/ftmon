@@ -91,6 +91,27 @@ def test_self_identifies_running_web_package_ui_02(tmp_path):
     assert f"<strong>Web process version</strong> {__version__}." in page.text
 
 
+def test_self_page_shows_used_bytes_not_just_file_allocation_dm_05(tmp_path):
+    """[DM-05][UI-02] The /self database line is the surface an operator
+    reads to judge DM-05 headroom; issue #104 found it printing only the
+    file allocation as if that were the budget figure, so it must name
+    used, file and reusable distinctly rather than one bare byte count."""
+    client, _paths = _client(tmp_path)
+    page = client.get("/self", headers={"host": "localhost:8420"})
+    assert "bytes used (DM-05 budget figure)" in page.text
+    assert "bytes file allocation" in page.text
+    assert "bytes reusable" in page.text
+
+
+def test_dashboard_stat_leads_with_used_bytes_dm_05(tmp_path):
+    """[DM-05][UI-04] The dashboard's headline "Database" stat must be the
+    DM-05 used-pages figure, not the file allocation issue #104 found
+    presented there as though it were the budget verdict."""
+    client, _paths = _client(tmp_path)
+    page = client.get("/", headers={"host": "localhost:8420"})
+    assert "Database MB (used)" in page.text
+
+
 def test_dark_mode_uses_legible_semantic_card_palette_ui_09(tmp_path):
     """[UI-09] Dark cards replace both light gradients and semantic foregrounds."""
     client, _paths = _client(tmp_path)

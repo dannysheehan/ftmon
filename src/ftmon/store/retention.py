@@ -23,6 +23,8 @@ import json
 import sqlite3
 from collections.abc import Callable
 
+from ftmon.store.db import DB_BUDGET_BYTES
+
 __all__ = ["Retention", "BaselineLookup"]
 
 # CA-05: fixed-Δt EW mean; α = 1 − 2^(−Δt/half_life), Δt = one 5-min rollup.
@@ -54,7 +56,7 @@ class Retention:
         self,
         conn: sqlite3.Connection,
         *,
-        budget_bytes: int = 200 * 2**20,  # DM-05
+        budget_bytes: int = DB_BUDGET_BYTES,  # DM-05
         raw_keep_s: int = 48 * 3600,  # DM-04
         r5m_keep_s: int = 30 * _DAY,
         r1h_keep_durable_s: int = 400 * _DAY,
@@ -426,10 +428,12 @@ class Retention:
     # -- degradation (DM-05) ----------------------------------------------
 
     def _used_bytes(self, cur: sqlite3.Cursor) -> int:
-        (pages,) = cur.execute("PRAGMA page_count").fetchone()
-        (free,) = cur.execute("PRAGMA freelist_count").fetchone()
-        (size,) = cur.execute("PRAGMA page_size").fetchone()
-        return (pages - free) * size
+        # Shared with every reporting surface (issue #104): enforcement and
+        # reporting deriving used pages separately is how a budget alarm came
+        # to watch a quantity DM-05 does not govern.
+        from ftmon.store.db import db_size_report
+
+        return int(db_size_report(cur)["used_bytes"])
 
     def _degrade_if_over_budget(self, cur: sqlite3.Cursor, now: float) -> list[str]:
         """DM-05: fixed order, oldest-and-coarsest-last, never incidents.
