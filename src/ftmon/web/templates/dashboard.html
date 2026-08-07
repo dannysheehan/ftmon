@@ -26,6 +26,18 @@
       <span class="stat-value">{% if status.last_tick_age_s is none %}—{% else %}{{ '%.0f'|format(status.last_tick_age_s) }}s{% endif %}</span>
       <span class="stat-label">Last tick</span>
     </div>
+    {# Budget summary (#105): the same three figures /self expands on, so the
+       strip answers "is FTMON itself healthy" without a second page. Each
+       links there rather than repeating the thresholds. #}
+    {% if self_budget %}
+    {% for item in self_budget %}
+    <div class="stat stat-{{ item.tone if item.tone != 'unknown' else 'muted' }}"
+         title="{{ item.title }}">
+      <span class="stat-value">{{ item.value }}</span>
+      <span class="stat-label"><a href="/self">{{ item.label }}</a></span>
+    </div>
+    {% endfor %}
+    {% endif %}
     <div class="stat stat-muted" title="File allocation {{ '%.1f'|format(status.db_bytes / 1048576) }} MB">
       <span class="stat-value">{{ '%.1f'|format(status.db_used_bytes / 1048576) }}</span>
       <span class="stat-label">Database MB (used)</span>

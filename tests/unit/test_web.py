@@ -91,6 +91,13 @@ def test_self_identifies_running_web_package_ui_02(tmp_path):
     assert f"<strong>Web process version</strong> {__version__}." in page.text
 
 
+def _panel_row(page: str, row_id: str) -> str:
+    """The markup of one budget row, so absence is asserted per row."""
+    marker = f'data-row="{row_id}"'
+    start = page.index(marker)
+    return page[start:page.index("</tr>", start)]
+
+
 def _seed_self_metrics(paths, **metrics):
     """Give the self entity real readings so the panel has something to show."""
     conn = connect(paths.db_file)
@@ -139,12 +146,13 @@ def test_self_panel_reports_absent_metrics_as_unavailable_ui_09(tmp_path):
     page = client.get("/self", headers={"host": "localhost:8420"}).text
     assert "Per-stage timings are not collected yet" in page
     assert "no daemon has published it" in page
-    # All three budget rows must say so, not just some other part of the page:
-    # asserting the phrase appears *somewhere* would pass while the rows
-    # rendered 0.0, which is the whole failure being guarded against.
-    assert page.count("not available yet") >= 3, (
-        "CPU, memory and database rows must each report absence"
-    )
+    # Asserted per row, not by counting occurrences: the catalog section has
+    # its own "not available yet", so a page-wide count passes with only two
+    # correct budget rows. Each row carries a stable data-row identifier.
+    for row_id in ("cpu", "memory", "database"):
+        assert "not available yet" in _panel_row(page, row_id), (
+            f"the {row_id} row must report absence, not a zero"
+        )
     # And no row may present a confident zero for a metric nobody published.
     assert "0.0 MB" not in page
     assert "0.0%" not in page
@@ -952,3 +960,106 @@ def test_self_panel_compares_against_the_hosts_own_thresholds_md_01(tmp_path):
     # ... while RB-01's target stays visible, since they differ on purpose.
     assert "RB-01 target 1.0% of one core" in page
     assert "(50%)" in page, "2.0 of 4.0 is half the budget"
+
+
+def test_self_panel_reports_utilization_above_one_hundred_percent_rb_02(tmp_path):
+    """[RB-02][UI-09] A breach must show how far over, not saturate at 100%.
+
+    Clamping the displayed percentage would under-report severity: 6% CPU
+    against a 1.5% threshold is 400% of budget, and "100%" reads as merely
+    at-the-limit. Only the meter geometry is clamped, because an SVG cannot
+    be four times its own width.
+    """
+    client, paths = _client(tmp_path)
+    (paths.monitors_dir / "self.toml").write_text(
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "self"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "self"\n'
+        '[parameters]\n'
+        'cpu_budget_pct = { value = 1.5, doc = "d" }\n'
+        '[[rule]]\n'
+        'id = "cpu-budget"\ngroup = "cpu-budget"\n'
+        "when = 'avg(cpu_pct, \"10m\") > cpu_budget_pct'\n"
+        'severity = "warning"\nconfirm_cycles = 3\nmessage = "m"\n',
+        encoding="utf-8",
+    )
+    _seed_self_metrics(paths, cpu_pct=6.0, cpu_10m=6.0)
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    row = _panel_row(page, "cpu")
+    assert "(400%)" in row, "true utilization, not clamped to 100"
+    assert "over" in row, "and flagged as a breach"
+    # The meter itself stays inside its viewBox.
+    assert 'width="100"' in row
+
+
+def test_self_panel_shows_a_measured_zero_stage_timing_rb_02(tmp_path):
+    """[RB-02] 0.0 is a reading; only a missing metric is an absence.
+
+    The template originally filtered stages on truthiness, so a genuine zero
+    would have been reported as "not collected yet" — defeating the very
+    distinction this panel exists to keep once #106 starts publishing.
+    """
+    client, paths = _client(tmp_path)
+    # Only zeros: a fixture with any truthy timing alongside them renders the
+    # section either way, so it would not isolate the truthiness bug.
+    _seed_self_metrics(paths, commit_s=0.0, reap_s=0.0)
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    assert "Per-stage timings are not collected yet" not in page, (
+        "every published timing is zero, which is data, not absence"
+    )
+    assert "0.0 ms" in page, "a measured zero must be shown as measured"
+
+
+def test_self_panel_links_to_six_and_twenty_four_hour_history_ui_12(tmp_path):
+    """[UI-12][UI-02] Each budget links to its own history, not a generic page.
+
+    A reading without its recent shape cannot answer "is this a spike or a
+    trend", which is the first question a budget number raises.
+    """
+    client, paths = _client(tmp_path)
+    _seed_self_metrics(paths, cpu_pct=2.0, cpu_10m=2.0, rss_bytes=5e7,
+                       db_used_bytes=1e8)
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    for metric in ("cpu_10m", "rss_bytes", "db_used_bytes"):
+        assert f"metric={metric}&amp;range=6h" in page, f"6h history for {metric}"
+        assert f"metric={metric}&amp;range=24h" in page, f"24h history for {metric}"
+
+
+def test_dashboard_strip_summarises_self_budgets_ui_02(tmp_path):
+    """[UI-02][RB-02] The strip answers "is FTMON itself healthy" in passing.
+
+    Composed by the same function as the /self panel, so the two surfaces
+    cannot disagree about whether the daemon is inside its budgets — the
+    duplication issue #104 removed from the DM-05 arithmetic.
+    """
+    client, paths = _client(tmp_path)
+    (paths.monitors_dir / "self.toml").write_text(
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "self"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "self"\n'
+        '[parameters]\n'
+        'cpu_budget_pct = { value = 4.0, doc = "d" }\n'
+        'rss_budget_mb = { value = 100, doc = "d" }\n'
+        '[[rule]]\n'
+        'id = "cpu-budget"\ngroup = "cpu-budget"\n'
+        "when = 'avg(cpu_pct, \"10m\") > cpu_budget_pct'\n"
+        'severity = "warning"\nconfirm_cycles = 3\nmessage = "m"\n',
+        encoding="utf-8",
+    )
+    _seed_self_metrics(paths, cpu_pct=2.0, cpu_10m=2.0, rss_bytes=50 * 1024 * 1024)
+    page = client.get("/", headers={"host": "localhost:8420"}).text
+    assert "Self CPU %" in page
+    assert "Self RSS MB" in page
+    assert ">2.0<" in page, "CPU value on the strip"
+    assert ">50<" in page, "RSS in MB on the strip"
+    assert "50% of the threshold set on this host" in page
+
+
+def test_dashboard_strip_omits_self_budgets_when_unmeasured_ui_02(tmp_path):
+    """[UI-02] Nothing measured, nothing claimed — no zero-valued stat tiles."""
+    client, _paths = _client(tmp_path)
+    page = client.get("/", headers={"host": "localhost:8420"}).text
+    assert "Self CPU %" not in page
+    assert "Self RSS MB" not in page

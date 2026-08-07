@@ -6,6 +6,11 @@
 
 <h2>Budgets</h2>
 {% if panel %}
+{% macro history(metric, label) -%}
+<a class="panel-history" href="/metrics?monitor=self&amp;entity=ftmon&amp;metric={{ metric }}&amp;range=6h">6h</a>
+<a class="panel-history" href="/metrics?monitor=self&amp;entity=ftmon&amp;metric={{ metric }}&amp;range=24h">24h</a>
+<span class="panel-limit">history for {{ label }}</span>
+{%- endmacro %}
 <table class="panel">
   <caption class="panel-caption">
     Measured against this host's <code>self.toml</code> thresholds. RB-01's
@@ -21,12 +26,14 @@
         Current {% if panel.cpu.current is none %}—{% else %}{{ '%.1f'|format(panel.cpu.current) }}%{% endif %},
         10-minute average {% if panel.cpu.avg10m is none %}—{% else %}{{ '%.1f'|format(panel.cpu.avg10m) }}%{% endif %}.
         RB-01 target {{ '%.1f'|format(panel.cpu.row.spec) }}% of one core.
+        {{ history('cpu_10m', 'CPU') }}
       </td>
     </tr>
     {{ panel_macros.budget_row(
          panel.memory.row,
          panel_macros.bytes_mb(panel.memory.row.value),
          panel_macros.bytes_mb(panel.memory.row.limit)) }}
+    <tr class="panel-note"><td colspan="3">{{ history('rss_bytes', 'RSS') }}</td></tr>
     {{ panel_macros.budget_row(
          panel.database.row,
          panel_macros.bytes_mb(panel.database.row.value),
@@ -39,6 +46,7 @@
         Headroom to the 200 MB target
         {% if panel.database.headroom is none %}—{%
         else %}{{ panel_macros.bytes_mb(panel.database.headroom) }}{% endif %}.
+        {{ history('db_used_bytes', 'used pages') }}
       </td>
     </tr>
   </tbody>
@@ -83,7 +91,10 @@
 </table>
 
 <h2>Where the tick goes</h2>
-{% if panel.stages | selectattr('seconds') | list %}
+{# rejectattr('seconds','none'), not selectattr: a measured 0.0 is a
+   reading. Truthiness here would report real zero timings as uncollected,
+   defeating the absent-vs-zero distinction this panel exists to keep. #}
+{% if panel.stages | rejectattr('seconds', 'none') | list %}
 <table class="panel">
   <tbody>
     {% for stage in panel.stages if stage.seconds is not none %}

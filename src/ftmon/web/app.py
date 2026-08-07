@@ -235,10 +235,26 @@ async def dashboard(request: Request):
             tile for tile in tiles
             if tile.state == "disabled" and not tile.incident_count
         ]
+        # Same composer as /self, so the strip and the panel cannot disagree
+        # about whether the daemon is inside its own budgets (#105).
+        self_metrics = {} if q is None else {
+            r["metric"]: r["value"] for r in q._conn.execute(
+                "SELECT se.metric, s.value FROM series se "
+                "JOIN samples s ON s.series_id=se.id "
+                "WHERE se.monitor='self' AND s.ts="
+                "(SELECT MAX(x.ts) FROM samples x WHERE x.series_id=se.id)"
+            )
+        }
+        self_params = next(
+            (dict(d.parameters) for d in defs if d.name == "self"), {}
+        )
+        self_budget = _self_budget_stats(
+            _self_panel(self_metrics, self_params, None)
+        )
     return _render(
         "dashboard.html", request, title="Dashboard", status=status,
         tiles=tiles, attention_tiles=attention, clear_tiles=clear,
-        disabled_tiles=disabled,
+        disabled_tiles=disabled, self_budget=self_budget,
         summary=summary, config_errors=errors, incidents=incidents,
         refresh_ms=5000,
     )
@@ -1039,26 +1055,35 @@ _RB01_CPU_PCT = 1.0
 _RB01_RSS_BYTES = 100 * 1024 * 1024
 
 
-def _budget_row(label, value, limit, unit, *, spec=None, higher_is_worse=True):
+def _budget_row(row_id, label, value, limit, unit, *, spec=None,
+                higher_is_worse=True):
     """One panel row: the number, what it is measured against, and how close.
 
-    `pct` drives a meter, but every row also carries text (UI-09): colour and
-    bar length are never the only carriers of the reading.
+    `pct` is the true utilization and may exceed 100 — a CPU average of 6%
+    against a 1.5% threshold is 400% of budget, and clamping that for display
+    would under-report the breach it exists to show. `fill_pct` is clamped
+    because it is SVG geometry, not a reading.
+
+    Every row also carries text (UI-09): colour and bar length are never the
+    only carriers.
     """
     if value is None:
-        return {"label": label, "value": None, "limit": limit, "unit": unit,
-                "pct": None, "tone": "unknown", "spec": spec}
+        return {"id": row_id, "label": label, "value": None, "limit": limit,
+                "unit": unit, "pct": None, "fill_pct": None,
+                "tone": "unknown", "spec": spec}
     if not limit:
         # A missing *threshold* must not erase a known *measurement*: the
         # reading is reported without a comparison rather than as absent.
-        return {"label": label, "value": value, "limit": None, "unit": unit,
-                "pct": None, "tone": "unknown", "spec": spec}
-    pct = max(0.0, min(100.0, 100.0 * value / limit))
+        return {"id": row_id, "label": label, "value": value, "limit": None,
+                "unit": unit, "pct": None, "fill_pct": None,
+                "tone": "unknown", "spec": spec}
+    pct = 100.0 * value / limit
     tone = "ok"
     if higher_is_worse:
         tone = "error" if value >= limit else "warn" if pct >= 80 else "ok"
-    return {"label": label, "value": value, "limit": limit, "unit": unit,
-            "pct": pct, "tone": tone, "spec": spec}
+    return {"id": row_id, "label": label, "value": value, "limit": limit,
+            "unit": unit, "pct": pct, "fill_pct": max(0.0, min(100.0, pct)),
+            "tone": tone, "spec": spec}
 
 
 def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
@@ -1085,13 +1110,13 @@ def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
         "cpu": {
             "current": m("cpu_pct"),
             "avg10m": m("cpu_10m"),
-            "row": _budget_row("CPU", m("cpu_10m") if m("cpu_10m") is not None
+            "row": _budget_row("cpu", "CPU", m("cpu_10m") if m("cpu_10m") is not None
                                else m("cpu_pct"), cpu_budget, "%",
                                spec=_RB01_CPU_PCT),
         },
         "memory": {
             "row": _budget_row(
-                "Memory", m("rss_bytes"),
+                "memory", "Memory", m("rss_bytes"),
                 (rss_budget_mb or 0) * 1024 * 1024 or None, "bytes",
                 spec=_RB01_RSS_BYTES),
         },
@@ -1101,7 +1126,7 @@ def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
             "freelist": m("db_freelist_bytes"),
             "headroom": m("db_headroom_bytes"),
             "row": _budget_row(
-                "Database (used pages)", m("db_used_bytes"),
+                "database", "Database (used pages)", m("db_used_bytes"),
                 (db_warn_mb or 0) * 1024 * 1024 or None, "bytes"),
         },
         "catalog": {
@@ -1122,6 +1147,33 @@ def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
                          "actions_outbox_s", "retention_s", "prune_s", "reap_s")
         ],
     }
+
+
+def _self_budget_stats(panel: dict | None) -> list[dict]:
+    """Compact strip figures for the dashboard (#105).
+
+    The same three readings /self expands on, reduced to a value and a tone.
+    Thresholds are not repeated here: the strip answers "is FTMON itself
+    healthy" and links onward for "against what".
+    """
+    if not panel:
+        return []
+    out = []
+    for key, label, fmt in (
+        ("cpu", "Self CPU %", lambda v: f"{v:.1f}"),
+        ("memory", "Self RSS MB", lambda v: f"{v / 1048576:.0f}"),
+    ):
+        row = panel[key]["row"]
+        if row["value"] is None:
+            continue
+        limit = row["limit"]
+        title = (
+            f"{row['pct']:.0f}% of the threshold set on this host" if row["pct"] is not None
+            else "no threshold configured"
+        ) + (f" ({fmt(limit)})" if limit else "")
+        out.append({"label": label, "value": fmt(row["value"]),
+                    "tone": row["tone"], "title": title})
+    return out
 
 
 async def self_page(request: Request):

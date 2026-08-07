@@ -876,6 +876,7 @@ pre {
 .panel-value { width: 60% }
 .panel-meter { width: 14rem }
 .panel-limit, .panel-pct { color: #4a5b6d }
+.panel-history { margin-left: 0.5rem; font-size: 0.9em }
 .panel-absent { color: #4a5b6d; font-style: italic }
 .panel-note td { padding-top: 0; color: #4a5b6d; font-size: 0.9em }
 .panel-flag {
