@@ -850,17 +850,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # the budget. entities_not_gone counts running processes and is an order
     # of magnitude larger; printing it against the budget read as a breach on
     # a host that was well inside it (issue #104).
-    persisted = (
-        "unknown (no daemon has published it yet)"
-        if dm16["entities_persisted"] is None
-        else f"{dm16['entities_persisted']}/{dm16['max_entities_persisted']}"
-    )
-    print(f"Catalog persisted (DM-16 budget): entities={persisted}")
+    def _budget(value, limit):
+        return "unknown (no daemon has published it)" if value is None else f"{value}/{limit}"
+
     print(
-        "Catalog (running/total, not a budget figure; "
-        f"series worksheet ~{dm16['max_series_active']}): "
+        "Catalog persisted (DM-16 budget): "
+        f"entities={_budget(dm16['entities_persisted'], dm16['max_entities_persisted'])} "
+        f"series={_budget(dm16['series_persisted'], dm16['max_series_persisted'])}"
+    )
+    # Presence and retention, deliberately without a budget comparison: these
+    # count what is running and what is retained, neither of which is the
+    # pressure DM-16 bounds (#104).
+    print(
+        "Catalog running/total (not budget figures): "
         f"entities={dm16['entities_not_gone']}/{report['tables']['entities']} "
-        f"series={dm16['series_active']}/{report['tables']['series']}"
+        f"series={dm16['series_not_gone']}/{report['tables']['series']}"
     )
     if report["last_reap_ts"] is None:
         print("Reap: last ran never")

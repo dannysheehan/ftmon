@@ -47,6 +47,7 @@ class SelfStats:
     db_freelist_bytes: float = 0.0
     db_headroom_bytes: float = 0.0
     entities_persisted: int = 0
+    series_persisted: int = 0
     counters: dict[str, int] = field(default_factory=dict)
 
     def count(self, name: str) -> None:
@@ -82,6 +83,7 @@ class SelfSampler:
             # and would be erased by clamping at zero.
             "db_headroom_bytes": s.db_headroom_bytes,
             "entities_persisted": float(s.entities_persisted),
+            "series_persisted": float(s.series_persisted),
             "cycle_s": s.cycle_s,
             "tick_overruns": float(s.tick_overruns),
             "event_queue_depth": float(s.event_queue_depth),

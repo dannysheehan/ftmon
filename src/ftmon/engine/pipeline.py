@@ -74,6 +74,10 @@ class Pipeline:
         # `gone_ts IS NULL` counts every *running* process, because `seen` is
         # populated for the whole snapshot rather than the selected subset.
         self._persisted: dict[str, int] = {}
+        # DM-16's series worksheet needs the same treatment as its entity
+        # budget: a count of series *written this tick*, not of series whose
+        # owning entity happens to still be running.
+        self._persisted_series: dict[str, int] = {}
 
     def run_monitor(
         self,
@@ -153,6 +157,10 @@ class Pipeline:
     def promoted(self, monitor: str) -> set[str]:
         return set(self._state.get(monitor, _MonitorState()).promoted)
 
+    def persisted_series(self, monitors: Iterable[str]) -> int:
+        """Series written durable history this tick, over `monitors` (DM-16)."""
+        return sum(self._persisted_series.get(name, 0) for name in monitors)
+
     def persisted_entities(self, monitors: Iterable[str]) -> int:
         """Entities currently being written durable history, over `monitors`.
 
@@ -191,6 +199,7 @@ class Pipeline:
         # Overwrite rather than accumulate: this is a gauge of current pressure,
         # and a monitor that stops selecting an entity must stop counting it.
         self._persisted[mdef.name] = len(selected)
+        series_written = 0
         durable = mdef.source in _DURABLE_SOURCES
         for ent in snap.entities:
             if ent.entity_id in exempt_entities:
@@ -203,9 +212,11 @@ class Pipeline:
             writer.upsert_entity(mdef.name, ent.entity_id, now, dict(ent.attrs))
             values = dict(ent.metrics)
             values.update(derived_vals.get(ent.entity_id, {}))
+            series_written += len(values)
             for metric, value in values.items():
                 sid = writer.series_id(mdef.name, ent.entity_id, metric, durable)
                 writer.add_sample(sid, snap.ts, value)
+        self._persisted_series[mdef.name] = series_written
 
     def _select_persisted(
         self, mdef: MonitorDef, snap: Snapshot, st: _MonitorState, now: float

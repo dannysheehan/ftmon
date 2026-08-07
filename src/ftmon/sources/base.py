@@ -168,6 +168,8 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
                "Signed bytes remaining under the DM-05 target; negative means over"),
             _m("entities_persisted", "count", "gauge",
                "Entities being written durable history now, against the DM-16 budget"),
+            _m("series_persisted", "count", "gauge",
+               "Series written this tick, against DM-16's ~270 series worksheet"),
             _m("cycle_s", "s", "gauge", "Last full tick duration"),
             _m("tick_overruns", "count", "counter", "Cycles skipped due to overrun (SA-01)"),
             _m("event_queue_depth", "count", "gauge", "Queued undrained events"),

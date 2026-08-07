@@ -1,11 +1,10 @@
 """M6 database diagnostics tests [CL-05][VC-03]."""
 
 import sqlite3
-from types import SimpleNamespace
 
 from ftmon.cli import main
-from ftmon.engine.pipeline import _MonitorState
 from ftmon.paths import get_paths
+from ftmon.sources.base import SOURCE_DECLS
 from ftmon.store.db import connect, db_size_report, migrate
 from ftmon.store.doctor import backup, inspect
 from tests.platform_permissions import assert_private
@@ -65,15 +64,16 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
     migrate(conn)
     report = inspect(conn, now=1000)
     assert report["entities_not_gone"] == 0
-    assert report["series_active"] == 0
+    assert report["series_not_gone"] == 0
     assert report["dm16"] == {
         "max_entities_persisted": 400,
-        # No daemon has published the DM-16 figure on a fresh database, and
-        # doctor says so rather than substituting the count DM-16 rejects.
+        "max_series_persisted": 270,
+        # No daemon has published the DM-16 figures on a fresh database, and
+        # doctor says so rather than substituting the counts DM-16 rejects.
         "entities_persisted": None,
-        "max_series_active": 270,
-        "series_active": 0,
+        "series_persisted": None,
         "entities_not_gone": 0,
+        "series_not_gone": 0,
     }
     assert report["last_reap_ts"] is None
     assert report["last_reap_count"] is None
@@ -86,7 +86,7 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
     conn.close()
 
 
-def test_doctor_catalog_splits_active_from_total_cl_05_dm_16(tmp_path):
+def test_doctor_catalog_splits_presence_from_total_cl_05_dm_16(tmp_path):
     """[CL-05][DM-16] Active counts (alive entities, sampled series) differ from
     the total row counts already reported under `tables` — that split is the
     whole point of the reap-visibility feature (issue #74)."""
@@ -125,15 +125,15 @@ def test_doctor_catalog_splits_active_from_total_cl_05_dm_16(tmp_path):
 
     report = inspect(conn, now=1000)
     assert report["entities_not_gone"] == 2
-    assert report["series_active"] == 2
+    assert report["series_not_gone"] == 2
     assert report["tables"]["entities"] == 5
     assert report["tables"]["series"] == 4
     assert report["dm16"]["entities_not_gone"] == 2
-    assert report["dm16"]["series_active"] == 2
+    assert report["dm16"]["series_not_gone"] == 2
     conn.close()
 
 
-def test_doctor_series_active_excludes_gone_entity_with_sample_cl_05_dm_16(tmp_path):
+def test_doctor_series_not_gone_excludes_gone_entity_with_sample_cl_05_dm_16(tmp_path):
     """[CL-05][DM-16] A series still holding a raw sample doesn't count as
     active once its owning entity is gone: DM-04 keeps the sample around
     until it ages out (or MD-09 reap catches up), so bare sample presence
@@ -159,7 +159,7 @@ def test_doctor_series_active_excludes_gone_entity_with_sample_cl_05_dm_16(tmp_p
     conn.commit()
 
     report = inspect(conn, now=1000)
-    assert report["series_active"] == 1
+    assert report["series_not_gone"] == 1
     assert report["tables"]["series"] == 2
     conn.close()
 
@@ -487,39 +487,75 @@ def test_freelist_growth_alone_does_not_consume_budget_dm_05(tmp_path, monkeypat
         core.conn.close()
 
 
-def test_persisted_catalog_counts_selection_not_presence_dm_16(tmp_path):
-    """[DM-16] Pressure follows what the pipeline persists, not what is running.
+def test_run_monitor_publishes_persisted_gauges_dm_16(tmp_path, monkeypatch):
+    """[DM-16] The production path publishes selection-based pressure.
 
-    Drives a real pipeline over a snapshot of five processes with top_n=2, so
-    the sampled set and the selected set genuinely differ. `st.seen` is
-    populated for the whole snapshot -- that is why a presence-derived count
-    overstates DM-16 pressure -- while entities_persisted tracks selection.
+    Drives `run_monitor` with a real sampler and a real TickWriter rather than
+    calling `_select_persisted` and assigning the gauge by hand: the defect
+    being guarded is that the *published* figure could drift back to a
+    presence count, and only the production assignment inside `_persist`
+    proves it does not.
     """
+    from ftmon.definitions import loader
     from ftmon.engine.pipeline import Pipeline
     from ftmon.engine.rings import RingStore
     from ftmon.model import EntitySample, Snapshot
+    from ftmon.store.writer import TickWriter
 
-    entities = tuple(
-        EntitySample(entity_id=f"p{i}", attrs={"name": f"p{i}"},
-                     metrics={"cpu_pct": float(i), "rss_bytes": float(i)})
-        for i in range(5)
+    class TwelveProcesses:
+        decl = SOURCE_DECLS["process"]
+
+        def sample(self, now, deadline_mono, options):
+            return Snapshot(source="process", ts=now, entities=tuple(
+                EntitySample(
+                    entity_id=f"p{i}", attrs={"name": f"p{i}"},
+                    metrics={"cpu_pct": float(i), "rss_bytes": float(i)},
+                )
+                for i in range(12)
+            ))
+
+    mdef = loader.load_text(
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "proc"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "process"\n'
+        '[source_options]\n'
+        'top_n = 5\n'
+        '[[rule]]\n'
+        'id = "r"\ngroup = "g"\nwhen = \'cpu_pct > 99999\'\n'
+        'severity = "warning"\nconfirm_cycles = 1\nmessage = "m"\n'
     )
-    snap = Snapshot(source="process", ts=1_000.0, entities=entities)
-    pipe = Pipeline(samplers={}, rings=RingStore(), counter=lambda _n: None)
-    mdef = SimpleNamespace(name="proc", source="process",
-                           source_options={"top_n": 2}, promotion=None)
-    st = pipe._state.setdefault("proc", _MonitorState())
-    for ent in snap.entities:
-        st.seen[ent.entity_id] = 1_000.0
 
-    selected = pipe._select_persisted(mdef, snap, st, 1_000.0)
-    pipe._persisted["proc"] = len(selected)
+    conn = connect(tmp_path / "p.db")
+    migrate(conn)
+    writer = TickWriter(conn)
+    pipe = Pipeline(
+        samplers={"process": TwelveProcesses()}, rings=RingStore(),
+        counter=lambda _n: None,
+    )
+    pipe.run_monitor(mdef, 1_000.0, 0.0, writer, {})
+    writer.commit_tick()
 
-    # All five are sampled and marked seen; only the top-N by cpu/rss persist.
-    assert len(st.seen) == 5
-    assert pipe.persisted_entities(["proc"]) == len(selected) < 5
+    # All twelve are sampled and marked seen -- which is exactly what a
+    # presence-derived count would report. cpu_pct and rss_bytes rank
+    # identically here, so top_n=5 selects five of them.
+    assert len(pipe._state["proc"].seen) == 12
+    persisted = pipe.persisted_entities(["proc"])
+    assert persisted == 5
+
+    # The gauge matches what actually reached the database, which is the
+    # property that matters -- a presence count could not satisfy this.
+    written = conn.execute(
+        "SELECT COUNT(DISTINCT entity_id) FROM series WHERE monitor='proc'"
+    ).fetchone()[0]
+    assert persisted == written
+    series_rows = conn.execute(
+        "SELECT COUNT(*) FROM series WHERE monitor='proc'"
+    ).fetchone()[0]
+    assert pipe.persisted_series(["proc"]) == series_rows
     # An unloaded monitor stops contributing pressure immediately (MD-09).
     assert pipe.persisted_entities([]) == 0
+    conn.close()
 
 
 def test_db_bytes_and_allocated_diverge_under_wal_issue_104(tmp_path):

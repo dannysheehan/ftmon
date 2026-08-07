@@ -815,6 +815,7 @@ class DaemonCore:
         # "how far from the budget" must not move when an alarm is retuned.
         self.stats.db_headroom_bytes = float(_DB_BUDGET_BYTES - size["used_bytes"])
         self.stats.entities_persisted = self.pipeline.persisted_entities(self.monitors)
+        self.stats.series_persisted = self.pipeline.persisted_series(self.monitors)
 
     def _sample_outbox_backlog(self, wall: float) -> None:
         """Fold delivery debt into the self source (NO-10).

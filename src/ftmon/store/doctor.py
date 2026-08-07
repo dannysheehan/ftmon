@@ -119,17 +119,22 @@ def inspect(
     # DM-16 figure is whatever the daemon last published (RB-02). None means
     # no daemon has run since the metric was introduced — reported as unknown
     # rather than silently falling back to the count DM-16 rejects.
-    persisted_row = conn.execute(
-        "SELECT s.value FROM series se JOIN samples s ON s.series_id = se.id "
-        "WHERE se.monitor='self' AND se.metric='entities_persisted' "
-        "ORDER BY s.ts DESC LIMIT 1"
-    ).fetchone()
-    entities_persisted = int(persisted_row[0]) if persisted_row is not None else None
-    # A raw sample alone isn't "active": a just-gone entity keeps its samples
-    # until DM-04's window or MD-09's reap catches up, so counting bare
-    # sample presence would double-count catalog pressure that's already on
-    # its way out. Require the owning entity to still be alive (gone_ts NULL).
-    series_active = conn.execute(
+    def _latest_self(metric: str) -> int | None:
+        row = conn.execute(
+            "SELECT s.value FROM series se JOIN samples s ON s.series_id = se.id "
+            "WHERE se.monitor='self' AND se.metric=? ORDER BY s.ts DESC LIMIT 1",
+            (metric,),
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    entities_persisted = _latest_self("entities_persisted")
+    series_persisted = _latest_self("series_persisted")
+    # Historical series belonging to a still-running entity. Like
+    # entities_not_gone this is a *presence* measure, not DM-16 pressure: it
+    # counts series that were ever written for a process that happens to still
+    # exist, including ones nothing has written to in weeks. Named for what it
+    # counts and reported without a budget comparison (#104 review).
+    series_not_gone = conn.execute(
         "SELECT COUNT(DISTINCT sm.series_id) FROM samples sm "
         "JOIN series se ON se.id = sm.series_id "
         "JOIN entities en ON en.monitor = se.monitor AND en.entity_id = se.entity_id "
@@ -138,10 +143,11 @@ def inspect(
     dm16 = {
         "max_entities_persisted": 400,
         "entities_persisted": entities_persisted,
-        "max_series_active": 270,
-        "series_active": series_active,
-        # Reported beside the budget figure, never as it (DM-16).
+        "max_series_persisted": 270,
+        "series_persisted": series_persisted,
+        # Reported beside the budget figures, never as them (DM-16).
         "entities_not_gone": entities_not_gone,
+        "series_not_gone": series_not_gone,
     }
     meta_rows = dict(conn.execute(
         "SELECT key, value FROM meta WHERE key IN "
@@ -175,7 +181,8 @@ def inspect(
             "orphans": orphans, "cursors": cursors,
             "entities_not_gone": entities_not_gone,
             "entities_persisted": entities_persisted,
-            "series_active": series_active,
+            "series_not_gone": series_not_gone,
+            "series_persisted": series_persisted,
             "dm16": dm16,
             "last_reap_ts": last_reap_ts, "last_reap_count": last_reap_count,
             "last_reap_age_s": last_reap_age_s,
