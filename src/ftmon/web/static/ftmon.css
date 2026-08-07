@@ -865,3 +865,24 @@ pre {
     transition: none !important;
   }
 }
+
+/* Self panel (#105). Tone is reinforcement only: every row states its number,
+   its limit and its percentage as text, so the reading survives without CSS,
+   without SVG, and for a reader who cannot distinguish the colours (UI-09). */
+.panel { width: 100%; border-collapse: collapse; margin: 0 0 1.5rem }
+.panel-caption { text-align: left; padding-bottom: 0.5rem; color: #4a5b6d }
+.panel th[scope="row"] { text-align: left; padding: 0.4rem 1rem 0.4rem 0; white-space: nowrap }
+.panel td { padding: 0.4rem 0 }
+.panel-value { width: 60% }
+.panel-meter { width: 14rem }
+.panel-limit, .panel-pct { color: #4a5b6d }
+.panel-absent { color: #4a5b6d; font-style: italic }
+.panel-note td { padding-top: 0; color: #4a5b6d; font-size: 0.9em }
+.panel-flag {
+  border-radius: 0.2rem;
+  padding: 0 0.35rem;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+.panel-row-warn .panel-flag { background: var(--warn-edge); color: #1c1c1c }
+.panel-row-error .panel-flag { background: var(--error-edge); color: #fff }

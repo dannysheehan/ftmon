@@ -1,0 +1,41 @@
+{#
+  Self panel rows (#105). Every row carries its number and limit as text:
+  the meter is redundant reinforcement, never the only carrier of the reading
+  (UI-09). An absent value says so rather than rendering as zero, because a
+  metric nobody has published is not a measurement of nothing.
+#}
+{% macro bytes_mb(value) -%}
+{%- if value is none %}—{% else %}{{ '%.1f'|format(value / 1048576) }} MB{% endif -%}
+{%- endmacro %}
+
+{% macro age(seconds) -%}
+{%- if seconds is none %}never{% elif seconds < 90 %}{{ '%.0f'|format(seconds) }}s ago
+{%- elif seconds < 5400 %}{{ '%.0f'|format(seconds / 60) }}m ago
+{%- else %}{{ '%.1f'|format(seconds / 3600) }}h ago{% endif -%}
+{%- endmacro %}
+
+{% macro budget_row(row, formatted, limit_text) -%}
+<tr class="panel-row panel-row-{{ row.tone }}">
+  <th scope="row">{{ row.label }}</th>
+  <td class="panel-value">
+    {% if row.value is none %}<span class="panel-absent">not available yet</span>
+    {% else %}<strong>{{ formatted }}</strong>
+      {% if row.limit %}<span class="panel-limit">of {{ limit_text }}</span>{%
+      else %}<span class="panel-limit">no threshold configured</span>{% endif %}
+      {% if row.pct is not none %}<span class="panel-pct">({{ '%.0f'|format(row.pct) }}%)</span>{% endif %}
+      {% if row.tone == 'error' %}<span class="panel-flag">over</span>
+      {% elif row.tone == 'warn' %}<span class="panel-flag">near</span>{% endif %}
+    {% endif %}
+  </td>
+  <td class="panel-meter">
+    {% if row.pct is not none %}
+    <svg class="tile-meter-svg" viewBox="-0.75 0 101.5 10" preserveAspectRatio="none"
+         aria-hidden="true" focusable="false">
+      <rect class="tile-meter-track" x="0" y="2.5" width="100" height="5" rx="1.5"></rect>
+      <rect class="tile-meter-fill tile-meter-fill-{{ row.tone }}" x="0" y="2.5"
+            width="{{ '%.4g'|format(row.pct) }}" height="5" rx="1.5"></rect>
+    </svg>
+    {% endif %}
+  </td>
+</tr>
+{%- endmacro %}
