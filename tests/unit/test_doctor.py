@@ -417,8 +417,9 @@ def test_doctor_reports_failures_per_channel_no_10(tmp_path):
 def test_self_source_reports_dm05_used_pages_not_file_allocation_dm_05(tmp_path, monkeypatch):
     """[DM-05][RB-02] The budget signal measures used pages; file bytes stay separate."""
     from ftmon.clock import FakeClock
-    from ftmon.daemon import _DB_BUDGET_BYTES, DaemonCore
+    from ftmon.daemon import DaemonCore
     from ftmon.paths import get_paths as _paths
+    from ftmon.store.db import DB_BUDGET_BYTES
 
     for name in ("CONFIG", "DATA", "STATE", "RUNTIME"):
         monkeypatch.setenv(f"FTMON_{name}_DIR", str(tmp_path / name.lower()))
@@ -440,7 +441,7 @@ def test_self_source_reports_dm05_used_pages_not_file_allocation_dm_05(tmp_path,
         assert (stats.db_used_bytes + stats.db_freelist_bytes
                 == stats.db_allocated_bytes)
         # Headroom is signed against DM-05's target, not any alarm threshold.
-        assert stats.db_headroom_bytes == _DB_BUDGET_BYTES - stats.db_used_bytes
+        assert stats.db_headroom_bytes == DB_BUDGET_BYTES - stats.db_used_bytes
         # D1: db_bytes keeps its historical file-allocation meaning.
         metrics = core.samplers["self"].sample(1_000, 0.0, {}).entities[0].metrics
         assert metrics["db_allocated_bytes"] == stats.db_allocated_bytes
@@ -631,3 +632,41 @@ def test_stale_db_bytes_rule_is_warned_but_does_not_fail_doctor_dm_05(tmp_path, 
     fixed, errors = loader.load_dir(monitors)
     assert errors == []
     assert loader.stale_metric_warnings(fixed) == []
+
+
+def _self_rule(when: str) -> str:
+    return (
+        'schema = 1\n'
+        '[monitor]\n'
+        'name = "selfbudget"\ndescription = "d"\nversion = 1\nenabled = true\n'
+        'platforms = ["linux"]\ninterval = "60s"\nsource = "self"\n'
+        '[parameters]\n'
+        'db_budget_mb = { value = 200, doc = "d" }\n'
+        '[[rule]]\n'
+        'id = "r"\ngroup = "g"\n'
+        f"when = '{when}'\n"
+        'severity = "warning"\nconfirm_cycles = 1\nmessage = "m"\n'
+    )
+
+
+def test_stale_metric_warning_matches_only_the_budget_shape_dm_05():
+    """[DM-05] Warn on the legacy budget comparison, not any db_bytes mention.
+
+    A rule that derives the right quantity the long way is doing nothing
+    wrong, and telling it to substitute db_used_bytes would change what it
+    computes. Matching the bare name would have given that advice.
+    """
+    from ftmon.definitions import loader
+
+    def warns(when: str) -> bool:
+        return bool(loader.stale_metric_warnings([loader.load_text(_self_rule(when))]))
+
+    # The shape this exists to catch.
+    assert warns("db_bytes > db_budget_mb * MB")
+    assert warns("db_bytes > 200000000")
+    # Deriving used pages by hand is correct; substituting would break it.
+    assert not warns("db_bytes - db_freelist_bytes > db_budget_mb * MB")
+    # A fragmentation ratio is a legitimate use of the raw quantity.
+    assert not warns("db_bytes / db_allocated_bytes > 0.5")
+    # Already correct.
+    assert not warns("db_used_bytes > db_budget_mb * MB")

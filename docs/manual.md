@@ -560,10 +560,19 @@ compaction.
 database at 200 MB counted as `(page_count - freelist_count) * page_size`;
 free pages sit in the freelist, are immediately reusable, and cost nothing
 against it. `ftmon doctor` prints `Database: file=X MB used=Y MB` alongside
-`Freelist: N pages` — `used` is the budget verdict, `file` is fragmentation
+`Freelist: N pages` — `used` is the budget verdict, the rest is fragmentation
 context. `ftmon status` shows `Database: used=X MB (file=Y MB)`, and its
-`--json` output carries `db_used_bytes`, `db_freelist_bytes` and
-`db_freelist_pages` beside the existing `db_bytes`.
+`--json` output carries `db_allocated_bytes`, `db_used_bytes`,
+`db_freelist_bytes` and `db_freelist_pages` beside the existing `db_bytes`.
+
+Two of those need distinguishing. `db_bytes` is the size of the database file
+on disk; `db_allocated_bytes` is how much SQLite has logically allocated.
+FTMON runs in WAL mode, so pages committed since the last checkpoint live in
+a separate `-wal` file and the main file lags behind — the two figures can
+differ by around a megabyte, converging at each checkpoint. Only
+`used + freelist == allocated` holds. If you are writing a rule about
+capacity, use `db_used_bytes`; `db_bytes` is there because it is what the
+metric has always meant and its recorded history depends on that.
 
 Two thresholds govern it, and they mean different things. `db_budget_mb`
 (200) is the enforcement target retention works to hold the database under.
@@ -585,10 +594,14 @@ your own copy to compare `db_used_bytes` against `db_warn_mb * MB` and add a
 *every* built-in definition — on a host whose thresholds you have tuned, that
 discards the tuning, so prefer the targeted edit.
 
-Rules of your own can use `db_file_bytes`, `db_used_bytes`,
+Rules of your own can use `db_allocated_bytes`, `db_used_bytes`,
 `db_freelist_bytes`, `db_headroom_bytes` (signed — negative means over the
-DM-05 target), and `entities_persisted`, which counts the entities the daemon
-is currently writing durable history for against the DM-16 budget of 400.
+DM-05 target), and `entities_persisted` / `series_persisted`, which count what
+the daemon is currently writing durable history for, against the DM-16 budgets
+of 400 entities and ~270 series. Those two count *selection*, not what happens
+to be running: a process FTMON samples but does not persist costs nothing
+against the catalog, so a much larger "running" count is normal and `doctor`
+reports it separately, without a budget comparison.
 
 Never run direct SQL or full `VACUUM` against the live daemon
 database.

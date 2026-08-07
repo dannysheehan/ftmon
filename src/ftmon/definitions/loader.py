@@ -60,25 +60,39 @@ __all__ = [
 _STALE_RULE_METRICS = {
     "db_bytes": (
         "db_used_bytes",
-        "db_bytes is file allocation and counts reusable freelist pages, "
+        "db_bytes is the database file and counts reusable freelist pages, "
         "while DM-05 bounds used pages",
     ),
 }
+
+#: The legacy budget-rule shape, with the stale metric substituted for "@":
+#: the metric compared directly against a size limit, optionally scaled by a
+#: unit constant. Matching the shape rather than the bare name keeps a rule
+#: that legitimately *derives* something from the raw quantity — say
+#: `db_bytes - db_freelist_bytes` — from being told to substitute a metric
+#: that would change what it computes.
+_BUDGET_COMPARISON = re.compile(
+    r"(^|[\s(])@\s*[<>]=?\s*[\w.]+(\s*\*\s*[\w.]+)?\s*($|[\s)])"
+)
 
 
 def stale_metric_warnings(defs: Iterable[MonitorDef]) -> list[str]:
     """Rule conditions alarming on a metric that answers the wrong question.
 
-    Deliberately limited to `rule.when`: a derived metric or glance readout may
-    legitimately display file allocation, but a *condition* comparing it against
-    a budget is the specific mistake being warned about. Returns human-readable
-    lines; callers decide how loudly to present them.
+    Deliberately narrow on two axes. Only `rule.when` is examined: a derived
+    metric or glance readout may legitimately display the raw quantity, and a
+    *condition* comparing it against a budget is the specific mistake. And only
+    the budget-comparison *shape* matches — a rule doing arithmetic such as
+    `db_bytes - db_freelist_bytes` is deriving the right quantity the long way
+    and would be actively misled by advice to substitute a different metric.
+
+    Returns human-readable lines; callers decide how loudly to present them.
     """
     warnings: list[str] = []
     for mdef in defs:
         for rule in mdef.rules:
             for stale, (replacement, why) in _STALE_RULE_METRICS.items():
-                if re.search(rf"\b{stale}\b", rule.when.source):
+                if _BUDGET_COMPARISON.search(rule.when.source.replace(stale, "@")):
                     # Leads with the in-place edit deliberately. `init --force`
                     # rewrites every built-in definition, so recommending it
                     # first would cost a tuned host its calibration — and a

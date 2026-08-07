@@ -56,11 +56,6 @@ from ftmon.store.writer import TickWriter
 
 _RESCAN_EVERY_S = 30.0  # PM-04
 _RETENTION_EVERY_S = 60.0  # DM-04: incremental; a minute cadence keeps passes tiny
-# Headroom is reported against DM-05's normative target, not whatever level a
-# definition chooses to alarm at, so the reported distance-to-budget stays
-# stable when an alarm threshold is retuned (#104). The constant itself lives
-# with the arithmetic in store.db so enforcement and reporting cannot drift.
-_DB_BUDGET_BYTES = store_db.DB_BUDGET_BYTES
 _LOG_MAX_BYTES = 10 * 1024 * 1024
 _LOG_BACKUPS = 3
 _DAEMON_LOG = logging.getLogger("ftmon.daemon.file")
@@ -811,9 +806,11 @@ class DaemonCore:
         # db_bytes is what the pre-#104 metric measured and must keep meaning.
         if size["file_bytes"] is not None:
             self.stats.db_file_bytes = float(size["file_bytes"])
-        # Signed against the normative DM-05 target, not the alarm threshold:
-        # "how far from the budget" must not move when an alarm is retuned.
-        self.stats.db_headroom_bytes = float(_DB_BUDGET_BYTES - size["used_bytes"])
+        # Signed against DM-05's normative target, not whatever level a
+        # definition alarms at, so the reported distance to the budget stays
+        # stable when a threshold is retuned. The constant lives with the
+        # arithmetic in store.db so enforcement and reporting cannot drift.
+        self.stats.db_headroom_bytes = float(store_db.DB_BUDGET_BYTES - size["used_bytes"])
         self.stats.entities_persisted = self.pipeline.persisted_entities(self.monitors)
         self.stats.series_persisted = self.pipeline.persisted_series(self.monitors)
 
