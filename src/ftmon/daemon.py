@@ -803,9 +803,14 @@ class DaemonCore:
             size = store_db.db_size_report(self.conn)
         except sqlite3.Error:
             return
-        self.stats.db_file_bytes = float(size["db_bytes"])
+        self.stats.db_allocated_bytes = float(size["allocated_bytes"])
         self.stats.db_used_bytes = float(size["used_bytes"])
         self.stats.db_freelist_bytes = float(size["freelist_bytes"])
+        # stat() of the main file, which in WAL mode lags logical allocation
+        # between checkpoints. Kept separate precisely because they differ:
+        # db_bytes is what the pre-#104 metric measured and must keep meaning.
+        if size["file_bytes"] is not None:
+            self.stats.db_file_bytes = float(size["file_bytes"])
         # Signed against the normative DM-05 target, not the alarm threshold:
         # "how far from the budget" must not move when an alarm is retuned.
         self.stats.db_headroom_bytes = float(_DB_BUDGET_BYTES - size["used_bytes"])

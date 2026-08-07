@@ -213,6 +213,7 @@ class McpApi:
             # backward compatibility; db_used_bytes is the DM-05 budget
             # figure a caller should judge headroom against.
             "db_bytes": info["db_bytes"],
+            "db_allocated_bytes": info["db_allocated_bytes"],
             "db_used_bytes": info["db_used_bytes"],
             "db_freelist_bytes": info["db_freelist_bytes"],
             "open_incidents": info["open_incidents"],

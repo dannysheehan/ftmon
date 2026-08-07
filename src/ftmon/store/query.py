@@ -1015,7 +1015,12 @@ class Query:
             # D1 (issue #104): db_bytes keeps its historical file-allocation
             # meaning for pre-existing consumers and stored history; the DM-05
             # budget verdict lives in db_used_bytes.
-            "db_bytes": size["db_bytes"],
+            # db_bytes is the main file's stat() size, its pre-#104 meaning.
+            # It is NOT allocated_bytes: WAL mode lets the two diverge, and
+            # only used + freelist == allocated holds (issue #104 review).
+            "db_bytes": size["file_bytes"] if size["file_bytes"] is not None
+                        else size["allocated_bytes"],
+            "db_allocated_bytes": size["allocated_bytes"],
             "db_used_bytes": size["used_bytes"],
             "db_freelist_bytes": size["freelist_bytes"],
             "db_freelist_pages": size["freelist_pages"],

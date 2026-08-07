@@ -558,8 +558,12 @@ def test_status(tmp_path):
     # [DM-05] used pages never exceed the file allocation, and the two
     # differ by exactly the freelist -- the same identity doctor.inspect()
     # pins, now read from the one shared arithmetic (db_size_report).
-    assert status["db_used_bytes"] <= status["db_bytes"]
-    assert status["db_used_bytes"] + status["db_freelist_bytes"] == status["db_bytes"]
+    # The identity holds against *allocated*, never against db_bytes: db_bytes
+    # is the main file's stat() size and WAL mode lets it lag logical
+    # allocation between checkpoints (issue #104 review).
+    assert status["db_used_bytes"] <= status["db_allocated_bytes"]
+    assert (status["db_used_bytes"] + status["db_freelist_bytes"]
+            == status["db_allocated_bytes"])
 
 
 def _insert_incident(conn, incident_id, *, monitor="leak", grp="rss", entity_id="firefox:7:1"):

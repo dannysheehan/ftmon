@@ -155,9 +155,11 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("cpu_pct", "%", "gauge", "Daemon CPU percent"),
             _m("rss_bytes", "bytes", "gauge", "Daemon RSS"),
             _m("db_bytes", "bytes", "gauge",
-               "Database file allocation; retained meaning for pre-#104 definitions "
+               "Main database file size on disk (stat); pre-#104 meaning retained "
                "— DM-05 rules MUST use db_used_bytes"),
-            _m("db_file_bytes", "bytes", "gauge", "Database file allocation (page_count)"),
+            _m("db_allocated_bytes", "bytes", "gauge",
+               "SQLite logical size (page_count x page_size); in WAL mode this "
+               "exceeds db_bytes until the next checkpoint"),
             _m("db_used_bytes", "bytes", "gauge",
                "Used pages excluding the freelist — the quantity DM-05 bounds"),
             _m("db_freelist_bytes", "bytes", "gauge",

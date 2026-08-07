@@ -42,6 +42,7 @@ class SelfStats:
     # report; the sampler has none, so the daemon reads the page counts on its
     # own connection each tick. Zero until the first successful read.
     db_file_bytes: float = 0.0
+    db_allocated_bytes: float = 0.0
     db_used_bytes: float = 0.0
     db_freelist_bytes: float = 0.0
     db_headroom_bytes: float = 0.0
@@ -65,16 +66,16 @@ class SelfSampler:
         metrics: dict[str, float] = {
             "cpu_pct": float(self._proc.cpu_percent(None)),
             "rss_bytes": float(self._proc.memory_info().rss),
-            # These two are equal on purpose, and must stay that way. db_bytes
-            # keeps its historical file-allocation meaning so charts spanning
-            # the upgrade show no step the database never took (#104 decision
-            # D1); db_file_bytes is the explicitly-named metric new definitions
-            # should use. Collapsing the pair is the obvious-looking cleanup
-            # and reintroduces exactly the discontinuity D1 exists to avoid —
-            # a reviewer already proposed it once. Neither is the budget
-            # signal: DM-05 rules reference db_used_bytes.
+            # db_bytes is stat() of the main file — exactly what this metric
+            # measured before #104, so its stored history stays continuous
+            # (decision D1). db_allocated_bytes is SQLite's logical size.
+            # These are NOT the same in WAL mode: the main file lags logical
+            # allocation between checkpoints (measured ~1 MB on a live FTMON
+            # database), which is why the earlier attempt to serve both from
+            # one value broke the very continuity D1 promised.
+            # Neither is the budget signal: DM-05 rules use db_used_bytes.
             "db_bytes": s.db_file_bytes,
-            "db_file_bytes": s.db_file_bytes,
+            "db_allocated_bytes": s.db_allocated_bytes,
             "db_used_bytes": s.db_used_bytes,
             "db_freelist_bytes": s.db_freelist_bytes,
             # Signed: negative means over budget, which is the interesting case

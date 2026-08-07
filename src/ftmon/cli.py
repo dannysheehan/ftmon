@@ -846,10 +846,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     )
     print("Tables: " + ", ".join(f"{k}={v}" for k, v in report["tables"].items()))
     dm16 = report["dm16"]
+    # DM-16 counts *persisted* entities, so that is the figure shown against
+    # the budget. entities_not_gone counts running processes and is an order
+    # of magnitude larger; printing it against the budget read as a breach on
+    # a host that was well inside it (issue #104).
+    persisted = (
+        "unknown (no daemon has published it yet)"
+        if dm16["entities_persisted"] is None
+        else f"{dm16['entities_persisted']}/{dm16['max_entities_persisted']}"
+    )
+    print(f"Catalog persisted (DM-16 budget): entities={persisted}")
     print(
-        "Catalog (active/total, DM-16 worksheet "
-        f"≤{dm16['max_entities_active']}/~{dm16['max_series_active']}): "
-        f"entities={dm16['entities_active']}/{report['tables']['entities']} "
+        "Catalog (running/total, not a budget figure; "
+        f"series worksheet ~{dm16['max_series_active']}): "
+        f"entities={dm16['entities_not_gone']}/{report['tables']['entities']} "
         f"series={dm16['series_active']}/{report['tables']['series']}"
     )
     if report["last_reap_ts"] is None:

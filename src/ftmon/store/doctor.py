@@ -106,9 +106,25 @@ def inspect(
     # on total retained rows (which legitimately grow under process churn even
     # with the MD-09 reap running); report the two counts separately (CL-05,
     # issue #74) rather than folding them into the ok/fail signal.
-    entities_alive = conn.execute(
+    #
+    # `gone_ts IS NULL` means "this process is still running", not "we are
+    # keeping durable history for it": SA-05 track-all marks every sampled
+    # entity seen, so this overstates pressure by the sampled-to-selected
+    # ratio — an order of magnitude on a desktop. It is retained under a name
+    # that says what it counts; DM-16 pressure comes from entities_persisted.
+    entities_not_gone = conn.execute(
         "SELECT COUNT(*) FROM entities WHERE gone_ts IS NULL"
     ).fetchone()[0]
+    # The pipeline is the only thing that knows its selected set, so the
+    # DM-16 figure is whatever the daemon last published (RB-02). None means
+    # no daemon has run since the metric was introduced — reported as unknown
+    # rather than silently falling back to the count DM-16 rejects.
+    persisted_row = conn.execute(
+        "SELECT s.value FROM series se JOIN samples s ON s.series_id = se.id "
+        "WHERE se.monitor='self' AND se.metric='entities_persisted' "
+        "ORDER BY s.ts DESC LIMIT 1"
+    ).fetchone()
+    entities_persisted = int(persisted_row[0]) if persisted_row is not None else None
     # A raw sample alone isn't "active": a just-gone entity keeps its samples
     # until DM-04's window or MD-09's reap catches up, so counting bare
     # sample presence would double-count catalog pressure that's already on
@@ -120,10 +136,12 @@ def inspect(
         "WHERE en.gone_ts IS NULL"
     ).fetchone()[0]
     dm16 = {
-        "max_entities_active": 400,
-        "entities_active": entities_alive,
+        "max_entities_persisted": 400,
+        "entities_persisted": entities_persisted,
         "max_series_active": 270,
         "series_active": series_active,
+        # Reported beside the budget figure, never as it (DM-16).
+        "entities_not_gone": entities_not_gone,
     }
     meta_rows = dict(conn.execute(
         "SELECT key, value FROM meta WHERE key IN "
@@ -144,10 +162,20 @@ def inspect(
     dispatch = dispatch_health(conn, quiet=quiet, daemon_live=daemon_live)
     return {"dispatch": dispatch,
             "check": check, "integrity": integrity, "checkpoint": checkpoint,
-            **size,
+            # db_bytes is the file on disk; allocated is SQLite's logical
+            # size. WAL mode lets them differ, so both are reported (#104).
+            "db_bytes": size["file_bytes"] if size["file_bytes"] is not None
+                        else size["allocated_bytes"],
+            "allocated_bytes": size["allocated_bytes"],
+            "used_bytes": size["used_bytes"],
+            "freelist_pages": size["freelist_pages"],
+            "freelist_bytes": size["freelist_bytes"],
+            "freelist_fragment_pct": size["freelist_fragment_pct"],
             "tables": row_counts,
             "orphans": orphans, "cursors": cursors,
-            "entities_alive": entities_alive, "series_active": series_active,
+            "entities_not_gone": entities_not_gone,
+            "entities_persisted": entities_persisted,
+            "series_active": series_active,
             "dm16": dm16,
             "last_reap_ts": last_reap_ts, "last_reap_count": last_reap_count,
             "last_reap_age_s": last_reap_age_s,

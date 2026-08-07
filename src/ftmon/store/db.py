@@ -24,26 +24,51 @@ DB_BUDGET_BYTES = 200 * 2**20
 
 
 def db_size_report(cur) -> dict:
-    """DM-05's used-vs-file arithmetic, computed in exactly one place.
+    """DM-05's page arithmetic, computed in exactly one place.
 
     Accepts a connection or a cursor, because the enforcement path (retention's
     degradation loop) already holds a cursor while the reporting paths hold
     connections — and the whole point is that both ask the same question of the
     same code. Independent re-derivations of
     `(page_count - freelist_count) * page_size` are how a budget alarm came to
-    watch file allocation while DM-05 governed used pages (issue #104).
+    watch allocation while DM-05 governed used pages (issue #104).
+
+    Four distinct quantities, deliberately not collapsed:
+
+    - ``allocated_bytes`` — ``page_count * page_size``, SQLite's *logical*
+      size, which in WAL mode includes pages that live only in the -wal file.
+    - ``used_bytes`` — allocated minus freelist. **This is DM-05's budget.**
+    - ``freelist_bytes`` — reusable pages; allocated but free.
+    - ``file_bytes`` — ``stat()`` of the main database file, located from the
+      connection itself so no caller has to plumb a path through. It is *not*
+      interchangeable with ``allocated_bytes``: between
+      auto-checkpoints the main file can lag logical allocation by up to the
+      1000-page checkpoint threshold (measured: ~0.9 MB on a small write
+      burst, and unbounded if a deployment ever disables auto-checkpoint).
+      Only ``used + freelist == allocated`` holds; ``file_bytes`` satisfies no
+      such identity and must never be substituted into the budget arithmetic.
     """
     page_count = cur.execute("PRAGMA page_count").fetchone()[0]
     freelist_count = cur.execute("PRAGMA freelist_count").fetchone()[0]
     page_size = cur.execute("PRAGMA page_size").fetchone()[0]
-    db_bytes = page_count * page_size
+    allocated_bytes = page_count * page_size
     freelist_bytes = freelist_count * page_size
+    file_bytes = None
+    try:
+        row = next(
+            (r for r in cur.execute("PRAGMA database_list") if r[1] == "main"), None
+        )
+        if row is not None and row[2]:
+            file_bytes = Path(row[2]).stat().st_size
+    except (OSError, sqlite3.Error, IndexError):
+        file_bytes = None  # in-memory, detached, or unreadable: report unknown
     return {
-        "db_bytes": db_bytes,
-        "used_bytes": db_bytes - freelist_bytes,
+        "allocated_bytes": allocated_bytes,
+        "used_bytes": allocated_bytes - freelist_bytes,
         "freelist_pages": freelist_count,
         "freelist_bytes": freelist_bytes,
         "freelist_fragment_pct": freelist_count / page_count if page_count else 0.0,
+        "file_bytes": file_bytes,
     }
 
 

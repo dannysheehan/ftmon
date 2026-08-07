@@ -1,11 +1,13 @@
 """M6 database diagnostics tests [CL-05][VC-03]."""
 
 import sqlite3
+from types import SimpleNamespace
 
 from ftmon.cli import main
+from ftmon.engine.pipeline import _MonitorState
 from ftmon.paths import get_paths
-from ftmon.store.db import connect, migrate
-from ftmon.store.doctor import backup, db_size_report, inspect
+from ftmon.store.db import connect, db_size_report, migrate
+from ftmon.store.doctor import backup, inspect
 from tests.platform_permissions import assert_private
 
 
@@ -33,13 +35,15 @@ def test_db_size_report_is_the_one_dm05_arithmetic_issue_104(tmp_path):
     conn.commit()
 
     size = db_size_report(conn)
-    assert size["db_bytes"] == size["used_bytes"] + size["freelist_bytes"]
+    assert size["allocated_bytes"] == size["used_bytes"] + size["freelist_bytes"]
 
     report = inspect(conn, now=1000)
     status = Query(conn).status(now=1000)
-    assert report["db_bytes"] == size["db_bytes"] == status["db_bytes"]
+    assert (report["allocated_bytes"] == size["allocated_bytes"]
+            == status["db_allocated_bytes"])
     assert report["used_bytes"] == size["used_bytes"] == status["db_used_bytes"]
-    assert report["freelist_bytes"] == size["freelist_bytes"] == status["db_freelist_bytes"]
+    assert (report["freelist_bytes"] == size["freelist_bytes"]
+            == status["db_freelist_bytes"])
     conn.close()
 
 
@@ -60,18 +64,21 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
     conn = connect(tmp_path / "ftmon.db")
     migrate(conn)
     report = inspect(conn, now=1000)
-    assert report["entities_alive"] == 0
+    assert report["entities_not_gone"] == 0
     assert report["series_active"] == 0
     assert report["dm16"] == {
-        "max_entities_active": 400,
-        "entities_active": 0,
+        "max_entities_persisted": 400,
+        # No daemon has published the DM-16 figure on a fresh database, and
+        # doctor says so rather than substituting the count DM-16 rejects.
+        "entities_persisted": None,
         "max_series_active": 270,
         "series_active": 0,
+        "entities_not_gone": 0,
     }
     assert report["last_reap_ts"] is None
     assert report["last_reap_count"] is None
     assert report["last_reap_age_s"] is None
-    assert report["used_bytes"] + report["freelist_bytes"] == report["db_bytes"]
+    assert report["used_bytes"] + report["freelist_bytes"] == report["allocated_bytes"]
     assert report["freelist_pages"] >= 0
     assert 0.0 <= report["freelist_fragment_pct"] <= 1.0
     assert report["last_degradation_ts"] is None
@@ -117,11 +124,11 @@ def test_doctor_catalog_splits_active_from_total_cl_05_dm_16(tmp_path):
     conn.commit()
 
     report = inspect(conn, now=1000)
-    assert report["entities_alive"] == 2
+    assert report["entities_not_gone"] == 2
     assert report["series_active"] == 2
     assert report["tables"]["entities"] == 5
     assert report["tables"]["series"] == 4
-    assert report["dm16"]["entities_active"] == 2
+    assert report["dm16"]["entities_not_gone"] == 2
     assert report["dm16"]["series_active"] == 2
     conn.close()
 
@@ -191,10 +198,10 @@ def test_doctor_reports_used_and_free_database_pages_cl_05(tmp_path):
 
     assert report["freelist_pages"] > 0
     assert report["freelist_bytes"] > 0
-    assert report["used_bytes"] < report["db_bytes"]
-    assert report["used_bytes"] + report["freelist_bytes"] == report["db_bytes"]
+    assert report["used_bytes"] < report["allocated_bytes"]
+    assert report["used_bytes"] + report["freelist_bytes"] == report["allocated_bytes"]
     assert report["freelist_fragment_pct"] == (
-        report["freelist_bytes"] / report["db_bytes"]
+        report["freelist_bytes"] / report["allocated_bytes"]
     )
     assert report["ok"]
     conn.close()
@@ -426,17 +433,18 @@ def test_self_source_reports_dm05_used_pages_not_file_allocation_dm_05(tmp_path,
         page_size = core.conn.execute("PRAGMA page_size").fetchone()[0]
         pages = core.conn.execute("PRAGMA page_count").fetchone()[0]
         free = core.conn.execute("PRAGMA freelist_count").fetchone()[0]
-        assert stats.db_file_bytes == pages * page_size
+        assert stats.db_allocated_bytes == pages * page_size
         assert stats.db_used_bytes == (pages - free) * page_size
         assert stats.db_freelist_bytes == free * page_size
         # Used never exceeds file, and the two differ exactly by the freelist.
-        assert stats.db_used_bytes + stats.db_freelist_bytes == stats.db_file_bytes
+        assert (stats.db_used_bytes + stats.db_freelist_bytes
+                == stats.db_allocated_bytes)
         # Headroom is signed against DM-05's target, not any alarm threshold.
         assert stats.db_headroom_bytes == _DB_BUDGET_BYTES - stats.db_used_bytes
         # D1: db_bytes keeps its historical file-allocation meaning.
         metrics = core.samplers["self"].sample(1_000, 0.0, {}).entities[0].metrics
-        assert metrics["db_bytes"] == metrics["db_file_bytes"]
-        assert metrics["db_bytes"] != metrics["db_used_bytes"] or free == 0
+        assert metrics["db_allocated_bytes"] == stats.db_allocated_bytes
+        assert metrics["db_used_bytes"] == stats.db_used_bytes
     finally:
         core.conn.close()
 
@@ -471,31 +479,76 @@ def test_freelist_growth_alone_does_not_consume_budget_dm_05(tmp_path, monkeypat
         core.conn.commit()
         core._sample_db_pages()
         assert core.stats.db_freelist_bytes > 0, "expected reclaimable pages"
-        # File allocation stays high while used bytes fall — the whole point.
+        # Allocation stays high while used bytes fall — the whole point.
         assert core.stats.db_used_bytes < grown_used
-        assert core.stats.db_file_bytes > core.stats.db_used_bytes
+        assert core.stats.db_allocated_bytes > core.stats.db_used_bytes
         assert core.stats.db_headroom_bytes > 0
     finally:
         core.conn.close()
 
 
-def test_persisted_catalog_excludes_running_but_unselected_entities_dm_16(tmp_path):
-    """[DM-16] Catalog pressure counts what is written, not what is running.
+def test_persisted_catalog_counts_selection_not_presence_dm_16(tmp_path):
+    """[DM-16] Pressure follows what the pipeline persists, not what is running.
 
-    `gone_ts IS NULL` counts every sampled process because the pipeline marks
-    an entity seen for the whole snapshot; only `selected` reflects durable
-    history actually being maintained.
+    Drives a real pipeline over a snapshot of five processes with top_n=2, so
+    the sampled set and the selected set genuinely differ. `st.seen` is
+    populated for the whole snapshot -- that is why a presence-derived count
+    overstates DM-16 pressure -- while entities_persisted tracks selection.
     """
     from ftmon.engine.pipeline import Pipeline
     from ftmon.engine.rings import RingStore
+    from ftmon.model import EntitySample, Snapshot
 
+    entities = tuple(
+        EntitySample(entity_id=f"p{i}", attrs={"name": f"p{i}"},
+                     metrics={"cpu_pct": float(i), "rss_bytes": float(i)})
+        for i in range(5)
+    )
+    snap = Snapshot(source="process", ts=1_000.0, entities=entities)
     pipe = Pipeline(samplers={}, rings=RingStore(), counter=lambda _n: None)
-    pipe._persisted = {"proc": 3, "disk": 2, "stale": 99}
-    # Only loaded monitors contribute, so a removed definition stops counting.
-    assert pipe.persisted_entities(["proc", "disk"]) == 5
+    mdef = SimpleNamespace(name="proc", source="process",
+                           source_options={"top_n": 2}, promotion=None)
+    st = pipe._state.setdefault("proc", _MonitorState())
+    for ent in snap.entities:
+        st.seen[ent.entity_id] = 1_000.0
+
+    selected = pipe._select_persisted(mdef, snap, st, 1_000.0)
+    pipe._persisted["proc"] = len(selected)
+
+    # All five are sampled and marked seen; only the top-N by cpu/rss persist.
+    assert len(st.seen) == 5
+    assert pipe.persisted_entities(["proc"]) == len(selected) < 5
+    # An unloaded monitor stops contributing pressure immediately (MD-09).
     assert pipe.persisted_entities([]) == 0
-    # A monitor that has never run contributes nothing rather than raising.
-    assert pipe.persisted_entities(["proc", "never-ran"]) == 3
+
+
+def test_db_bytes_and_allocated_diverge_under_wal_issue_104(tmp_path):
+    """[DM-05] db_bytes is the file; allocated is SQLite's logical size.
+
+    They are not interchangeable in WAL mode, which FTMON always uses: pages
+    committed since the last checkpoint live in the -wal file, so the main
+    file lags allocation. Only used + freelist == allocated holds. Substituting
+    db_bytes into the budget arithmetic is the mistake this pins against.
+    """
+    conn = connect(tmp_path / "wal.db")
+    migrate(conn)
+    conn.execute("CREATE TABLE ballast(payload BLOB)")
+    conn.executemany(
+        "INSERT INTO ballast(payload) VALUES (zeroblob(4096))",
+        [() for _ in range(200)],
+    )
+    conn.commit()
+
+    size = db_size_report(conn)
+    assert size["used_bytes"] + size["freelist_bytes"] == size["allocated_bytes"]
+    # The divergence is real, not theoretical: the main file has not yet
+    # received these pages, so it is smaller than what SQLite reports.
+    assert size["file_bytes"] < size["allocated_bytes"]
+    # A checkpoint converges them, which is why the gap is transient rather
+    # than unbounded under FTMON's default auto-checkpointing.
+    conn.execute("PRAGMA wal_checkpoint(FULL)")
+    assert db_size_report(conn)["file_bytes"] == size["allocated_bytes"]
+    conn.close()
 
 
 def test_stale_db_bytes_rule_is_warned_but_does_not_fail_doctor_dm_05(tmp_path, monkeypatch):
