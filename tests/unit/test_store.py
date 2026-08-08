@@ -736,3 +736,112 @@ def test_no_direct_clock_reads_in_store_package():
             if needle in text:
                 offenders.append(f"{py.name}: {needle}")
     assert offenders == []
+
+
+class TestTierSelectionMatchesRetention:
+    """[DM-06][DM-04] Tier choice must track what retention actually keeps.
+
+    Issue #102 split rollup5m into 30 d durable / 7 d process. The tier
+    boundary was a 30-day *span* limit tuned to the old flat window, so an
+    8-to-30-day process query selected a table whose rows had been pruned and
+    returned a truncated answer while the hourly tier still held the history.
+    Selecting on the age of the oldest requested point fixes that, and also a
+    pre-existing case: a narrow window far in the past has a short span but
+    old data.
+    """
+
+    DAY = 86400
+
+    def _db(self, tmp_path):
+        conn = db.connect(tmp_path / "tier.db")
+        db.migrate(conn)
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (1,'leak','p:1:1','rss_bytes',0)"      # process
+        )
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (2,'disk','/','used_pct',1)"           # durable
+        )
+        conn.commit()
+        return conn
+
+    def test_thirty_day_process_history_uses_the_hourly_tier(self, tmp_path):
+        """Retained hourly points must be reachable by an ordinary 30-day chart."""
+        conn = self._db(tmp_path)
+        now = 1_700_000_000.0
+        conn.execute(
+            "INSERT INTO rollup1h(series_id,bucket,avg,min,max,last,cnt) "
+            "VALUES (1,?,2,2,2,2,1)", (round(now - 20 * self.DAY),))
+        conn.commit()
+        q = Query(conn)
+        assert q.resolution_for(
+            now, now - 30 * self.DAY, now, monitor="leak", metric="rss_bytes"
+        ) == "1h"
+        results = q.series(
+            "leak", "rss_bytes", now=now, start=now - 30 * self.DAY, end=now
+        )
+        ages = [round((now - p.ts) / self.DAY) for r in results for p in r.points]
+        assert 20 in ages, "the retained 20-day hourly point must be returned"
+        conn.close()
+
+    def test_narrow_process_window_older_than_seven_days_uses_hourly(self, tmp_path):
+        """A one-hour window from 20 days ago: short span, old data."""
+        conn = self._db(tmp_path)
+        now = 1_700_000_000.0
+        start = now - 20 * self.DAY
+        assert Query(conn).resolution_for(
+            now, start, start + 3600, monitor="leak", metric="rss_bytes"
+        ) == "1h"
+        conn.close()
+
+    def test_durable_series_keep_five_minute_resolution_to_thirty_days(self, tmp_path):
+        """The split must not cost durable series the resolution they retain."""
+        conn = self._db(tmp_path)
+        now = 1_700_000_000.0
+        q = Query(conn)
+        for days in (8, 29):
+            assert q.resolution_for(
+                now, now - days * self.DAY, now, monitor="disk", metric="used_pct"
+            ) == "5m", f"durable series must stay 5m at {days} days"
+        assert q.resolution_for(
+            now, now - 31 * self.DAY, now, monitor="disk", metric="used_pct"
+        ) == "1h"
+        conn.close()
+
+    def test_mixed_cohort_falls_back_to_hourly(self, tmp_path):
+        """One resolution serves the whole answer, so it must fit the shortest.
+
+        Reporting 5m because most of the cohort is durable would truncate the
+        process series in the same response without saying so.
+        """
+        conn = self._db(tmp_path)
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (3,'mixed','a','m',1)"
+        )
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (4,'mixed','b','m',0)"
+        )
+        conn.commit()
+        q = Query(conn)
+        now = 1_700_000_000.0
+        assert q.resolution_for(
+            now, now - 20 * self.DAY, now, monitor="mixed", metric="m",
+        ) == "1h"
+        # Narrowing to the durable entity recovers 5-minute resolution.
+        assert q.resolution_for(
+            now, now - 20 * self.DAY, now,
+            monitor="mixed", metric="m", entity_id="a",
+        ) == "5m"
+        conn.close()
+
+    def test_empty_cohort_reports_the_conservative_tier(self, tmp_path):
+        """An unknown scope must not be reported at a tier the data cannot serve."""
+        conn = self._db(tmp_path)
+        now = 1_700_000_000.0
+        assert Query(conn).resolution_for(
+            now, now - 20 * self.DAY, now, monitor="nonexistent", metric="m"
+        ) == "1h"
+        conn.close()

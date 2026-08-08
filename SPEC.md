@@ -1,6 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.46** — v0.46 makes the self-monitor's budget signals mean
+Status: **DRAFT v0.47** — v0.47 extends DM-04's durable/process retention
+split to the 5-minute tier and makes DM-05 degradation an observable state
+rather than a stream of per-pass events: a live desktop was degrading on a
+quarter of all retention passes indefinitely, holding raw retention at ~24 h
+against DM-04's stated 48 h, with no signal distinguishing that from a single
+prune (DM-04, DM-05, RB-02, issue #102). v0.46 makes the self-monitor's budget signals mean
 what the requirements they police actually say: DM-05 is measured on used
 pages everywhere it is reported, its alarm sits above the enforcement target
 rather than at it, DM-16 pressure counts entities that are persisted rather
@@ -357,9 +362,9 @@ The SQLite schema itself is a design-document concern; this section fixes the *l
 
 ### 5.2 Retention and rollups
 
-- **DM-04** Raw samples are kept **48 h**. 5-minute rollups `(avg, min, max, last, count)` are kept **30 d**. 1-hour rollups are kept **400 d** for *durable* series (system, disk, self, and watchlist-synthetic entities) and **90 d** for process-sourced series (v0.3 amendment: the capacity worksheet shows process-entity churn makes 400 d hourly retention for all series infeasible within DM-05). Rollup jobs run in the daemon, incrementally, never more than 1 s of work per cycle.
-- **DM-05** The database's **used-page footprint** MUST stay under **200 MB**, measured as `(page_count − freelist_count) × page_size`. On breach the daemon degrades in this fixed order until under budget: (1) oldest raw samples beyond 24 h, (2) oldest events beyond 7 d, (3) oldest 5-min rollups, (4) oldest 1-h rollups. Incidents are never pruned. Each degradation step records a self-event and its timestamp. The DB is created with `auto_vacuum=INCREMENTAL`; bounded `PRAGMA incremental_vacuum(200)` runs after each retention transaction so reusable freelist pages progressively return to the filesystem. The main database file MAY temporarily exceed the used-page footprint while that bounded reclaim catches up; free pages remain immediately reusable and do not trigger further lossy degradation. FTMON MUST NOT run a full `VACUUM` automatically while the daemon is live: rebuilding this bounded local database requires an exclusive SQLite write lock whose sampling, retention, and notification availability cost is disproportionate to tighter physical packing. Offline full compaction is explicit operator maintenance, not part of the live retention path. (v0.44 amendment, issue #74.) (v0.46 amendment, issue #104.) Every surface that reports database capacity — the `self` source, `ftmon doctor`, `ftmon status`, MCP, and the dashboard — MUST distinguish used pages from file allocation, and MUST present used pages as the budget figure; file allocation is fragmentation context and MUST NOT on its own indicate a breach. A definition alarming on this budget MUST compare used pages, and its alarm threshold MUST sit **above** the 200 MB target rather than at it: retention holds the footprint just under the target by design, so a rule tripping at the target fires precisely when retention is working, and an alarm must instead mean that retention is failing.
-- **DM-06** Queries spanning tiers (raw → 5 m → 1 h) MUST be answered transparently by the query layer choosing resolution by range; callers never pick tables. MCP `query_metrics` MAY apply a documented post-tier entity/point truncation with explicit metadata; it MUST NOT select a coarser retention table merely because many entities matched. The selected resolution MUST be reported even when no observations exist in the range. MCP MUST omit entities with no in-range observations (quiet windows are empty `series` with `empty_reason`, not empty-point shells).
+- **DM-04** Raw samples are kept **48 h**. 5-minute rollups `(avg, min, max, last, count)` are kept **30 d** for *durable* series and **7 d** for process-sourced series (v0.47 amendment, issue #102: the same churn argument the hourly tier settled in v0.3, applied to a tier twelve times denser and, in practice, the largest table in the database; no rule reads that far back either way, since CA-04 caps expression windows at 6 h and CA-05 baselines step incrementally as rollups are produced rather than re-reading history). 1-hour rollups are kept **400 d** for *durable* series (system, disk, self, and watchlist-synthetic entities) and **90 d** for process-sourced series (v0.3 amendment: the capacity worksheet shows process-entity churn makes 400 d hourly retention for all series infeasible within DM-05). Rollup jobs run in the daemon, incrementally, never more than 1 s of work per cycle.
+- **DM-05** The database's **used-page footprint** MUST stay under **200 MB**, measured as `(page_count − freelist_count) × page_size`. On breach the daemon degrades in this fixed order until under budget: (1) oldest raw samples beyond 24 h, (2) oldest events beyond 7 d, (3) oldest 5-min rollups, (4) oldest 1-h rollups. Incidents are never pruned. Each degradation step increments a `db_degradations` counter, and whether the most recent pass degraded MUST be published as a `db_degrading` gauge so a definition can window it (v0.47 amendment, issue #102): *durably* degrading — retention prunes on most passes indefinitely, silently shortening the DM-04 windows — is a different condition from one lossy prune, and only the first requires an operator. Degradation self-events MUST be rate-limited and MUST state how many passes each report covers; emitting one per step per pass buries the transition in a stream nobody reads. The DB is created with `auto_vacuum=INCREMENTAL`; bounded `PRAGMA incremental_vacuum(200)` runs after each retention transaction so reusable freelist pages progressively return to the filesystem. The main database file MAY temporarily exceed the used-page footprint while that bounded reclaim catches up; free pages remain immediately reusable and do not trigger further lossy degradation. FTMON MUST NOT run a full `VACUUM` automatically while the daemon is live: rebuilding this bounded local database requires an exclusive SQLite write lock whose sampling, retention, and notification availability cost is disproportionate to tighter physical packing. Offline full compaction is explicit operator maintenance, not part of the live retention path. (v0.44 amendment, issue #74.) (v0.46 amendment, issue #104.) Every surface that reports database capacity — the `self` source, `ftmon doctor`, `ftmon status`, MCP, and the dashboard — MUST distinguish used pages from file allocation, and MUST present used pages as the budget figure; file allocation is fragmentation context and MUST NOT on its own indicate a breach. A definition alarming on this budget MUST compare used pages, and its alarm threshold MUST sit **above** the 200 MB target rather than at it: retention holds the footprint just under the target by design, so a rule tripping at the target fires precisely when retention is working, and an alarm must instead mean that retention is failing.
+- **DM-06** Queries spanning tiers (raw → 5 m → 1 h) MUST be answered transparently by the query layer choosing resolution by range; callers never pick tables. (v0.47 amendment, issue #102.) The choice MUST be made on the **age of the oldest requested point** rather than the span of the range — a narrow window far in the past has a short span but data only the coarser tier still holds — and MUST respect DM-04's durable/process split: a tier is eligible only if the requested range lies inside the retention that tier keeps *for the series being asked about*. Where a request covers series of mixed durability, or matches none, the shorter window applies: one resolution serves the whole answer, so choosing the longer would truncate part of it silently. The resolution reported to a caller MUST be the one used for discovery, preflight and retrieval alike, including for an empty result. MCP `query_metrics` MAY apply a documented post-tier entity/point truncation with explicit metadata; it MUST NOT select a coarser retention table merely because many entities matched. The selected resolution MUST be reported even when no observations exist in the range. MCP MUST omit entities with no in-range observations (quiet windows are empty `series` with `empty_reason`, not empty-point shells).
 - **DM-16** The design document MUST include a capacity worksheet deriving RB-01/DM-05 feasibility from stated assumptions — max tracked entities (budget: 400 persisted), metrics per entity (≤ 10), sample width in bytes, rows/day at 60 s intervals, event rates, ring-buffer memory (CA-04) — and the worksheet's assumptions become validation limits (a definition exceeding them is rejected). (v0.46 amendment, issue #104.) Because the budget counts **persisted** entities, pressure against it MUST be measured as those for which durable history is currently being written — not as entities merely present. A process the pipeline samples but does not select is running, not persisted: under SA-05 track-all every sampled entity is marked seen, so counting presence overstates storage pressure by the ratio of sampled to selected entities, which on a desktop is roughly an order of magnitude. A count derived from presence MAY still be reported, under a name that says so.
 - **DM-17** Historical chart queries MUST expose the selected rollup statistic (`avg|min|max|last`) and, when requested, the stored minimum/maximum envelope. Rates and projections MUST be computed from observations before display downsampling; presentation code MUST NOT derive them from the ≤2 000 rendered points. Missing intervals remain gaps rather than being interpolated.
 
@@ -1408,6 +1413,32 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.47 (2026-08-07)** — closes issue #102. A live desktop had been in
+permanent DM-05 degradation: retention pruned on roughly a quarter of all
+passes, indefinitely, and the cost was paid in a guarantee rather than a
+failure. DM-04 promises 48 h of raw samples; that host had 28.8 h and falling,
+because degradation's first step trims raw data and nothing said so.
+
+The cause was a retention *shape* problem, not a retention *speed* problem.
+`rollup5m` was 97 MB of a 200 MB budget, 87.9% of it process-sourced and 40%
+belonging to entities that no longer existed. The hourly tier has split
+durable from process retention since v0.3 for exactly this reason; the
+5-minute tier — twelve times denser, and the largest table in the database —
+never received the same treatment. It does now, at 7 d for process series.
+
+Degradation also becomes observable. `db_degradations` was counted and never
+projected, so the rate was invisible; it is now a self metric, alongside a
+`db_degrading` gauge that rules window with `avg()` rather than the daemon
+hard-coding what "persistent" means. Per-pass self-events are rate-limited and
+say how many passes they cover, because ~15 an hour is a stream, not a signal.
+
+Deliberately deferred: pruning 5-minute rollups by entity liveness rather than
+age alone. It would remove more, sooner, but needs a three-table join on the
+largest table every pass — plausibly trading total size for the per-pass cost
+issue #107 exists to reduce. The age split is cheap and mirrors a query
+already in this module, so it lands first and the liveness tail is decided on
+re-measurement rather than assumption.
 
 **v0.46 (2026-08-06)** — closes issue #104, the first of four workstreams split
 out of #97. A live desktop held an endlessly flapping `self/budget` incident

@@ -46,6 +46,8 @@ class SelfStats:
     db_used_bytes: float = 0.0
     db_freelist_bytes: float = 0.0
     db_headroom_bytes: float = 0.0
+    # 1 when the most recent retention pass had to degrade (DM-05).
+    db_degrading: float = 0.0
     # None until a tick has run: publishing 0 on the first tick after a
     # restart would look like a measurement of nothing persisted.
     entities_persisted: int | None = None
@@ -84,6 +86,8 @@ class SelfSampler:
             # Signed: negative means over budget, which is the interesting case
             # and would be erased by clamping at zero.
             "db_headroom_bytes": s.db_headroom_bytes,
+            "db_degrading": s.db_degrading,
+            "db_degradations": float(s.counters.get("db_degradations", 0)),
             "cycle_s": s.cycle_s,
             "tick_overruns": float(s.tick_overruns),
             "event_queue_depth": float(s.event_queue_depth),

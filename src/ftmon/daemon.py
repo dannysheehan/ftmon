@@ -56,6 +56,9 @@ from ftmon.store.writer import TickWriter
 
 _RESCAN_EVERY_S = 30.0  # PM-04
 _RETENTION_EVERY_S = 60.0  # DM-04: incremental; a minute cadence keeps passes tiny
+# DM-05 degradation reports are throttled to this. Every pass emitting its own
+# event turned a durable condition into a stream nobody reads (issue #102).
+_DEGRADE_EVENT_EVERY_S = 600.0
 _LOG_MAX_BYTES = 10 * 1024 * 1024
 _LOG_BACKUPS = 3
 _DAEMON_LOG = logging.getLogger("ftmon.daemon.file")
@@ -121,6 +124,8 @@ class DaemonCore:
         self._delivery_failures: SimpleQueue[tuple[str, str, float]] = SimpleQueue()
         # (category, fatal, ts) — the worker thread cannot touch the writer.
         self._dispatch_faults: SimpleQueue[tuple[str, bool, float]] = SimpleQueue()
+        self._last_degradation_event = 0.0
+        self._degraded_passes = 0
         self._reload_global_config = self.config is None
         if self._reload_global_config:
             self.config, config_warnings = load_config(self.paths.config_file)
@@ -756,12 +761,35 @@ class DaemonCore:
         notes = self.retention.run(wall)
         if self.retention.baselines_updated:
             self.baselines.invalidate()
-        for note in notes:
+        # A 0/1 gauge rather than a rate computed here: rules can window it
+        # with avg() over the CA-04 rings, so "degrading on most passes for an
+        # hour" — the durable condition, as opposed to one lossy prune — is
+        # expressible in a definition instead of hard-coded (issue #102).
+        self.stats.db_degrading = 1.0 if notes else 0.0
+        for _note in notes:
             self.stats.count("db_degradations")
-            self.writer.add_event(EventRecord(
-                ts=wall, ingest_ts=wall, source="self", provider="ftmon.retention",
-                event_id=None, severity=1, message=note,
-            ))
+        if notes:
+            self._degraded_passes += 1
+            # Throttled: a permanently degrading daemon emitted ~15 events an
+            # hour, which buries the transition that actually mattered. The
+            # gauge above carries the signal; these stay as forensic detail.
+            if wall - self._last_degradation_event >= _DEGRADE_EVENT_EVERY_S:
+                # Always stated, including for a single pass: DM-05 requires
+                # every report to say what it covers, and a reader cannot tell
+                # "one pass" from "count omitted" if the count only appears
+                # when it exceeds one.
+                passes = self._degraded_passes
+                summary = "; ".join(notes) + (
+                    f" ({passes} degrading pass{'es' if passes != 1 else ''} "
+                    "covered by this report)"
+                )
+                self.writer.add_event(EventRecord(
+                    ts=wall, ingest_ts=wall, source="self",
+                    provider="ftmon.retention", event_id=None, severity=1,
+                    message=summary,
+                ))
+                self._last_degradation_event = wall
+                self._degraded_passes = 0
         if self.retention.entities_reaped:
             # Reap runs on retention's own connection/transaction, so nothing
             # else notices these rows are gone unless told: the writer's
