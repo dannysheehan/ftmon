@@ -14,8 +14,9 @@ import pytest
 ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-from build_exchange import BuildError, build  # noqa: E402
 from tests.platform_permissions import symlink_or_skip  # noqa: E402
+
+from build_exchange import BuildError, build  # noqa: E402
 
 
 def _files(root: Path) -> dict[str, bytes]:

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-user x64 MSI for the PyInstaller onedir payload (issue #95 / DO-02).
+
+  Scope=perUser → no elevation; install root is PerUserProgramFilesFolder\FTMON
+  (%LOCALAPPDATA%\Programs\FTMON). The MSI never creates Scheduled Tasks, never
+  runs ftmon init, and never deletes platformdirs configuration/state.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="FTMON"
+      Manufacturer="Danny Sheehan"
+      Version="$(var.MsiVersion)"
+      UpgradeCode="A7C3E91F-4B2D-4E8A-9F01-6D5C8B2A4E70"
+      Scope="perUser"
+      Language="1033"
+      Compressed="yes">
+
+    <SummaryInformation
+        Description="FTMON $(var.Pep440Version) — local systems monitor"
+        Manufacturer="Danny Sheehan" />
+
+    <MajorUpgrade
+        Schedule="afterInstallInitialize"
+        DowngradeErrorMessage="A newer version of FTMON is already installed. Uninstall it before installing this version."
+        AllowSameVersionUpgrades="no" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="PerUserProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="FTMON" />
+    </StandardDirectory>
+
+    <!-- Payload harvested from the PyInstaller onedir (PayloadDir set by build). -->
+    <ComponentGroup Id="FtmonPayload" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PayloadDir)\**\*.*" />
+    </ComponentGroup>
+
+    <!--
+      Per-user keypath + RemoveFolder so uninstall clears INSTALLFOLDER.
+      ICE64 for harvested subdirs under the user profile is suppressed in the
+      .wixproj (standard for large per-user harvested trees); this component
+      still removes the install root.
+    -->
+    <Component Id="FtmonPath" Directory="INSTALLFOLDER" Guid="B1E8D4A2-7C3F-4A91-9E55-2F6B0C8D1A44">
+      <RegistryValue
+          Root="HKCU"
+          Key="Software\FTMON"
+          Name="InstallDir"
+          Type="string"
+          Value="[INSTALLFOLDER]"
+          KeyPath="yes" />
+      <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+      <Environment
+          Id="FtmonUserPath"
+          Name="PATH"
+          Value="[INSTALLFOLDER]"
+          Permanent="no"
+          Part="last"
+          Action="set"
+          System="no" />
+    </Component>
+
+    <Feature Id="Main" Title="FTMON" Level="1">
+      <ComponentGroupRef Id="FtmonPayload" />
+      <ComponentRef Id="FtmonPath" />
+    </Feature>
+  </Package>
+</Wix>

@@ -1,0 +1,15 @@
+<Project Sdk="WixToolset.Sdk/7.0.0">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <Platform>x64</Platform>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <AcceptEula>wix7</AcceptEula>
+    <SuppressIces>ICE38;ICE64;ICE91</SuppressIces>
+    <Pep440Version Condition="'$(Pep440Version)' == ''">0.0.0</Pep440Version>
+    <MsiVersion Condition="'$(MsiVersion)' == ''">0.0.0</MsiVersion>
+    <MarkerFile Condition="'$(MarkerFile)' == ''">marker.txt</MarkerFile>
+    <FailAfterUpgrade Condition="'$(FailAfterUpgrade)' == ''">0</FailAfterUpgrade>
+    <DefineConstants>Pep440Version=$(Pep440Version);MsiVersion=$(MsiVersion);MarkerFile=$(MarkerFile);FailAfterUpgrade=$(FailAfterUpgrade)</DefineConstants>
+    <OutputName>ftmon-lifecycle-$(MsiVersion)</OutputName>
+  </PropertyGroup>
+</Project>

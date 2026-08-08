@@ -159,6 +159,159 @@ Web process output goes to `~/Library/Logs/ftmon-web.log`.
 Send SIGHUP to the daemon's managed PID to reload in place. `launchctl kickstart
 -k` is an explicit restart with a new PID, not a reload substitute.
 
+### Windows (MSI + Task Scheduler)
+
+On Windows, the recommended operator install is the per-user x64 MSI from the
+GitHub Release (`ftmon-<version>-windows-x64.msi`). It needs no elevation and
+installs under `%LOCALAPPDATA%\Programs\FTMON`, adding that directory to the
+current user's `PATH`. Configuration, monitors, checks, actions, logs, and the
+database stay in the normal platformdirs locations — never under the MSI
+directory.
+
+Silent install / repair / uninstall:
+
+```powershell
+msiexec /i ftmon-<version>-windows-x64.msi /qn
+msiexec /fa ftmon-<version>-windows-x64.msi /qn   # repair files + PATH only
+msiexec /x ftmon-<version>-windows-x64.msi /qn
+```
+
+Repair restores application files and PATH; it never runs `ftmon init` and never
+changes user state. Ordinary uninstall removes the install directory and that
+exact PATH entry while leaving configuration and databases intact. Before
+uninstalling an MSI that had startup tasks configured, remove them first:
+
+```powershell
+Install-FTMONTasks.ps1 -Action Remove
+```
+
+Prerelease MSIs may be unsigned until Authenticode / Azure Trusted Signing
+credentials are configured. Windows SmartScreen may warn on first run; that is
+expected for unsigned builds.
+
+PyPI / `uv` remains supported when you already manage a Python toolchain:
+
+```powershell
+uv tool install ftmon
+ftmon init --profile desktop    # selects windesktop on Windows
+ftmon check
+```
+
+After either install path, initialize once, then register Task Scheduler
+startup. The helpers ship beside `ftmon.exe` (MSI layout and `uv tool`
+`Scripts\`) and as package data under `ftmon/windows/`:
+
+```powershell
+ftmon init --profile desktop
+# Daemon at logon (default). Does not start the process.
+Install-FTMONTasks.ps1
+# Optional persistent web (loopback-only):
+# Install-FTMONTasks.ps1 -IncludeWeb
+
+Start-ScheduledTask -TaskName 'FTMON daemon'
+# Start-ScheduledTask -TaskName 'FTMON web'
+```
+
+From a source checkout without an installed script on `PATH`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy RemoteSigned `
+  -File .\src\ftmon\windows\Install-FTMONTasks.ps1 `
+  -FtmonExe (Get-Command ftmon).Source
+```
+
+Installing without `-IncludeWeb` does not delete an existing web task.
+`-Action Remove` stops and unregisters both official tasks idempotently.
+Registration never silently starts or restarts a process. Tasks use an
+account-specific logon trigger, Interactive logon, Limited run level, and
+IgnoreNew multiple-instance policy — monitoring begins only when the owning
+account logs on. MCP stays client-managed stdio; there is no MCP task.
+
+Lifecycle commands:
+
+```powershell
+Get-ScheduledTask -TaskName 'FTMON*'
+Get-ScheduledTaskInfo -TaskName 'FTMON daemon'
+Start-ScheduledTask -TaskName 'FTMON daemon'
+Stop-ScheduledTask -TaskName 'FTMON daemon'
+Disable-ScheduledTask -TaskName 'FTMON daemon'
+Enable-ScheduledTask -TaskName 'FTMON daemon'
+ftmon status
+ftmon doctor
+```
+
+Wrapper logs roll under the `ftmon paths` `state_dir` as `task-daemon.log` and
+`task-web.log` (1 MiB → `.1` backup). The daemon's own rotating log remains
+authoritative. Task Scheduler Operational history is under Event Viewer →
+Applications and Services Logs → Microsoft → Windows → TaskScheduler →
+Operational.
+
+Upgrade ordering (MSI or `uv tool upgrade`):
+
+1. `Stop-ScheduledTask` for daemon/web
+2. `ftmon doctor --backup <explicit-path>`
+3. install the newer MSI / upgrade the tool
+4. re-run `Install-FTMONTasks.ps1` (refreshes the runner copy and absolute path)
+5. `Start-ScheduledTask` and verify with `ftmon status` / `ftmon doctor`
+
+Windows Installer rolls the application payload back automatically if an MSI
+upgrade transaction fails. MSI downgrades are blocked by design. To roll back
+deliberately to an earlier release:
+
+1. `Install-FTMONTasks.ps1 -Action Remove` (stop and unregister startup tasks)
+2. uninstall the newer MSI (`msiexec /x … /qn`)
+3. install the earlier MSI
+4. restore the pre-upgrade database backup if the newer binary may have run a
+   schema migration (`ftmon doctor` / the backup from step 2 of upgrade)
+5. re-run `Install-FTMONTasks.ps1`, start the tasks, and verify with
+   `ftmon status` / `ftmon doctor`
+
+Native verification checklist (run on a real Windows host when changing Task
+Scheduler helpers or MSI packaging). Record evidence with:
+
+```powershell
+# Performs native observations (duplicate start, no console, three ticks,
+# forced restart, web loopback, remove). reboot_logon_recovery stays pending.
+uv run python tools/windows/record_native_checklist.py --observe
+
+# After a real reboot+logon with tasks installed, edit the evidence file
+# (set reboot_logon_recovery: pass) — --strict re-reads the file — or:
+#   $env:FTMON_CHECKLIST_REBOOT_LOGON = 'pass'
+uv run python tools/windows/record_native_checklist.py --strict `
+  --evidence soak/windows-native/checklist-<stamp>.txt
+```
+
+Evidence files land under `soak/windows-native/` (gitignored). Config tokens
+(`IgnoreNew`, `WindowStyle Hidden`) are recorded separately and do **not**
+satisfy the observed duplicate-start / no-console fields. After `--observe`,
+re-install the daemon task before a reboot so logon recovery can be verified:
+
+```powershell
+Install-FTMONTasks.ps1   # leave registered; Start-ScheduledTask optional
+# reboot, log on as the task owner, confirm ftmon status advances, then either
+# edit reboot_logon_recovery: pass in the evidence file, or:
+$env:FTMON_CHECKLIST_REBOOT_LOGON = 'pass'
+uv run python tools/windows/record_native_checklist.py --strict `
+  --evidence soak/windows-native/checklist-<stamp>.txt
+```
+
+CI smoke covers install/ticks/loopback/MCP but not forced restart or
+reboot+logon recovery.
+
+Checklist items:
+
+- daemon-only install creates no web task; `-IncludeWeb` adds it
+- daemon advances for at least three cycles under Task Scheduler
+- repeated `Start-ScheduledTask` produces no duplicate process (`IgnoreNew`)
+- a forced daemon failure is restarted by the task settings
+- web opt-in listens only on loopback (not `0.0.0.0`)
+- neither task opens a console window
+- reboot plus account logon restores monitoring
+- `-Action Remove` leaves no `FTMON*` scheduled task
+
+The web UI remains loopback-only (`http://127.0.0.1:8420/`). Reach it remotely
+with an SSH tunnel such as `ssh -L 8420:127.0.0.1:8420 <host>`.
+
 ## Upgrade
 
 Upgrading replaces the installed `ftmon` executable. Configuration,

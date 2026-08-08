@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.26**. Companion to `SPEC.md` v0.47 — every design element
+Status: **DRAFT v0.26**. Companion to `SPEC.md` v0.48 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -114,12 +114,25 @@ PROJECTS/ftmon/                  # monorepo root (git)
 │   ├── web/                     # §14: operational + isolated demo factories
 │   ├── demo.py                  # seeded synthetic DB builder (UI-15/16)
 │   ├── systemd/                 # user unit + hardened server system unit
+│   ├── launchd/                 # macOS LaunchAgent templates (PL-01)
+│   ├── windows/                 # Task Scheduler helpers (PL-01 / #94)
 │   ├── selfmon.py               # RB-02 self metrics collection
 │   └── cli.py                   # §15 argparse tree, every subcommand
+├── packaging/windows/           # PyInstaller spec, WiX v7 MSI, pins (#95)
 ├── tests/                       # §16; mirrors src layout + e2e/ + scenarios/
 ├── tools/gen_reqindex.py        # TS-01 traceability index generator
+├── tools/windows/               # freeze/MSI/sign/smoke helpers (#95)
 └── docs/definitions.md install.md manual.md
 ```
+
+Windows service-wrapper rationale: Task Scheduler logon tasks are registered
+by the operator-facing `Install-FTMONTasks.ps1` after `ftmon init`, never by
+MSI custom actions. The daemon task is default; persistent web is opt-in
+(`-IncludeWeb`). Registration never auto-starts processes. The frozen MSI
+installs under `%LOCALAPPDATA%\Programs\FTMON` (per-user, no elevation) and
+adds only that directory to the user PATH; state remains in platformdirs.
+WiX Toolset v7 build tooling is used under OSMF v1.1 terms recorded in
+`packaging/windows/README.md`.
 
 The original GPLv2 Perl tree remains at
 <https://sourceforge.net/projects/ftmon/>. Reused Nagios/Monitoring plugins are

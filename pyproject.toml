@@ -1,6 +1,6 @@
 [project]
 name = "ftmon"
-version = "2.0.0a15"
+version = "2.0.0a16"
 description = "FTMON v2 - lightweight local systems monitor with MCP integration"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -52,6 +52,12 @@ dev = [
     "hypothesis>=6",
     "ruff>=0.8",
     "httpx2>=2",
+    "packaging>=24",
+]
+# Windows frozen/MSI packaging only (issue #95). Kept out of the default
+# runtime/dev lock footprint used on Linux CI.
+windows-packaging = [
+    "pyinstaller==6.20.0",
 ]
 
 [build-system]
@@ -60,6 +66,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ftmon"]
+
+# Place Task Scheduler helpers beside ftmon.exe on Windows (Scripts/) and in
+# bin/ elsewhere so `uv tool install` exposes the same names as the MSI layout.
+[tool.hatch.build.targets.wheel.shared-scripts]
+"src/ftmon/windows/Install-FTMONTasks.ps1" = "Install-FTMONTasks.ps1"
+"src/ftmon/windows/Invoke-FTMONTask.ps1" = "Invoke-FTMONTask.ps1"
 
 [tool.hatch.build.targets.wheel.force-include]
 "docs/definitions.md" = "ftmon/docs/definitions.md"
@@ -75,7 +87,7 @@ addopts = "-m 'not realsystem'"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "tools"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]

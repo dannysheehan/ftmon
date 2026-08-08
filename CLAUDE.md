@@ -34,6 +34,9 @@ uv run ftmon daemon            # the monitor loop
 uv run ftmon web               # dashboard on http://127.0.0.1:8420/ (loopback only)
 uv run ftmon doctor            # DB/config diagnostics
 python3 tools/gen_reqindex.py --check   # regenerate/verify tests/reqindex.json from SPEC.md
+# Windows packaging (issue #95; Windows x64 host + .NET SDK 9):
+uv sync --group windows-packaging
+uv run python tools/windows/build_windows.py   # onedir ZIP + per-user MSI
 ```
 
 Real-system smoke tests are opt-in (deselected by default); the CI suite is

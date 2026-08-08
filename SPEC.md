@@ -1,11 +1,15 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.47** — v0.47 extends DM-04's durable/process retention
+Status: **DRAFT v0.48** — v0.48 extends DM-04's durable/process retention
 split to the 5-minute tier and makes DM-05 degradation an observable state
 rather than a stream of per-pass events: a live desktop was degrading on a
 quarter of all retention passes indefinitely, holding raw retention at ~24 h
 against DM-04's stated 48 h, with no signal distinguishing that from a single
-prune (DM-04, DM-05, RB-02, issue #102). v0.46 makes the self-monitor's budget signals mean
+prune (DM-04, DM-05, RB-02, issue #102). v0.47 ships the Windows per-user MSI and Task
+Scheduler service-wrapper helpers (issues #94/#95): DO-02 now requires the
+self-contained x64 installer, silent install/upgrade/repair/uninstall
+guidance, and the explicit Task Scheduler lifecycle; PyPI/`uv` remains
+supported. v0.46 makes the self-monitor's budget signals mean
 what the requirements they police actually say: DM-05 is measured on used
 pages everywhere it is reported, its alarm sits above the enforcement target
 rather than at it, DM-16 pressure counts entities that are persisted rather
@@ -1318,7 +1322,10 @@ occur. These gates convert the resource-budget and durability *claims*
 ## 17. Documentation deliverables (v1)
 
 - **DO-01** `docs/definitions.md`: complete monitor-definition reference (schema, every function with examples, the EX-06 truth table, authoring traps for weaker models, CI-validated cookbook recipes, MCP `query_metrics.filter_expr` attribute-only guidance, and cookbook entries such as "watch this log pattern" / "alert when X grows"). Written to be pasted into an AI context and exposed as the MCP resource (MC-05) — the primary consumer is `define_monitor` authors, human or model.
-- **DO-02** `docs/install.md`: uv install, `ftmon init`, systemd unit, MCP client registration snippet (Claude Code/Desktop), web UI.
+- **DO-02** `docs/install.md`: uv install, `ftmon init`, systemd unit, Windows
+  per-user MSI (silent install, upgrade, repair, uninstall, PATH), Task
+  Scheduler lifecycle (`Install-FTMONTasks.ps1`), macOS launchd, MCP client
+  registration snippet (Claude Code/Desktop), web UI.
 - **DO-03** Man-page-style `--help` for every CLI subcommand.
 - **DO-04** `docs/manual.md`: the user manual — installation, concepts (monitors, rules, incidents, baselines, episodes), daily use (CLI, web UI, notifications), tuning thresholds, writing definitions (pointer to DO-01), AI/MCP setup, troubleshooting (`ftmon doctor`, config errors, budget breaches). Grows one chapter per milestone; a milestone's user-visible feature is not done until its manual chapter exists.
 - **DO-05** Code documentation follows `CONTRIBUTING.md`: module/function docstrings record rationale and cite requirement IDs; comments explain *why* (constraints, trade-offs), never mechanics; test docstrings carry bracketed requirement tags (feeds TS-01).
@@ -1414,7 +1421,7 @@ Implementation lands in stages; each stage is independently usable, ships the §
 
 ## 21. Changelog & review disposition
 
-**v0.47 (2026-08-07)** — closes issue #102. A live desktop had been in
+**v0.48 (2026-08-09)** — closes issue #102. A live desktop had been in
 permanent DM-05 degradation: retention pruned on roughly a quarter of all
 passes, indefinitely, and the cost was paid in a guarantee rather than a
 failure. DM-04 promises 48 h of raw samples; that host had 28.8 h and falling,
@@ -1439,6 +1446,16 @@ largest table every pass — plausibly trading total size for the per-pass cost
 issue #107 exists to reduce. The age split is cheap and mirrors a query
 already in this module, so it lands first and the liveness tail is decided on
 re-measurement rather than assumption.
+
+**v0.47 (2026-08-08)** — ships issues #94 and #95: Windows Task Scheduler
+helpers (`Install-FTMONTasks.ps1` / `Invoke-FTMONTask.ps1`) as the PL-01
+service-wrapper seam, and a self-contained per-user x64 MSI wrapping a
+PyInstaller onedir payload. DO-02 now requires MSI silent install / upgrade /
+repair / uninstall guidance, Task Scheduler lifecycle documentation, and keeps
+PyPI/`uv` as a supported alternative. The MSI never creates Scheduled Tasks or
+runs `ftmon init`; configuration and state stay in platformdirs locations.
+Chocolatey (#96) remains out of scope but is expected to consume the immutable
+ZIP produced here.
 
 **v0.46 (2026-08-06)** — closes issue #104, the first of four workstreams split
 out of #97. A live desktop held an endlessly flapping `self/budget` incident
