@@ -69,10 +69,15 @@ the first ~24 h of data — baseline rules are automatically silent while
 learning.
 
 **Budget.** FTMON promises to stay under ~1% CPU, ~100 MB RAM, and a
-200 MB database (about 48 h of raw minute-level data, a month at 5-minute
-resolution, and roughly a year of hourly history). It prunes oldest,
-coarsest data first, never incidents, and the `self` monitor warns you if
-FTMON itself misbehaves.
+200 MB database. How much history that buys depends on what the data is
+about: durable things — your disks, the system, FTMON itself — keep 48 h of
+raw samples, a month at 5-minute resolution and roughly a year of hourly
+history. Individual processes come and go in their thousands, so their
+5-minute detail is kept for a week and their hourly history for 90 days;
+without that split, 5-minute rollups for processes that exited weeks ago
+would crowd out the history you actually look at. FTMON prunes oldest and
+coarsest first, never incidents, and the `self` monitor warns you if FTMON
+itself misbehaves.
 
 ---
 

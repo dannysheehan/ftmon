@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.25**. Companion to `SPEC.md` v0.47 — every design element
+Status: **DRAFT v0.26**. Companion to `SPEC.md` v0.48 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -717,7 +717,10 @@ The database figures are five quantities rather than one because DM-05 bounds
 an alarm on allocation therefore fires while the defined budget is healthy.
 `db_headroom_bytes` is signed against DM-05's normative 200 MB target rather
 than any alarm level, so retuning a threshold cannot move the reported distance
-to the budget.
+to the budget. `db_degrading` is a 0/1 gauge of whether the last retention pass
+had to degrade, deliberately not a rate: rules window it with `avg()` over the
+CA-04 rings, so "degrading on most passes for an hour" is expressible in a
+definition instead of a threshold compiled into the daemon (issue #102).
 
 `db_bytes` and `db_allocated_bytes` are deliberately separate. `db_bytes` is
 `stat()` of the main file — what the metric measured before #104, so its stored

@@ -166,6 +166,11 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
                "Reusable free pages; allocated but costs nothing against DM-05"),
             _m("db_headroom_bytes", "bytes", "gauge",
                "Signed bytes remaining under the DM-05 target; negative means over"),
+            _m("db_degrading", "bool", "gauge",
+               "1 when the last retention pass degraded; window it to detect "
+               "durable degradation rather than one lossy prune (DM-05)"),
+            _m("db_degradations", "count", "counter",
+               "DM-05 degradation steps taken since daemon start"),
             _m("entities_persisted", "count", "gauge",
                "Entities being written durable history now, against the DM-16 budget"),
             _m("series_persisted", "count", "gauge",

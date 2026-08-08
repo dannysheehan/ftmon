@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import time
+from datetime import UTC, datetime
 
 import pytest
 
@@ -318,7 +319,14 @@ class TestQueryMetrics:
         assert res["resolution"] == "raw"
 
     def test_quiet_window_no_data_in_range(self, populated):
-        """[DM-06][MC-01] known metric, no observations → no_data_in_range."""
+        """[DM-06][MC-01] known metric, no observations → no_data_in_range.
+
+        The window is an hour wide but years old, so the reported tier is
+        hourly: DM-06 selects by the age of the oldest requested point, not by
+        span. Asserting 5m here would claim a tier whose rows for 2020 were
+        pruned long ago — the same class of silent truncation issue #102's
+        retention split exposed for process series (query.py._resolution).
+        """
         _paths, _clock, api = populated
         res = api.query_metrics(
             "leak", "rss_bytes",
@@ -326,7 +334,7 @@ class TestQueryMetrics:
         )
         assert res["series"] == []
         assert res["empty_reason"] == "no_data_in_range"
-        assert res["resolution"] == "5m"
+        assert res["resolution"] == "1h"
         assert "empty_reason" in res
 
     def test_empty_resolution_hourly_tier(self, populated):
@@ -1034,3 +1042,60 @@ class TestDiscoverability:
         err = assert_err(McpApi(core_env).get_monitor("ghost"), "not_found")
         assert "monitors_dir" in err["message"]
         assert "monitor_paths" in err["hint"]
+
+
+class TestMixedCohortTierConsistency:
+    """[DM-06][MC-01] One tier serves the whole answer, end to end.
+
+    Resolving the cohort correctly is not enough if preflight and retrieval
+    then re-resolve per series: a durable member reverts to 5-minute data
+    while the response reports hourly, so the caller is handed points from a
+    tier the answer does not claim (issue #102 review).
+    """
+
+    DAY = 86400
+
+    def test_mixed_query_fetches_every_entity_from_the_reported_tier(self, core_env):  # noqa: F811
+        paths = core_env
+        clock = FakeClock(wall=WALL0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock, platform="linux")
+        conn = core.conn
+        now = WALL0
+        old = round(now - 20 * self.DAY)
+
+        # Same monitor+metric, one durable entity and one process entity.
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (900,'mixed','dur','m',1)")
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (901,'mixed','proc','m',0)")
+        # Hourly holds both at 20 days -- the history the answer should use.
+        conn.executemany(
+            "INSERT INTO rollup1h(series_id,bucket,avg,min,max,last,cnt) "
+            "VALUES (?,?,?,?,?,?,1)",
+            [(900, old, 111.0, 111.0, 111.0, 111.0),
+             (901, old, 222.0, 222.0, 222.0, 222.0)])
+        # The durable series also still has 5-minute data at that age, which
+        # it would legitimately keep alone -- and which must NOT be used here,
+        # because the process member cannot be served at that tier.
+        conn.execute(
+            "INSERT INTO rollup5m(series_id,bucket,avg,min,max,last,cnt) "
+            "VALUES (900,?,999.0,999.0,999.0,999.0,1)", (old,))
+        conn.commit()
+        core.conn.close()
+
+        api = McpApi(paths, clock=clock)
+        def iso(t):
+            return datetime.fromtimestamp(t, UTC).isoformat()
+
+        res = api.query_metrics(
+            "mixed", "m", [iso(now - 30 * self.DAY), iso(now)],
+        )
+        assert res["resolution"] == "1h"
+        values = {s["entity"]: [p[1] for p in s["points"]] for s in res["series"]}
+        assert set(values) == {"dur", "proc"}, "both entities must be returned"
+        # 999.0 is the 5-minute value; seeing it would mean retrieval used a
+        # finer tier than the one reported.
+        assert values["dur"] == [111.0], "durable member must come from hourly"
+        assert values["proc"] == [222.0]
