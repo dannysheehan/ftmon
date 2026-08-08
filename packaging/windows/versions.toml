@@ -1,0 +1,14 @@
+# Windows packaging pin manifest (issue #95).
+# One place for the frozen/MSI toolchain versions recorded in build output.
+
+python = "3.12.10"
+pyinstaller = "6.20.0"
+wix = "7.0.0"
+
+# WiX Toolset v7 is licensed under the Open Source Maintainer Foundation
+# Software License v1.1 (OSMF v1.1) for the build tooling. The project owner
+# has accepted those terms for producing FTMON Windows installers. FTMON's
+# own MIT licence continues to cover FTMON source and redistributed FTMON
+# binaries; third-party notices for bundled runtime libraries are generated
+# into THIRD_PARTY_NOTICES.txt at freeze time.
+wix_license = "OSMF-1.1"

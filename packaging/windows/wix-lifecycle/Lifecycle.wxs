@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Minimal synthetic MSI for upgrade/downgrade/rollback CI (issue #95).
+  Same UpgradeCode and MajorUpgrade contract as the production Package.wxs,
+  but only installs a marker file so the harness stays fast.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="FTMON"
+      Manufacturer="Danny Sheehan"
+      Version="$(var.MsiVersion)"
+      UpgradeCode="A7C3E91F-4B2D-4E8A-9F01-6D5C8B2A4E70"
+      Scope="perUser"
+      Language="1033"
+      Compressed="yes">
+
+    <SummaryInformation
+        Description="FTMON lifecycle harness $(var.Pep440Version)"
+        Manufacturer="Danny Sheehan" />
+
+    <MajorUpgrade
+        Schedule="afterInstallInitialize"
+        DowngradeErrorMessage="A newer version of FTMON is already installed. Uninstall it before installing this version."
+        AllowSameVersionUpgrades="no" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="PerUserProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="FTMON" />
+    </StandardDirectory>
+
+    <Component Id="Marker" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="PayloadMarker" Source="$(var.MarkerFile)" Name="PAYLOAD_MARKER.txt" KeyPath="yes" />
+    </Component>
+
+    <Component Id="LifecyclePath" Directory="INSTALLFOLDER" Guid="C2F9E5B3-8D4A-4B02-AF66-3E7C1D9E2B55">
+      <RegistryValue
+          Root="HKCU"
+          Key="Software\FTMON"
+          Name="InstallDir"
+          Type="string"
+          Value="[INSTALLFOLDER]"
+          KeyPath="yes" />
+      <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+      <Environment
+          Id="FtmonUserPath"
+          Name="PATH"
+          Value="[INSTALLFOLDER]"
+          Permanent="no"
+          Part="last"
+          Action="set"
+          System="no" />
+    </Component>
+
+    <!--
+      Optional fail-after-upgrade: scheduled after InstallFiles so MajorUpgrade
+      has already removed the previous product (afterInstallInitialize). A
+      Type-19 error CA then forces Windows Installer to roll back.
+    -->
+    <?if $(var.FailAfterUpgrade) = "1" ?>
+      <CustomAction
+          Id="FailLifecycleUpgrade"
+          Error="Intentional lifecycle-test failure after upgrade" />
+      <InstallExecuteSequence>
+        <Custom Action="FailLifecycleUpgrade" After="InstallFiles" Condition="NOT Installed" />
+      </InstallExecuteSequence>
+    <?endif?>
+
+    <Feature Id="Main" Title="FTMON" Level="1">
+      <ComponentRef Id="Marker" />
+      <ComponentRef Id="LifecyclePath" />
+    </Feature>
+  </Package>
+</Wix>

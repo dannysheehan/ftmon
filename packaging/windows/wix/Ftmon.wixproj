@@ -1,0 +1,19 @@
+<Project Sdk="WixToolset.Sdk/7.0.0">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <Platform>x64</Platform>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <!-- Project owner accepts WiX v7 OSMF v1.1 build-tool terms (see packaging/windows/README.md). -->
+    <AcceptEula>wix7</AcceptEula>
+    <!-- Harvested per-user file components use file keypaths; ICE38/ICE64/ICE91
+         then fire for every file under the user profile. INSTALLFOLDER has an
+         HKCU keypath + RemoveFolder. Suppressing these ICEs is the standard
+         approach for large Scope=perUser harvested application trees. -->
+    <SuppressIces>ICE38;ICE64;ICE91</SuppressIces>
+    <Pep440Version Condition="'$(Pep440Version)' == ''">0.0.0</Pep440Version>
+    <MsiVersion Condition="'$(MsiVersion)' == ''">0.0.0</MsiVersion>
+    <PayloadDir Condition="'$(PayloadDir)' == ''">..\..\..\dist\windows\ftmon</PayloadDir>
+    <DefineConstants>Pep440Version=$(Pep440Version);MsiVersion=$(MsiVersion);PayloadDir=$(PayloadDir)</DefineConstants>
+    <OutputName>ftmon-$(Pep440Version)-windows-x64</OutputName>
+  </PropertyGroup>
+</Project>

@@ -5,6 +5,13 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 dist/
+build/
+packaging/windows/file_version_info.txt
+packaging/windows/THIRD_PARTY_NOTICES.txt
+packaging/windows/wix/obj/
+packaging/windows/wix/bin/
+packaging/windows/wix-lifecycle/obj/
+packaging/windows/wix-lifecycle/bin/
 soak/
 tuning/evidence/
 *.egg-info/
