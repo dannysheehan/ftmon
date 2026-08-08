@@ -67,6 +67,77 @@ def dispatch_health(
     }
 
 
+def catalog_report(conn: sqlite3.Connection, *, now: float) -> dict:
+    """DM-16 catalog pressure and MD-09/DM-05 recency, computed once (#105).
+
+    Shared by `inspect()` and the web Self panel. A second implementation
+    would be the same mistake issue #104 spent a review round removing from
+    the DM-05 arithmetic: two readers of one requirement drift, and the
+    divergence is invisible until someone compares surfaces.
+    """
+
+    def _latest_self(metric: str) -> int | None:
+        # The pipeline is the only thing that knows its selected set, so the
+        # DM-16 figures are whatever the daemon last published (RB-02). None
+        # means no daemon has published them — reported as unknown rather
+        # than silently falling back to the counts DM-16 rejects.
+        row = conn.execute(
+            "SELECT s.value FROM series se JOIN samples s ON s.series_id = se.id "
+            "WHERE se.monitor='self' AND se.metric=? ORDER BY s.ts DESC LIMIT 1",
+            (metric,),
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    # `gone_ts IS NULL` means "this process is still running", not "we are
+    # keeping durable history for it": SA-05 track-all marks every sampled
+    # entity seen, so this overstates pressure by the sampled-to-selected
+    # ratio — an order of magnitude on a desktop. Retained under a name that
+    # says what it counts, and never compared against the budget.
+    entities_not_gone = conn.execute(
+        "SELECT COUNT(*) FROM entities WHERE gone_ts IS NULL"
+    ).fetchone()[0]
+    series_not_gone = conn.execute(
+        "SELECT COUNT(DISTINCT sm.series_id) FROM samples sm "
+        "JOIN series se ON se.id = sm.series_id "
+        "JOIN entities en ON en.monitor = se.monitor AND en.entity_id = se.entity_id "
+        "WHERE en.gone_ts IS NULL"
+    ).fetchone()[0]
+    meta_rows = dict(conn.execute(
+        "SELECT key, value FROM meta WHERE key IN "
+        "('last_reap_ts', 'last_reap_count', 'last_degradation_ts')"
+    ).fetchall())
+
+    def _age(key: str) -> tuple[float | None, float | None]:
+        try:
+            ts = float(meta_rows[key])
+        except (KeyError, TypeError, ValueError):
+            return None, None
+        return ts, max(0.0, now - ts)
+
+    reap_ts, reap_age = _age("last_reap_ts")
+    degrade_ts, degrade_age = _age("last_degradation_ts")
+    return {
+        "dm16": {
+            "max_entities_persisted": 400,
+            "entities_persisted": _latest_self("entities_persisted"),
+            "max_series_persisted": 270,
+            "series_persisted": _latest_self("series_persisted"),
+            # Reported beside the budget figures, never as them (DM-16).
+            "entities_not_gone": entities_not_gone,
+            "series_not_gone": series_not_gone,
+        },
+        "entities_not_gone": entities_not_gone,
+        "series_not_gone": series_not_gone,
+        "last_reap_ts": reap_ts,
+        "last_reap_age_s": reap_age,
+        "last_reap_count": (
+            int(meta_rows["last_reap_count"]) if "last_reap_count" in meta_rows else None
+        ),
+        "last_degradation_ts": degrade_ts,
+        "last_degradation_age_s": degrade_age,
+    }
+
+
 def inspect(
     conn: sqlite3.Connection, *, now: float, deep: bool = False,
     quiet: object | None = None, daemon_live: bool = False,
@@ -102,69 +173,20 @@ def inspect(
     cursors = [{"source": row["source"], "age_s": max(0, now-row["updated_ts"])}
                for row in conn.execute("SELECT source,updated_ts FROM cursors ORDER BY source")]
     size = db_size_report(conn)
-    # DM-16's ~270/≤400 figures describe *active* catalog pressure, not a cap
+    # DM-16's ≤400/~270 figures describe persisted catalog pressure, not a cap
     # on total retained rows (which legitimately grow under process churn even
-    # with the MD-09 reap running); report the two counts separately (CL-05,
-    # issue #74) rather than folding them into the ok/fail signal.
-    #
-    # `gone_ts IS NULL` means "this process is still running", not "we are
-    # keeping durable history for it": SA-05 track-all marks every sampled
-    # entity seen, so this overstates pressure by the sampled-to-selected
-    # ratio — an order of magnitude on a desktop. It is retained under a name
-    # that says what it counts; DM-16 pressure comes from entities_persisted.
-    entities_not_gone = conn.execute(
-        "SELECT COUNT(*) FROM entities WHERE gone_ts IS NULL"
-    ).fetchone()[0]
-    # The pipeline is the only thing that knows its selected set, so the
-    # DM-16 figure is whatever the daemon last published (RB-02). None means
-    # no daemon has run since the metric was introduced — reported as unknown
-    # rather than silently falling back to the count DM-16 rejects.
-    def _latest_self(metric: str) -> int | None:
-        row = conn.execute(
-            "SELECT s.value FROM series se JOIN samples s ON s.series_id = se.id "
-            "WHERE se.monitor='self' AND se.metric=? ORDER BY s.ts DESC LIMIT 1",
-            (metric,),
-        ).fetchone()
-        return int(row[0]) if row is not None else None
-
-    entities_persisted = _latest_self("entities_persisted")
-    series_persisted = _latest_self("series_persisted")
-    # Historical series belonging to a still-running entity. Like
-    # entities_not_gone this is a *presence* measure, not DM-16 pressure: it
-    # counts series that were ever written for a process that happens to still
-    # exist, including ones nothing has written to in weeks. Named for what it
-    # counts and reported without a budget comparison (#104 review).
-    series_not_gone = conn.execute(
-        "SELECT COUNT(DISTINCT sm.series_id) FROM samples sm "
-        "JOIN series se ON se.id = sm.series_id "
-        "JOIN entities en ON en.monitor = se.monitor AND en.entity_id = se.entity_id "
-        "WHERE en.gone_ts IS NULL"
-    ).fetchone()[0]
-    dm16 = {
-        "max_entities_persisted": 400,
-        "entities_persisted": entities_persisted,
-        "max_series_persisted": 270,
-        "series_persisted": series_persisted,
-        # Reported beside the budget figures, never as them (DM-16).
-        "entities_not_gone": entities_not_gone,
-        "series_not_gone": series_not_gone,
-    }
-    meta_rows = dict(conn.execute(
-        "SELECT key, value FROM meta WHERE key IN "
-        "('last_reap_ts', 'last_reap_count', 'last_degradation_ts')"
-    ).fetchall())
-    last_reap_ts = float(meta_rows["last_reap_ts"]) if "last_reap_ts" in meta_rows else None
-    last_reap_count = (
-        int(meta_rows["last_reap_count"]) if "last_reap_count" in meta_rows else None
-    )
-    last_reap_age_s = max(0, now - last_reap_ts) if last_reap_ts is not None else None
-    last_degradation_ts = (
-        float(meta_rows["last_degradation_ts"])
-        if "last_degradation_ts" in meta_rows else None
-    )
-    last_degradation_age_s = (
-        max(0, now - last_degradation_ts) if last_degradation_ts is not None else None
-    )
+    # with the MD-09 reap running); report the two separately (CL-05, #74).
+    catalog = catalog_report(conn, now=now)
+    dm16 = catalog["dm16"]
+    entities_not_gone = catalog["entities_not_gone"]
+    series_not_gone = catalog["series_not_gone"]
+    entities_persisted = dm16["entities_persisted"]
+    series_persisted = dm16["series_persisted"]
+    last_reap_ts = catalog["last_reap_ts"]
+    last_reap_count = catalog["last_reap_count"]
+    last_reap_age_s = catalog["last_reap_age_s"]
+    last_degradation_ts = catalog["last_degradation_ts"]
+    last_degradation_age_s = catalog["last_degradation_age_s"]
     dispatch = dispatch_health(conn, quiet=quiet, daemon_live=daemon_live)
     return {"dispatch": dispatch,
             "check": check, "integrity": integrity, "checkpoint": checkpoint,

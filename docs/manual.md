@@ -367,6 +367,41 @@ gaps, raw timestamps are not fabricated, and long ranges do not extend today's
 level back across missing history. If older five-minute evidence has aged out,
 the text summary says the visible baseline history is truncated.
 
+### The Self page
+
+FTMON's own budgets live on the **Self** page. The top section answers one
+question — is the daemon inside its limits — for each of the three things it
+promises: CPU, memory, and database size. Every row shows the reading, the
+limit it is measured against, and the percentage, so a bar or a colour is
+never the only way to tell.
+
+The limits come from your own `self.toml`, not from the spec. If you have
+raised `cpu_budget_pct` because your host is noisier than the default, the
+page compares against your value and shows RB-01's cross-platform target of
+1% alongside — they differ on purpose, and seeing both tells you whether a
+comfortable reading is comfortable against a relaxed bar.
+
+A percentage above 100 is shown as it is. Six percent CPU against a 1.5%
+threshold reads as 400%, not as a full bar, because how far over matters.
+
+The database row is the DM-05 figure — used pages. File allocation and the
+reusable freelist are named separately beneath it, along with headroom to the
+200 MB target. §8 explains why those three are different numbers.
+
+**Catalog** shows how much history FTMON is actively maintaining: entities and
+series it is currently persisting, against the DM-16 budget. Beneath it, the
+count of entities merely *running* is shown without a budget comparison,
+because that number is legitimately much larger and is not what the budget
+governs.
+
+Anything FTMON has not measured says so rather than showing zero. Per-stage
+tick timings are not collected yet, and the page says that instead of
+implying every stage takes no time.
+
+Each budget links to its own 6-hour and 24-hour history, which is usually the
+faster way to tell a spike from a trend. The dashboard's status strip carries
+the same CPU and memory figures in miniature and links back here.
+
 ### Baselines index
 
 The read-only **Baselines** page lists every stored learned series with its
