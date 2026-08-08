@@ -46,21 +46,19 @@ FTMON's to manage — but the trust rules below only pass for a stable,
 non-writable, ownership-appropriate path, so a shared convention avoids
 everyone rediscovering the same constraints by trial and error:
 
-- **Desktop / per-user installs:** `~/.local/lib/ftmon/checks/`
-- **Dedicated-server installs:** `/usr/local/lib/ftmon/checks/`, owned by
+- **POSIX desktop / per-user installs:** `~/.local/lib/ftmon/checks/`
+- **Windows per-user installs:** `%LOCALAPPDATA%\ftmon\checks\`, owned by the
+  same account that runs FTMON
+- **POSIX dedicated-server installs:** `/usr/local/lib/ftmon/checks/`, owned by
   `root`
 
-Both satisfy the trust contract below for the same reasons: the path is
-stable and absolute (not a build directory, not `/tmp`); the owner is either
-the account the daemon runs as (a user systemd unit's effective uid) or
-`root` — exactly the two identities the trust check accepts; neither
-location is group- or other-writable by default, so no other local account
-can rewrite what the administrator approved; and neither sits under FTMON's
-own `data`, `state`, or `runtime` directories (`~/.local/share/ftmon`,
-`~/.local/state/ftmon`, the XDG runtime dir) — those are writable *by the
-daemon itself*, so trusting an executable found there would turn a
-compromise of FTMON's own storage into arbitrary command execution, and the
-registry loader rejects them outright.
+These locations satisfy the trust contract below for the same reasons: each
+path is stable and absolute (not a build directory or temporary directory),
+has a platform-appropriate trusted owner and no broad write access, and sits
+outside FTMON's own data, state, and runtime directories. Those managed
+directories are writable *by the daemon itself*, so trusting an executable
+found there would turn a compromise of FTMON's storage into arbitrary command
+execution; the registry loader rejects such paths outright.
 
 For a server install, create the directory and ship your script with
 ownership and modes that already satisfy the next section:
@@ -74,6 +72,24 @@ sudo install -o root -g root -m 0755 check-myservice.sh \
 Separately packaged plugins (Monitoring Plugins under `/usr/lib/nagios/`,
 etc.) don't need to move — register their existing path directly, per
 [External checks](external-checks.md).
+
+On Windows, create or copy the checker as the account that runs FTMON. Copying
+creates a new file that normally inherits the destination directory's ACL;
+moving a file on the same volume may preserve an unsuitable ACL from its old
+location. The command below creates the conventional directory, copies a
+checker into it, and asks FTMON's real evaluator for the verdict:
+
+```powershell
+$checkDir = Join-Path $env:LOCALAPPDATA "ftmon\checks"
+New-Item -ItemType Directory -Force -Path $checkDir | Out-Null
+Copy-Item .\check-myservice.exe (Join-Path $checkDir "check-myservice.exe")
+ftmon check trust (Join-Path $checkDir "check-myservice.exe")
+```
+
+The directory is deliberately a sibling of FTMON's managed data tree, not a
+child of it. Confirm the actual managed locations with `ftmon paths`; a check
+executable under FTMON's data, state, or runtime directory is rejected even if
+its owner and ACL would otherwise pass.
 
 ## The trust contract
 
@@ -89,14 +105,44 @@ instead of running:
 | Path is absolute | No shell means no `PATH` search to fall back on; a relative path would also resolve differently depending on the daemon's working directory. |
 | Not a symlink, and the resolved path equals the given path | An admin approves one exact file. A symlink is an indirection that could be repointed later without touching `checks.toml`. |
 | A regular file | Rules out device nodes, FIFOs, and directories — nothing FTMON should ever `exec`. |
-| Owned by `root` or the daemon's effective uid | Trust follows the identity actually executing the check (SE-07), not just the file's nominal owner. Distro packages under `/bin`, `/lib`, `/sbin`, `/usr` sometimes report the overflow uid (`nobody`/`nfsnobody`, 65533/65534) once a systemd unit sets `NoNewPrivileges=yes`, since the kernel masks real ownership from that vantage point — those specific system paths are still trusted, because distro packaging already protects them independently. |
-| Not group- or other-writable | Otherwise any other local account could rewrite what the administrator approved. |
+| Trusted owner (POSIX) | Owned by `root` or the daemon's effective uid. Trust follows the identity actually executing the check (SE-07), not just the file's nominal owner. Distro packages under `/bin`, `/lib`, `/sbin`, `/usr` sometimes report the overflow uid (`nobody`/`nfsnobody`, 65533/65534) once a systemd unit sets `NoNewPrivileges=yes`, since the kernel masks real ownership from that vantage point — those specific system paths are still trusted, because distro packaging already protects them independently. |
+| Trusted owner (Windows) | Owned by the current-user SID, LocalSystem (`SYSTEM`), or the built-in Administrators SID. These are the Windows equivalents of the executing uid and `root`; a familiar path is not a substitute for an accepted owner. |
+| No broad write access (POSIX) | The file is not group- or other-writable; otherwise another local account could rewrite what the administrator approved. |
+| No broad write access (Windows) | The DACL has no allowed write ACE for a trustee beyond the owner, `SYSTEM`, or Administrators. A NULL or unreadable DACL fails closed. Read-only access by another account does not by itself make a check executable writable. |
 | Executable | Caught at registration instead of surfacing later as a mysterious runtime failure. |
 
 The registry applies one more rule that is specific to *where* a check may
 live, not to the file itself: the resolved executable must not fall under
 FTMON's own data, state, or runtime directories, for the reason given in
 "Where the binary should live" above.
+
+### Windows: why System32 executables are rejected
+
+`NT SERVICE\TrustedInstaller` is deliberately not in the accepted owner set.
+Most stock executables under `C:\Windows\System32` are owned by
+TrustedInstaller, so a command such as this normally fails:
+
+```powershell
+ftmon check trust C:\Windows\System32\cmd.exe
+```
+
+The result is intentional, not an inverted trust boundary. Windows reports
+the real owner SID, and a `C:\Windows` prefix alone does not prove that the
+file satisfies FTMON's owner-based authority rule. The narrow POSIX exception
+for system paths exists only because a systemd `NoNewPrivileges=yes` sandbox
+can mask a genuinely root-owned distro executable as the overflow uid. Windows
+has no equivalent ownership-masking case, so it has no equivalent path-based
+escape hatch.
+
+If a check needs a stock command or a separately installed tool, put the
+administrator-approved checker or a small executable wrapper in the
+user-owned `%LOCALAPPDATA%\ftmon\checks\` directory above. It may call the
+system command internally; the wrapper is the stable command authority named
+in `checks.toml`. Its owner must be the FTMON account, `SYSTEM`, or
+Administrators, and its DACL must not grant write access to any other trustee.
+Use **Properties → Security → Advanced** to remove an inherited broad write
+grant if necessary, then run `ftmon check trust <absolute-path>` again. That
+command prints every failing condition and never executes the candidate.
 
 If you are not sure why a candidate path is being rejected, run:
 
