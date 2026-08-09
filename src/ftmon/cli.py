@@ -872,6 +872,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         f"entities={dm16['entities_not_gone']}/{report['tables']['entities']} "
         f"series={dm16['series_not_gone']}/{report['tables']['series']}"
     )
+    attribution = report["monitor_attribution"]
+    print("Catalog by monitor (retained rows; presence is not persisted pressure):")
+    if not attribution["monitors"]:
+        print("  none")
+    for item in attribution["monitors"]:
+        print(
+            f"  {item['monitor']}: entities={item['entities_total']} "
+            f"(present={item['entities_present']}, gone={item['entities_gone']}) "
+            f"series={item['series_total']}"
+        )
+    if attribution["monitors_truncated"]:
+        print(
+            f"  showing {attribution['monitors_returned']} of "
+            f"{attribution['monitors_matched']} monitors"
+        )
     if report["last_reap_ts"] is None:
         print("Reap: last ran never")
     else:

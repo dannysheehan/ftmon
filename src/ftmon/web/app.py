@@ -1109,6 +1109,13 @@ def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
     rss_budget_mb = params.get("rss_budget_mb")
     db_warn_mb = params.get("db_warn_mb") or params.get("db_budget_mb")
     dm16 = (catalog or {}).get("dm16", {})
+    monitor_attribution = (catalog or {}).get("monitor_attribution") or {
+        "monitors": [],
+        "monitors_returned": 0,
+        "monitors_matched": 0,
+        "monitors_truncated": False,
+        "limits": {"max_monitors": 64},
+    }
     return {
         "cpu": {
             "current": m("cpu_pct"),
@@ -1142,6 +1149,7 @@ def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
             "reap_age_s": (catalog or {}).get("last_reap_age_s"),
             "reap_count": (catalog or {}).get("last_reap_count"),
             "degradation_age_s": (catalog or {}).get("last_degradation_age_s"),
+            "monitor_attribution": monitor_attribution,
         },
         # #106 supplies these; absent until then, and shown as such.
         "stages": [

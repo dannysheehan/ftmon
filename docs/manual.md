@@ -392,7 +392,11 @@ reusable freelist are named separately beneath it, along with headroom to the
 series it is currently persisting, against the DM-16 budget. Beneath it, the
 count of entities merely *running* is shown without a budget comparison,
 because that number is legitimately much larger and is not what the budget
-governs.
+governs. A second table attributes retained catalog rows to each monitor,
+ordered by the monitors holding the most series. Its present and gone columns
+describe entity lifecycle, while its totals answer which definition created
+the stored footprint. They do not reconstruct the per-monitor current write
+set: only the global persisted counts carry that meaning.
 
 Anything FTMON has not measured says so rather than showing zero. Per-stage
 tick timings are not collected yet, and the page says that instead of
@@ -586,7 +590,8 @@ in `docs/install.md` when publishing or updating the site.
 Never copy the live `ftmon.db` file directly: SQLite may have committed data
 in its WAL file. `ftmon doctor --backup PATH` uses SQLite's snapshot API and
 checks the resulting backup before reporting success. Doctor also reports
-active and total entity/series catalog counts to track capacity pressure,
+current persisted pressure and total entity/series catalog counts, with a
+bounded per-monitor retained/present/gone breakdown to identify ownership,
 when automatic cleanup last ran and how many rows it removed, file allocation
 versus used bytes, reusable freelist space, and the most recent lossy budget
 degradation. The database file can remain larger than its used bytes while
