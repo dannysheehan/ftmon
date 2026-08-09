@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.26**. Companion to `SPEC.md` v0.48 — every design element
+Status: **DRAFT v0.27**. Companion to `SPEC.md` v0.49 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -665,9 +665,42 @@ than treating the active-state assumption as a total-catalog budget, since
 doing so would produce routine false pressure on any host with real process
 churn.
 
----
+**v0.27 (issue #103): reap expires the hourly tail rather than waiting for
+it.** "Bounded by DM-04's retention windows" above is exactly the problem —
+the bound is the *longest* window, so a catalog cannot converge faster than
+90 d no matter how briefly its processes lived. Measured on the canary: 7,923
+entities dead over a week were pinned by `rollup1h` alone (zero by `samples`,
+zero by `rollup5m`), and the oldest hourly bucket was 28.6 d, so the 90 d
+window had never fired at all.
 
-## 10. Engine design
+`_reap_catalog` therefore deletes `rollup1h` rows of **process-sourced**
+series (`durable = 0`) whose entity is continuously `gone` beyond
+`R1H_GONE_EXPIRE_S` (7 d, DM-04's process 5-minute window). The restriction
+carries the threshold's whole justification: 7 d is the point where no other
+DM-04 window still holds data *for a process series*, whereas a durable one
+keeps 5-minute data 30 d and hourly 400 d. A first canary run without that
+guard deleted 3,624 rows of `disk` history for snap mounts and an unplugged
+USB gone 22-26 d — durable entities do go `gone`, which is exactly what the
+unrestricted rule failed to consider. It
+does **not** gain a second removal rule: the emptiness test that decides when
+an entity may be reaped is unchanged, and expiry simply lets an entity reach
+it. Reap keeps one definition of removable; a subsequent pass collects the
+entity through the existing path.
+
+Three bounds apply per pass, because `REAP_SCAN` caps entities *visited* and
+one entity may own arbitrarily many rows:
+
+| bound | why |
+| --- | --- |
+| `REAP_SCAN` entities visited | existing cursor; unchanged |
+| row budget | one huge entity cannot make a pass expensive |
+| elapsed-time budget | protects the ≤ 1 s/tick retention contract under a slow disk |
+
+A partially expired entity is not a special state: it still fails the
+emptiness test, so it is retried on a later pass and completes across passes.
+Resurrection needs no handling either — `gone_ts` returns to NULL and the
+candidate query stops matching, which is why the predicate is written against
+`gone_ts` rather than a derived "dead" flag.
 
 ### 10.1 Scheduler (SA-01, SA-07)
 

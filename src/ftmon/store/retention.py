@@ -23,6 +23,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 
+from ftmon.clock import Clock, SystemClock
 from ftmon.store.db import DB_BUDGET_BYTES
 
 __all__ = ["Retention", "BaselineLookup"]
@@ -43,6 +44,23 @@ HISTORY_TRIM = 100
 # MD-09: rows *visited* per reap pass, not rows deleted -- bounds the pass
 # the same way regardless of how much of the catalog currently qualifies.
 REAP_SCAN = 2000
+
+# MD-09 (v0.49, issue #103): an entity gone longer than DM-04's process
+# 5-minute window has no raw and no 5-minute rows left, so its hourly rollups
+# are the only thing keeping its catalog rows alive -- on the canary 7,923
+# dead entities were pinned by rollup1h alone and none could ever reap. The
+# threshold is that window rather than a chosen constant precisely so expiry
+# never cuts inside a window DM-04 separately promises.
+R1H_GONE_EXPIRE_S = 7 * _DAY
+
+# REAP_SCAN bounds entities *visited*; these bound work *done*. One entity can
+# own arbitrarily many hourly rows, so a visited-count cap alone cannot keep
+# the pass inside DM-04's 1 s/cycle -- hence a row budget and a wall budget
+# too. Partial progress is fine: a half-expired entity still fails the
+# emptiness test and is retried on a later pass.
+REAP_EXPIRE_ENTITIES = 200
+REAP_EXPIRE_ROWS = 5000
+REAP_EXPIRE_SECONDS = 0.25
 
 
 class Retention:
@@ -71,8 +89,22 @@ class Retention:
         max_bucket_span_s: int = 3600,
         delete_batch: int = 5000,  # prune rows per table per pass
         reap_scan: int = REAP_SCAN,  # entities visited per catalog-reap pass
+        r1h_gone_expire_s: int = R1H_GONE_EXPIRE_S,
+        expire_entities: int = REAP_EXPIRE_ENTITIES,
+        expire_rows: int = REAP_EXPIRE_ROWS,
+        expire_seconds: float = REAP_EXPIRE_SECONDS,
+        # TS-03: the wall budget needs a monotonic reading, which only a Clock
+        # may take. Defaulted so no caller silently loses the bound -- an
+        # unbounded expiry pass is the failure mode this parameter exists to
+        # prevent, so it must not be opt-in.
+        clock: Clock | None = None,
     ) -> None:
         self._conn = conn
+        self._clock = clock if clock is not None else SystemClock()
+        self._r1h_gone_expire = r1h_gone_expire_s
+        self._expire_entities = expire_entities
+        self._expire_rows = expire_rows
+        self._expire_seconds = expire_seconds
         self._budget = budget_bytes
         self._raw_keep = raw_keep_s
         self._r5m_keep_durable = r5m_keep_durable_s
@@ -89,6 +121,10 @@ class Retention:
         self._reap_scan = reap_scan
         self.baselines_updated = 0  # daemon invalidates the lookup cache when > 0
         self.entities_reaped = 0  # daemon emits a self-event when > 0
+        # MD-09 v0.49: rows expired and whose they were, so an irreversible
+        # deletion of production history is attributable, not just counted.
+        self.rollup1h_expired = 0
+        self.expired_keys: list[tuple[str, str]] = []
         self.reaped_keys: list[tuple[str, str]] = []  # (monitor, entity_id);
         # daemon evicts the writer's series-id cache and the baseline lookup
         # cache for each -- reap runs on its own connection/transaction, so
@@ -101,6 +137,8 @@ class Retention:
         self.baselines_updated = 0
         self.entities_reaped = 0
         self.reaped_keys = []
+        self.rollup1h_expired = 0
+        self.expired_keys = []
         notes: list[str] = []
         cur = self._conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
@@ -109,6 +147,11 @@ class Retention:
             self._rollup_1h(cur, now)
             self._prune_normal(cur, now)
             self._reap_catalog(cur, now)
+            # Its own stage, not a tail of _reap_catalog: that method returns
+            # early when the cursor wraps past the last entity, and expiry
+            # must not be skipped on those passes.
+            self._expire_gone_rollup1h(cur, now)
+            self._set_meta(cur, "last_expire_rows", self.rollup1h_expired)
             self._cap_incident_history(cur)
             notes = self._degrade_if_over_budget(cur, now)
         except BaseException:
@@ -302,6 +345,74 @@ class Retention:
         )
 
     # -- catalog reap (MD-09) ----------------------------------------------
+
+    def _expire_gone_rollup1h(self, cur: sqlite3.Cursor, now: float) -> None:
+        """Delete hourly rollups of entities long `gone` (MD-09, v0.49).
+
+        This is not a second removal rule: the emptiness test in
+        `_reap_catalog` still decides when an entity may be removed, and this
+        only lets that test ever succeed. Waiting for `rollup1h` to age out on
+        its own means waiting the *longest* DM-04 window, so a catalog of
+        short-lived processes could never converge -- on the canary, 7,923
+        dead entities were pinned by these rows alone with the 90 d window
+        still two months from first firing.
+
+        Restricted to **process-sourced** series (`durable = 0`). The 7 d
+        threshold is justified by there being no other DM-04 window still
+        holding data for the entity -- true only for process series, whose
+        5-minute rollups also expire at 7 d. Durable series (system/disk/self)
+        keep 5-minute data 30 d and hourly 400 d, so the same cut destroys
+        history DM-04 still promises. Not hypothetical: an unrestricted
+        version deleted 3,624 rows of `disk` history -- snap revision mounts
+        and an unplugged USB stick, gone 22-26 d -- before the canary's
+        durable-row invariant caught it.
+
+        Victims are enumerated before deleting rather than deleted by one
+        join, because MD-09 requires the work to be attributable and a bare
+        `DELETE ... WHERE gone_ts <= ?` reports rows without saying whose.
+
+        Bounded three ways: entities enumerated, rows deleted, and wall time.
+        The row and wall bounds are what REAP_SCAN cannot provide -- it caps
+        entities *visited*, and a single entity may own thousands of hourly
+        rows. Stopping early is safe: a partly expired entity still fails the
+        emptiness test and is retried on a later pass.
+        """
+        self.rollup1h_expired = 0
+        self.expired_keys = []
+        cutoff = int(now) - self._r1h_gone_expire
+        victims = cur.execute(
+            "SELECT DISTINCT s.monitor, s.entity_id FROM rollup1h r "
+            "JOIN series s ON s.id = r.series_id "
+            "JOIN entities e ON e.monitor = s.monitor AND e.entity_id = s.entity_id "
+            "WHERE s.durable = 0 AND e.gone_ts IS NOT NULL AND e.gone_ts <= ? "
+            "LIMIT ?",
+            (cutoff, self._expire_entities),
+        ).fetchall()
+        if not victims:
+            return
+        deadline = self._clock.monotonic() + self._expire_seconds
+        removed = 0
+        for row in victims:
+            key = (row["monitor"], row["entity_id"])
+            while removed < self._expire_rows:
+                cur.execute(
+                    "DELETE FROM rollup1h WHERE (series_id, bucket) IN ("
+                    " SELECT r.series_id, r.bucket FROM rollup1h r "
+                    " JOIN series s ON s.id = r.series_id "
+                    " WHERE s.durable = 0 AND s.monitor = ? AND s.entity_id = ? "
+                    " LIMIT ?)",
+                    (*key, min(self._batch, self._expire_rows - removed)),
+                )
+                if not cur.rowcount:
+                    break
+                removed += cur.rowcount
+            if key not in self.expired_keys:
+                self.expired_keys.append(key)
+            # Checked after at least one entity so a tight budget still makes
+            # progress rather than spinning on the same head of the list.
+            if removed >= self._expire_rows or self._clock.monotonic() >= deadline:
+                break
+        self.rollup1h_expired = removed
 
     def _reap_catalog(self, cur: sqlite3.Cursor, now: float) -> None:
         """A `gone` entity (and its series/baselines) reaps once none of its
