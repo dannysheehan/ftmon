@@ -1088,6 +1088,28 @@ class TestExpireGoneRollup1h:
             "SELECT value FROM meta WHERE key = 'last_expire_rows'").fetchone()
         assert int(row["value"]) == 3
 
+    def test_durable_series_are_never_expired(self, conn):
+        """[MD-09][DM-04] expiry is process-only. The 7 d threshold is
+        justified by no *other* DM-04 window still holding data, which is
+        true only for process series: durable ones keep 5-minute data 30 d
+        and hourly 400 d. A canary caught this deleting 3,624 rows of `disk`
+        history for snap mounts gone ~25 d, so the guard is a regression test
+        with a scar, not a hypothetical."""
+        self._gone_entity_with_rollups(
+            conn, gone_age=_GONE + 1, buckets=4, sid=1, entity="proc", durable=0)
+        self._gone_entity_with_rollups(
+            conn, gone_age=100 * 86400, buckets=4, sid=2, entity="disk0", durable=1)
+
+        r = Retention(conn)
+        r.run(now=T0)
+
+        kept = conn.execute(
+            "SELECT COUNT(*) FROM rollup1h r JOIN series s ON s.id = r.series_id "
+            "WHERE s.durable = 1").fetchone()[0]
+        assert kept == 4, "durable hourly history must survive expiry"
+        assert r.rollup1h_expired == 4
+        assert r.expired_keys == [("m", "proc")]
+
     def test_row_budget_is_exact_when_it_falls_mid_batch(self, conn):
         """[MD-09] the budget clamps the final batch rather than overshooting
         by up to one batch: with a budget that is not a multiple of the batch

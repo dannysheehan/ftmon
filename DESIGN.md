@@ -673,8 +673,15 @@ entities dead over a week were pinned by `rollup1h` alone (zero by `samples`,
 zero by `rollup5m`), and the oldest hourly bucket was 28.6 d, so the 90 d
 window had never fired at all.
 
-`_reap_catalog` therefore deletes `rollup1h` rows for entities continuously
-`gone` beyond `R1H_GONE_EXPIRE_S` (7 d, DM-04's process 5-minute window). It
+`_reap_catalog` therefore deletes `rollup1h` rows of **process-sourced**
+series (`durable = 0`) whose entity is continuously `gone` beyond
+`R1H_GONE_EXPIRE_S` (7 d, DM-04's process 5-minute window). The restriction
+carries the threshold's whole justification: 7 d is the point where no other
+DM-04 window still holds data *for a process series*, whereas a durable one
+keeps 5-minute data 30 d and hourly 400 d. A first canary run without that
+guard deleted 3,624 rows of `disk` history for snap mounts and an unplugged
+USB gone 22-26 d — durable entities do go `gone`, which is exactly what the
+unrestricted rule failed to consider. It
 does **not** gain a second removal rule: the emptiness test that decides when
 an entity may be reaped is unchanged, and expiry simply lets an entity reach
 it. Reap keeps one definition of removable; a subsequent pass collects the

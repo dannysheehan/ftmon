@@ -357,6 +357,16 @@ class Retention:
         dead entities were pinned by these rows alone with the 90 d window
         still two months from first firing.
 
+        Restricted to **process-sourced** series (`durable = 0`). The 7 d
+        threshold is justified by there being no other DM-04 window still
+        holding data for the entity -- true only for process series, whose
+        5-minute rollups also expire at 7 d. Durable series (system/disk/self)
+        keep 5-minute data 30 d and hourly 400 d, so the same cut destroys
+        history DM-04 still promises. Not hypothetical: an unrestricted
+        version deleted 3,624 rows of `disk` history -- snap revision mounts
+        and an unplugged USB stick, gone 22-26 d -- before the canary's
+        durable-row invariant caught it.
+
         Victims are enumerated before deleting rather than deleted by one
         join, because MD-09 requires the work to be attributable and a bare
         `DELETE ... WHERE gone_ts <= ?` reports rows without saying whose.
@@ -374,7 +384,7 @@ class Retention:
             "SELECT DISTINCT s.monitor, s.entity_id FROM rollup1h r "
             "JOIN series s ON s.id = r.series_id "
             "JOIN entities e ON e.monitor = s.monitor AND e.entity_id = s.entity_id "
-            "WHERE e.gone_ts IS NOT NULL AND e.gone_ts <= ? "
+            "WHERE s.durable = 0 AND e.gone_ts IS NOT NULL AND e.gone_ts <= ? "
             "LIMIT ?",
             (cutoff, self._expire_entities),
         ).fetchall()
@@ -389,7 +399,8 @@ class Retention:
                     "DELETE FROM rollup1h WHERE (series_id, bucket) IN ("
                     " SELECT r.series_id, r.bucket FROM rollup1h r "
                     " JOIN series s ON s.id = r.series_id "
-                    " WHERE s.monitor = ? AND s.entity_id = ? LIMIT ?)",
+                    " WHERE s.durable = 0 AND s.monitor = ? AND s.entity_id = ? "
+                    " LIMIT ?)",
                     (*key, min(self._batch, self._expire_rows - removed)),
                 )
                 if not cur.rowcount:
