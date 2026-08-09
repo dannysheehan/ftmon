@@ -9,6 +9,38 @@ from ftmon.paths import set_private_permissions
 from ftmon.store.db import db_size_report
 
 _DISPATCH_OVERDUE_S = 60.0
+_MAX_MONITOR_ATTRIBUTION = 64
+_MONITOR_ATTRIBUTION_SQL = """
+WITH monitor_names AS (
+    SELECT monitor FROM entities
+    UNION
+    SELECT monitor FROM series
+),
+entity_counts AS (
+    SELECT monitor,
+           COUNT(*) AS entities_total,
+           SUM(CASE WHEN gone_ts IS NULL THEN 1 ELSE 0 END) AS entities_present,
+           SUM(CASE WHEN gone_ts IS NOT NULL THEN 1 ELSE 0 END) AS entities_gone
+    FROM entities
+    GROUP BY monitor
+),
+series_counts AS (
+    SELECT monitor, COUNT(*) AS series_total
+    FROM series
+    GROUP BY monitor
+)
+SELECT names.monitor,
+       COALESCE(entities.entities_total, 0) AS entities_total,
+       COALESCE(entities.entities_present, 0) AS entities_present,
+       COALESCE(entities.entities_gone, 0) AS entities_gone,
+       COALESCE(series.series_total, 0) AS series_total,
+       COUNT(*) OVER () AS monitors_matched
+FROM monitor_names AS names
+LEFT JOIN entity_counts AS entities ON entities.monitor = names.monitor
+LEFT JOIN series_counts AS series ON series.monitor = names.monitor
+ORDER BY series_total DESC, entities_total DESC, names.monitor ASC
+LIMIT ?
+"""
 
 
 def _meta_float(meta: dict, key: str) -> float | None:
@@ -64,6 +96,37 @@ def dispatch_health(
             if daemon_ts is not None and heartbeat_ts is not None else None
         ),
         "problems": problems,
+    }
+
+
+def _monitor_attribution(conn: sqlite3.Connection) -> dict:
+    """Attribute retained catalog rows without touching observation tables.
+
+    Presence is intentionally named rather than promoted to "active": under
+    SA-05, `gone_ts IS NULL` includes sampled processes that are not currently
+    selected for persistence. The extra row detects truncation while keeping
+    materialized output bounded (CL-05/UI-02).
+    """
+    rows = conn.execute(
+        _MONITOR_ATTRIBUTION_SQL, (_MAX_MONITOR_ATTRIBUTION + 1,)
+    ).fetchall()
+    matched = int(rows[0][5]) if rows else 0
+    monitors = [
+        {
+            "monitor": str(row[0]),
+            "entities_total": int(row[1]),
+            "entities_present": int(row[2]),
+            "entities_gone": int(row[3]),
+            "series_total": int(row[4]),
+        }
+        for row in rows[:_MAX_MONITOR_ATTRIBUTION]
+    ]
+    return {
+        "monitors": monitors,
+        "monitors_returned": len(monitors),
+        "monitors_matched": matched,
+        "monitors_truncated": matched > len(monitors),
+        "limits": {"max_monitors": _MAX_MONITOR_ATTRIBUTION},
     }
 
 
@@ -135,6 +198,7 @@ def catalog_report(conn: sqlite3.Connection, *, now: float) -> dict:
         ),
         "last_degradation_ts": degrade_ts,
         "last_degradation_age_s": degrade_age,
+        "monitor_attribution": _monitor_attribution(conn),
     }
 
 
@@ -187,6 +251,7 @@ def inspect(
     last_reap_age_s = catalog["last_reap_age_s"]
     last_degradation_ts = catalog["last_degradation_ts"]
     last_degradation_age_s = catalog["last_degradation_age_s"]
+    monitor_attribution = catalog["monitor_attribution"]
     dispatch = dispatch_health(conn, quiet=quiet, daemon_live=daemon_live)
     return {"dispatch": dispatch,
             "check": check, "integrity": integrity, "checkpoint": checkpoint,
@@ -210,6 +275,7 @@ def inspect(
             "last_reap_age_s": last_reap_age_s,
             "last_degradation_ts": last_degradation_ts,
             "last_degradation_age_s": last_degradation_age_s,
+            "monitor_attribution": monitor_attribution,
             "ok": (integrity == ["ok"] and not any(orphans.values())
                    and not dispatch["problems"])}
 

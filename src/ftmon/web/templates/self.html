@@ -90,6 +90,45 @@
   </tbody>
 </table>
 
+<h3>Retained catalog by monitor</h3>
+{% if panel.catalog.monitor_attribution.monitors %}
+<table class="panel">
+  <caption class="panel-caption">
+    Catalog rows retained for each monitor. Present entities are running or
+    otherwise present; they are not per-monitor persisted-selection pressure.
+  </caption>
+  <thead>
+    <tr>
+      <th scope="col">Monitor</th>
+      <th scope="col">Present entities</th>
+      <th scope="col">Gone entities</th>
+      <th scope="col">Total entities</th>
+      <th scope="col">Total series</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in panel.catalog.monitor_attribution.monitors %}
+    <tr>
+      <th scope="row"><code>{{ item.monitor }}</code></th>
+      <td>{{ item.entities_present }}</td>
+      <td>{{ item.entities_gone }}</td>
+      <td>{{ item.entities_total }}</td>
+      <td>{{ item.series_total }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if panel.catalog.monitor_attribution.monitors_truncated %}
+<p>
+  Showing {{ panel.catalog.monitor_attribution.monitors_returned }} of
+  {{ panel.catalog.monitor_attribution.monitors_matched }} monitors, ordered by
+  retained series and entity count.
+</p>
+{% endif %}
+{% else %}
+<p class="panel-absent">No retained monitor catalog rows.</p>
+{% endif %}
+
 <h2>Where the tick goes</h2>
 {# rejectattr('seconds','none'), not selectattr: a measured 0.0 is a
    reading. Truthiness here would report real zero timings as uncollected,

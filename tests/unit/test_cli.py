@@ -580,6 +580,49 @@ class TestDoctor:
         main(["doctor"])
         assert "Notification desktop: ready" in capsys.readouterr().out
 
+    def test_doctor_attributes_retained_catalog_without_calling_presence_pressure(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """[CL-05] Doctor names per-monitor catalog lifecycle counts precisely."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "server"]) == 0
+        capsys.readouterr()
+
+        from ftmon.paths import get_paths
+        from ftmon.store.db import connect, migrate
+
+        conn = connect(get_paths().db_file)
+        migrate(conn)
+        conn.executemany(
+            "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts) "
+            "VALUES ('chrome',?,1,1,?)",
+            [("live", None), ("gone", 10)],
+        )
+        conn.executemany(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (?,'chrome','live',?,0)",
+            [(1, "cpu"), (2, "rss")],
+        )
+        conn.executemany(
+            "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts) "
+            "VALUES (?,'entity',1,1,NULL)",
+            [(f"m{number:03d}",) for number in range(65)],
+        )
+        conn.executemany(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (?,?,'entity','value',0)",
+            [(100 + number, f"m{number:03d}") for number in range(65)],
+        )
+        conn.commit()
+        conn.close()
+
+        assert main(["doctor"]) == 0
+        output = capsys.readouterr().out
+        assert "Catalog by monitor (retained rows; presence is not persisted pressure):" in output
+        assert "chrome: entities=2 (present=1, gone=1) series=2" in output
+        assert "showing 64 of 66 monitors" in output
+        assert "active persisted" not in output
+
 
 class TestMonitors:
     """[CL-01][CL-03] ftmon monitors subcommand."""

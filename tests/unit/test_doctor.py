@@ -6,7 +6,13 @@ from ftmon.cli import main
 from ftmon.paths import get_paths
 from ftmon.sources.base import SOURCE_DECLS
 from ftmon.store.db import connect, db_size_report, migrate
-from ftmon.store.doctor import backup, inspect
+from ftmon.store.doctor import (
+    _MAX_MONITOR_ATTRIBUTION,
+    _MONITOR_ATTRIBUTION_SQL,
+    backup,
+    catalog_report,
+    inspect,
+)
 from tests.platform_permissions import assert_private
 
 
@@ -83,6 +89,118 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
     assert 0.0 <= report["freelist_fragment_pct"] <= 1.0
     assert report["last_degradation_ts"] is None
     assert report["last_degradation_age_s"] is None
+    assert report["monitor_attribution"] == {
+        "monitors": [],
+        "monitors_returned": 0,
+        "monitors_matched": 0,
+        "monitors_truncated": False,
+        "limits": {"max_monitors": 64},
+    }
+    conn.close()
+
+
+def test_catalog_attribution_reconciles_and_orders_catalog_rows_cl_05_ui_02(tmp_path):
+    """[CL-05][UI-02] Attribution includes either catalog and labels presence honestly."""
+    conn = connect(tmp_path / "ftmon.db")
+    migrate(conn)
+    conn.executemany(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts) "
+        "VALUES (?,?,1,1,?)",
+        [
+            ("alpha", "a1", None), ("alpha", "a2", None), ("alpha", "a3", 10),
+            ("beta", "b1", None), ("beta", "b2", 10),
+            ("entity-only", "e1", 10),
+        ],
+    )
+    series_rows = []
+    sid = 1
+    for monitor, entity, count in (
+        ("series-only", "missing", 7),
+        ("alpha", "a1", 5),
+        ("beta", "b1", 5),
+    ):
+        for metric_no in range(count):
+            series_rows.append((sid, monitor, entity, f"m{metric_no}", 0))
+            sid += 1
+    conn.executemany(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) VALUES (?,?,?,?,?)",
+        series_rows,
+    )
+    conn.commit()
+
+    catalog = catalog_report(conn, now=1000)
+    report = inspect(conn, now=1000)
+    attribution = catalog["monitor_attribution"]
+    assert report["monitor_attribution"] == attribution
+    assert attribution == {
+        "monitors": [
+            {"monitor": "series-only", "entities_total": 0, "entities_present": 0,
+             "entities_gone": 0, "series_total": 7},
+            {"monitor": "alpha", "entities_total": 3, "entities_present": 2,
+             "entities_gone": 1, "series_total": 5},
+            {"monitor": "beta", "entities_total": 2, "entities_present": 1,
+             "entities_gone": 1, "series_total": 5},
+            {"monitor": "entity-only", "entities_total": 1, "entities_present": 0,
+             "entities_gone": 1, "series_total": 0},
+        ],
+        "monitors_returned": 4,
+        "monitors_matched": 4,
+        "monitors_truncated": False,
+        "limits": {"max_monitors": 64},
+    }
+    assert sum(item["entities_total"] for item in attribution["monitors"]) == 6
+    assert sum(item["series_total"] for item in attribution["monitors"]) == 17
+    conn.close()
+
+
+def test_catalog_attribution_query_plan_stays_off_observation_tables_cl_05(tmp_path):
+    """[CL-05] Per-monitor ownership is a catalog query, not an observation scan."""
+    conn = connect(tmp_path / "ftmon.db")
+    migrate(conn)
+    plan = conn.execute(
+        f"EXPLAIN QUERY PLAN {_MONITOR_ATTRIBUTION_SQL}",
+        (_MAX_MONITOR_ATTRIBUTION + 1,),
+    ).fetchall()
+    detail = " ".join(str(column).lower() for row in plan for column in row)
+    assert "entities" in detail
+    assert "series" in detail
+    for forbidden in ("samples", "rollup5m", "rollup1h", "baselines"):
+        assert forbidden not in detail
+    conn.close()
+
+
+def test_catalog_attribution_is_bounded_and_deterministic_at_scale_cl_05(tmp_path):
+    """[CL-05] A large monitor catalog returns the heaviest deterministic 64."""
+    conn = connect(tmp_path / "ftmon.db")
+    migrate(conn)
+    entities = []
+    series = []
+    sid = 1
+    for monitor_no in range(70):
+        monitor = f"m{monitor_no:03d}"
+        entities.append((monitor, "entity", 1, 1, None))
+        for metric_no in range(40):
+            series.append((sid, monitor, "entity", f"metric-{metric_no}", 0))
+            sid += 1
+    conn.executemany(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts) "
+        "VALUES (?,?,?,?,?)",
+        entities,
+    )
+    conn.executemany(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) VALUES (?,?,?,?,?)",
+        series,
+    )
+    conn.commit()
+
+    attribution = catalog_report(conn, now=1000)["monitor_attribution"]
+    assert attribution["monitors_returned"] == 64
+    assert attribution["monitors_matched"] == 70
+    assert attribution["monitors_truncated"] is True
+    assert attribution["limits"] == {"max_monitors": 64}
+    assert [item["monitor"] for item in attribution["monitors"]] == [
+        f"m{monitor_no:03d}" for monitor_no in range(64)
+    ]
     conn.close()
 
 

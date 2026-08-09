@@ -169,6 +169,65 @@ def test_self_panel_states_values_in_text_not_only_meters_ui_09(tmp_path):
     assert "RB-01 target 1.0% of one core" in page
 
 
+def test_self_attributes_retained_catalog_by_monitor_ui_02(tmp_path):
+    """[UI-02][CL-05] Self shows catalog ownership without relabelling presence."""
+    client, paths = _client(tmp_path)
+    conn = connect(paths.db_file)
+    conn.executemany(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts) "
+        "VALUES ('chrome',?,1,1,?)",
+        [("present", None), ("gone", 10)],
+    )
+    conn.executemany(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES (?,'chrome','present',?,0)",
+        [(7001, "cpu"), (7002, "rss")],
+    )
+    conn.commit()
+    conn.close()
+
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    assert "Retained catalog by monitor" in page
+    assert "Present entities" in page and "Gone entities" in page
+    assert "Total entities" in page and "Total series" in page
+    assert "per-monitor persisted-selection pressure" in page
+    assert "<code>chrome</code>" in page
+    row = page[page.index("<code>chrome</code>"):]
+    row = row[:row.index("</tr>")]
+    assert row.count(">1<") == 2
+    assert row.count(">2<") == 2
+
+
+def test_self_catalog_attribution_empty_state_ui_02(tmp_path):
+    """[UI-02] Self says when no retained monitor catalog exists."""
+    client, _paths = _client(tmp_path)
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    assert "No retained monitor catalog rows." in page
+
+
+def test_self_catalog_attribution_reports_truncation_ui_02(tmp_path):
+    """[UI-02][CL-05] The bounded Self table states how many monitors were omitted."""
+    client, paths = _client(tmp_path)
+    conn = connect(paths.db_file)
+    conn.executemany(
+        "INSERT INTO entities(monitor,entity_id,first_seen,last_seen,gone_ts) "
+        "VALUES (?,'entity',1,1,NULL)",
+        [(f"m{number:03d}",) for number in range(65)],
+    )
+    conn.executemany(
+        "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+        "VALUES (?,?,'entity','value',0)",
+        [(9000 + number, f"m{number:03d}") for number in range(65)],
+    )
+    conn.commit()
+    conn.close()
+
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    assert "Showing 64 of\n  65 monitors" in page
+    assert "<code>m063</code>" in page
+    assert "<code>m064</code>" not in page
+
+
 def test_dashboard_stat_leads_with_used_bytes_dm_05(tmp_path):
     """[DM-05][UI-04] The dashboard's headline "Database" stat must be the
     DM-05 used-pages figure, not the file allocation issue #104 found
