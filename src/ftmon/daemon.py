@@ -162,7 +162,7 @@ class DaemonCore:
         # Rollups/retention/baselines (DM-04/05, CA-05) run in-daemon; the
         # lookup is handed to the pipeline so baseline() in rules reads the
         # learned values, invalidated whenever a retention pass writes.
-        self.retention = Retention(self.conn)
+        self.retention = Retention(self.conn, clock=self.clock)
         self.baselines = BaselineLookup(self.conn)
         self._last_retention = -_RETENTION_EVERY_S
         self.pipeline = Pipeline(self.samplers, self.rings, self.stats.count,

@@ -881,3 +881,236 @@ class TestDegradationVisibility:
             assert core.stats.counters["db_degradations"] == 30
         finally:
             core.conn.close()
+
+
+def add_rollup1h(conn, sid, buckets):
+    conn.executemany(
+        "INSERT INTO rollup1h(series_id, bucket, avg, min, max, last, cnt) "
+        "VALUES (?,?,1.0,1.0,1.0,1.0,1)",
+        [(sid, b) for b in buckets],
+    )
+    conn.commit()
+
+
+class _TickingClock:
+    """Monotonic that advances a fixed step per reading (TS-03: tests may not
+    call time.monotonic either). Wall time is unused by the expiry budget."""
+
+    def __init__(self, step=0.0, start=1000.0):
+        self._mono = start
+        self._step = step
+
+    def now(self):
+        return T0
+
+    def monotonic(self):
+        value = self._mono
+        self._mono += self._step
+        return value
+
+    def sleep_until(self, mono_deadline):  # pragma: no cover - never slept in tests
+        raise AssertionError("retention must not sleep")
+
+
+_GONE = 7 * 86400
+
+
+class TestExpireGoneRollup1h:
+    """[MD-09][DM-04] v0.49: hourly rollups of long-gone entities are expired
+    so the catalog stops being pinned by its longest retention window."""
+
+    def _gone_entity_with_rollups(self, conn, *, gone_age, buckets=3, sid=1,
+                                  entity="e", durable=0):
+        add_series(conn, sid, entity=entity, durable=durable)
+        add_entity(conn, entity=entity, gone_ts=T0 - gone_age,
+                   first_seen=T0 - 10 * _GONE, last_seen=T0 - gone_age)
+        add_rollup1h(conn, sid, [T0 - 100 * (i + 1) for i in range(buckets)])
+
+    def test_expires_rollups_of_entity_gone_beyond_window(self, conn):
+        """[MD-09] an entity gone longer than DM-04's process 5-minute window
+        loses its hourly rollups, and the deletion is attributed to it."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1)
+
+        r = Retention(conn)
+        r.run(now=T0)
+
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 0
+        assert r.rollup1h_expired == 3
+        assert r.expired_keys == [("m", "e")]
+
+    def test_live_entity_keeps_hourly_history_at_any_age(self, conn):
+        """[MD-09][DM-04] durability describes the source kind, not liveness:
+        a long-running process keeps its full hourly window, which is the
+        whole reason expiry keys on gone-duration instead of the window."""
+        add_series(conn, 1, durable=0)
+        add_entity(conn, gone_ts=None, first_seen=T0 - 400 * 86400)
+        # Inside the 90 d process window, so normal DM-04 pruning leaves them
+        # alone and the only thing that could remove them is expiry -- all far
+        # older than the 7 d gone threshold, which is the point being tested.
+        add_rollup1h(conn, 1, [T0 - 80 * 86400, T0 - 10 * 86400, T0 - 100])
+
+        r = Retention(conn)
+        r.run(now=T0)
+
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 3
+        assert r.rollup1h_expired == 0
+        assert r.expired_keys == []
+
+    def test_recently_gone_entity_is_not_expired(self, conn):
+        """[MD-09] inside the threshold nothing is expired: below 7 d the
+        entity may still hold rollup5m rows DM-04 separately promises."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE - 3600)
+
+        r = Retention(conn)
+        r.run(now=T0)
+
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 3
+        assert r.rollup1h_expired == 0
+
+    def test_entity_reaps_on_a_later_pass_after_expiry(self, conn):
+        """[MD-09] expiry is not a second removal rule — it lets the existing
+        emptiness test succeed. The entity survives the pass that empties it
+        and is collected by the unchanged reap path afterwards."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1)
+
+        r = Retention(conn)
+        r.run(now=T0)
+        assert conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 1
+        assert r.entities_reaped == 0
+
+        r.run(now=T0 + 60)
+        assert conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM series").fetchone()[0] == 0
+        assert r.entities_reaped == 1
+
+    def test_row_budget_bounds_the_pass_and_progress_resumes(self, conn):
+        """[MD-09] REAP_SCAN bounds entities visited, not work done: one
+        entity owning more rows than the budget is expired across passes
+        rather than making a single pass unbounded."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1, buckets=25)
+
+        r = Retention(conn, expire_rows=10, delete_batch=10)
+        r.run(now=T0)
+        assert r.rollup1h_expired == 10
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 15
+
+        r.run(now=T0 + 60)
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 5
+        r.run(now=T0 + 120)
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 0
+
+    def test_wall_budget_stops_the_pass_between_entities(self, conn):
+        """[MD-09] the elapsed-time bound protects DM-04's 1 s/cycle when the
+        row budget alone would not — a slow disk must not extend the pass."""
+        for i in range(5):
+            self._gone_entity_with_rollups(
+                conn, gone_age=_GONE + 1, buckets=2, sid=i + 1, entity=f"e{i}")
+
+        # Each monotonic() reading jumps a full second, so the deadline is
+        # already blown when the first entity's budget check runs.
+        r = Retention(conn, expire_seconds=0.25, clock=_TickingClock(step=1.0))
+        r.run(now=T0)
+
+        assert len(r.expired_keys) == 1
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 8
+
+    def test_wall_budget_still_makes_progress(self, conn):
+        """[MD-09] a blown budget must not livelock: the check happens after
+        an entity is handled, so every pass removes something."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1, buckets=2)
+
+        r = Retention(conn, expire_seconds=0.0, clock=_TickingClock(step=1.0))
+        r.run(now=T0)
+
+        assert r.rollup1h_expired == 2
+
+    def test_resurrected_entity_is_no_longer_expired(self, conn):
+        """[MD-09] a process that reappears is live from that moment: gone_ts
+        returns to NULL and the candidate query simply stops matching, which
+        is why the predicate keys on gone_ts rather than a derived flag."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1, buckets=4)
+        conn.execute("UPDATE entities SET gone_ts = NULL WHERE entity_id = 'e'")
+        conn.commit()
+
+        r = Retention(conn)
+        r.run(now=T0)
+
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 4
+        assert r.rollup1h_expired == 0
+
+    def test_expiry_is_idempotent_once_drained(self, conn):
+        """[MD-09] repeated passes over an already-expired catalog delete
+        nothing and report nothing."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1, buckets=2)
+
+        r = Retention(conn)
+        r.run(now=T0)
+        for i in range(3):
+            r.run(now=T0 + 60 * (i + 1))
+            assert r.rollup1h_expired == 0
+            assert r.expired_keys == []
+
+    def test_expiry_runs_when_the_reap_cursor_wraps(self, conn):
+        """[MD-09] expiry is its own stage: _reap_catalog returns early once
+        the cursor passes the last entity, and that must not skip expiry."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1, buckets=2)
+        conn.execute("UPDATE meta SET value = 'zzzz' WHERE key = 'reap_cursor_monitor'")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('reap_cursor_monitor','zzzz')")
+        conn.commit()
+
+        r = Retention(conn)
+        r.run(now=T0)
+
+        assert r.rollup1h_expired == 2
+
+    def test_failed_pass_rolls_back_the_deletion(self, conn):
+        """[MD-09][PM-10] expiry destroys production history irreversibly, so
+        it must be inside the pass transaction: a later stage raising leaves
+        every row intact rather than half-deleted."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1, buckets=3)
+
+        r = Retention(conn)
+        r._cap_incident_history = lambda cur: (_ for _ in ()).throw(RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            r.run(now=T0)
+
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 3
+
+    def test_expiry_row_count_is_published_to_meta(self, conn):
+        """[MD-09][CL-05] the deletion is attributable from the database, not
+        only from an in-process counter an operator cannot see."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1, buckets=3)
+
+        Retention(conn).run(now=T0)
+
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'last_expire_rows'").fetchone()
+        assert int(row["value"]) == 3
+
+    def test_row_budget_is_exact_when_it_falls_mid_batch(self, conn):
+        """[MD-09] the budget clamps the final batch rather than overshooting
+        by up to one batch: with a budget that is not a multiple of the batch
+        size, the pass stops exactly on it."""
+        self._gone_entity_with_rollups(conn, gone_age=_GONE + 1, buckets=25)
+
+        r = Retention(conn, expire_rows=15, delete_batch=10)
+        r.run(now=T0)
+
+        assert r.rollup1h_expired == 15
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 10
+
+    def test_entity_enumeration_is_bounded_per_pass(self, conn):
+        """[MD-09] the candidate query is bounded too: a catalog with many
+        long-gone entities is worked through across passes, so one pass never
+        enumerates the whole backlog however cheap each entity looks."""
+        for i in range(5):
+            self._gone_entity_with_rollups(
+                conn, gone_age=_GONE + 1, buckets=2, sid=i + 1, entity=f"e{i}")
+
+        r = Retention(conn, expire_entities=2, clock=_TickingClock(step=0.0))
+        r.run(now=T0)
+
+        assert len(r.expired_keys) == 2
+        assert r.rollup1h_expired == 4
+        assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 6
