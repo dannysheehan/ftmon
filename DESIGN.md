@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.27**. Companion to `SPEC.md` v0.49 — every design element
+Status: **DRAFT v0.28**. Companion to `SPEC.md` v0.50 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -701,6 +701,23 @@ emptiness test, so it is retried on a later pass and completes across passes.
 Resurrection needs no handling either — `gone_ts` returns to NULL and the
 candidate query stops matching, which is why the predicate is written against
 `gone_ts` rather than a derived "dead" flag.
+
+**v0.28 (issue #103): retained catalog attribution stays on the catalog.**
+`store.doctor.catalog_report()` owns one additive `monitor_attribution`
+result shared by doctor and `/self`. A single query unions monitor names from
+`entities` and `series`, aggregates total/present/gone entities and total
+series, orders by series count descending, entity count descending and monitor
+name ascending, and fetches at most 65 rows to return 64 plus explicit
+truncation metadata. Including either catalog preserves attribution when
+doctor is diagnosing an orphan.
+
+The query never reads `samples`, `rollup5m`, `rollup1h` or `baselines`:
+attribution is a catalog question, and making the Self page scan observation
+tables would turn diagnosis into retention-path load. `gone_ts IS NULL` is
+named *present*, not active or persisted. The true current persisted-selection
+set exists in pipeline memory and is published only as the global DM-16
+gauges; reconstructing a per-monitor split, creation rate or reapability is
+outside this read-only change.
 
 ### 10.1 Scheduler (SA-01, SA-07)
 
