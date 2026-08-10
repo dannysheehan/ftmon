@@ -112,6 +112,28 @@ def _seed_self_metrics(paths, **metrics):
     conn.close()
 
 
+def _seed_stage_counters(paths, *, first, second, gap_s=3600.0, base_ts=None):
+    """Two samples per stage counter, so a delta (and a rate) exists.
+
+    A counter needs two points by construction; seeding one would test the
+    not-enough-samples branch instead of the rate.
+    """
+    import time
+
+    base = time.time() - gap_s if base_ts is None else base_ts
+    conn = connect(paths.db_file)
+    for i, metric in enumerate(first, start=8100):
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (?,'self','ftmon',?,1)", (i, metric))
+        conn.execute("INSERT INTO samples(series_id,ts,value) VALUES (?,?,?)",
+                     (i, base, first[metric]))
+        conn.execute("INSERT INTO samples(series_id,ts,value) VALUES (?,?,?)",
+                     (i, base + gap_s, second[metric]))
+    conn.commit()
+    conn.close()
+
+
 def test_self_panel_separates_used_allocated_and_reusable_dm_05(tmp_path):
     """[DM-05][UI-02] The panel an operator reads to judge DM-05 headroom.
 
@@ -138,13 +160,13 @@ def test_self_panel_separates_used_allocated_and_reusable_dm_05(tmp_path):
 def test_self_panel_reports_absent_metrics_as_unavailable_ui_09(tmp_path):
     """[UI-09][RB-02] A metric nobody published is not a measurement of zero.
 
-    The stage timings #106 will add do not exist yet; showing them as 0 ms
+    A stage counter with fewer than two samples yields no rate; showing 0%
     would assert a reading nobody took. Same for catalog pressure before the
     daemon has published it.
     """
     client, _paths = _client(tmp_path)
     page = client.get("/self", headers={"host": "localhost:8420"}).text
-    assert "Per-stage timings are not collected yet" in page
+    assert "Per-stage rates need at least two samples" in page
     assert "no daemon has published it" in page
     # Asserted per row, not by counting occurrences: the catalog section has
     # its own "not available yet", so a page-wide count passes with only two
@@ -1060,14 +1082,20 @@ def test_self_panel_shows_a_measured_zero_stage_timing_rb_02(tmp_path):
     distinction this panel exists to keep once #106 starts publishing.
     """
     client, paths = _client(tmp_path)
-    # Only zeros: a fixture with any truthy timing alongside them renders the
-    # section either way, so it would not isolate the truthiness bug.
-    _seed_self_metrics(paths, commit_s=0.0, reap_s=0.0)
-    page = client.get("/self", headers={"host": "localhost:8420"}).text
-    assert "Per-stage timings are not collected yet" not in page, (
-        "every published timing is zero, which is data, not absence"
+    # A counter that did not advance across the window: the stage genuinely
+    # did no work. Only zero deltas, so a fixture with any non-zero stage
+    # alongside them would render the section either way and not isolate the
+    # truthiness bug.
+    _seed_stage_counters(
+        paths,
+        first={"commit_seconds_total": 5.0, "reap_seconds_total": 2.0},
+        second={"commit_seconds_total": 5.0, "reap_seconds_total": 2.0},
     )
-    assert "0.0 ms" in page, "a measured zero must be shown as measured"
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    assert "Per-stage rates need at least two samples" not in page, (
+        "a counter that did not advance is data, not absence"
+    )
+    assert "0.00%" in page, "a measured zero must be shown as measured"
 
 
 def test_self_panel_links_to_six_and_twenty_four_hour_history_ui_12(tmp_path):

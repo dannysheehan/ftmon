@@ -176,19 +176,28 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("series_persisted", "count", "gauge",
                "Series written this tick, against DM-16's ~270 series worksheet"),
             _m("cycle_s", "s", "gauge", "Last full tick duration"),
-            # Stage breakdown of cycle_s (RB-02, #106). Fixed names: a
-            # per-source or per-monitor dimension would make the DM-16
-            # catalog budget a function of how many monitors are installed.
-            _m("sampling_s", "s", "gauge", "Tick time in SA-06 shared sampling"),
-            _m("pipeline_s", "s", "gauge", "Tick time in projection and rule evaluation"),
-            _m("commit_s", "s", "gauge", "Tick time in the store commit"),
-            _m("actions_outbox_s", "s", "gauge", "Tick time in actions and outbox delivery"),
-            _m("retention_s", "s", "gauge",
-               "Tick time in the retention pass; 0 when it did not run"),
-            _m("prune_s", "s", "gauge",
-               "Retention time in normal pruning (part of retention_s)"),
-            _m("reap_s", "s", "gauge",
-               "Retention time in catalog reap and expiry (part of retention_s)"),
+            # Stage breakdown (RB-02, #106) as cumulative counters, not
+            # last-tick gauges: the self monitor samples every 60 s while
+            # ticks run every 5 s, so a stage running on only some ticks reads
+            # 0 almost always. Utilization is the derived quantity --
+            # delta(counter) / elapsed wall, x100 for percent of one core.
+            # Fixed names: a per-source or per-monitor dimension would make
+            # the DM-16 catalog budget a function of how many monitors are
+            # installed.
+            _m("sampling_seconds_total", "s", "counter",
+               "Cumulative time in SA-06 shared sampling"),
+            _m("pipeline_seconds_total", "s", "counter",
+               "Cumulative time in projection and rule evaluation"),
+            _m("commit_seconds_total", "s", "counter",
+               "Cumulative time in the store commit"),
+            _m("actions_outbox_seconds_total", "s", "counter",
+               "Cumulative time in actions and outbox delivery"),
+            _m("retention_seconds_total", "s", "counter",
+               "Cumulative time in the retention pass"),
+            _m("prune_seconds_total", "s", "counter",
+               "Cumulative pruning time (part of retention_seconds_total)"),
+            _m("reap_seconds_total", "s", "counter",
+               "Cumulative reap and expiry time (part of retention_seconds_total)"),
             _m("tick_overruns", "count", "counter", "Cycles skipped due to overrun (SA-01)"),
             _m("event_queue_depth", "count", "gauge", "Queued undrained events"),
             _m("events_dropped", "count", "counter", "Events dropped on overflow (SA-08)"),

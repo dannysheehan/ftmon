@@ -130,22 +130,35 @@
 {% endif %}
 
 <h2>Where the tick goes</h2>
-{# rejectattr('seconds','none'), not selectattr: a measured 0.0 is a
-   reading. Truthiness here would report real zero timings as uncollected,
-   defeating the absent-vs-zero distinction this panel exists to keep. #}
-{% if panel.stages | rejectattr('seconds', 'none') | list %}
+{# Rates, not the cumulative counters: total seconds since start answer no
+   operator question. rejectattr('pct','none') rather than selectattr, because
+   a measured 0.0% is a reading -- a stage that genuinely did no work in the
+   window -- and truthiness would report it as uncollected. #}
+{% if panel.stages.stages | rejectattr('pct', 'none') | list %}
 <table class="panel">
+  <caption class="panel-caption">
+    Share of one core over the last
+    {{ '%.1f'|format((panel.stages.elapsed_s or panel.stages.window_s) / 3600) }} h,
+    from counter deltas. <code>prune</code> and <code>reap</code> are parts of
+    <code>retention</code>, not separate stages, so they do not add to it.
+  </caption>
   <tbody>
-    {% for stage in panel.stages if stage.seconds is not none %}
+    {% for stage in panel.stages.stages if stage.pct is not none %}
     <tr><th scope="row">{{ stage.name }}</th>
-        <td colspan="2">{{ '%.1f'|format(stage.seconds * 1000) }} ms</td></tr>
+        <td>{{ '%.2f'|format(stage.pct) }}%</td>
+        <td>{{ '%.1f'|format(stage.seconds) }}s</td></tr>
     {% endfor %}
   </tbody>
 </table>
+{% elif panel.stages.reset %}
+<p class="panel-absent">
+  The daemon restarted inside this window, so the counters went backwards and
+  no rate can be derived yet.
+</p>
 {% else %}
 <p class="panel-absent">
-  Per-stage timings are not collected yet. Until they are, the budgets above
-  say whether the daemon is within its limits but not where its time goes.
+  Per-stage rates need at least two samples. Until then, the budgets above say
+  whether the daemon is within its limits but not where its time goes.
 </p>
 {% endif %}
 {% else %}

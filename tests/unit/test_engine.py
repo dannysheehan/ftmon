@@ -745,9 +745,12 @@ def test_locked_tick_reports_only_the_stages_it_ran_pm_10(tmp_path):
     core.samplers["process"].push(grower(0))
     core.conn.execute("PRAGMA busy_timeout = 50")
 
-    # Seed every stage as though a previous tick had been expensive.
-    for name in ("sampling_s", "pipeline_s", "commit_s", "actions_outbox_s",
-                 "retention_s", "prune_s", "reap_s"):
+    # Seed every counter as though earlier ticks had done work.
+    stages = ("sampling_seconds_total", "pipeline_seconds_total",
+              "commit_seconds_total", "actions_outbox_seconds_total",
+              "retention_seconds_total", "prune_seconds_total",
+              "reap_seconds_total")
+    for name in stages:
         setattr(core.stats, name, 9.0)
 
     locker = connect(paths.db_file)
@@ -760,13 +763,16 @@ def test_locked_tick_reports_only_the_stages_it_ran_pm_10(tmp_path):
         locker.close()
 
     assert core.stats.counters.get("sqlite_lock_errors") == 1
-    # The stages after the failed commit never ran on this path.
-    for name in ("actions_outbox_s", "retention_s", "prune_s", "reap_s"):
-        assert getattr(core.stats, name) == 0.0, f"{name} kept a stale value"
+    # A counter records work done. The stages after the failed commit never
+    # ran, so their counters must not advance -- and must not be zeroed
+    # either, since earlier ticks' work is real and cumulative.
+    for name in ("actions_outbox_seconds_total", "retention_seconds_total",
+                 "prune_seconds_total", "reap_seconds_total"):
+        assert getattr(core.stats, name) == 9.0, f"{name} advanced without running"
     # The commit did run, and blocking to the busy_timeout is the most
-    # expensive commit there is -- it must still be reported.
-    assert core.stats.commit_s >= 0.0
-    assert core.stats.sampling_s != 9.0 and core.stats.pipeline_s != 9.0
+    # expensive commit there is -- it must still be counted.
+    assert core.stats.commit_seconds_total >= 9.0
+    assert core.stats.sampling_seconds_total >= 9.0
 
 
 def test_self_sampler_publishes_the_last_completed_tick_rb_02(tmp_path):
@@ -809,7 +815,7 @@ def test_self_sampler_publishes_the_last_completed_tick_rb_02(tmp_path):
     core.samplers["process"].push(grower(0))
 
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
-    assert core.stats.sampling_s > 0.0, "the tick measured its own sampling"
+    assert core.stats.sampling_seconds_total > 0.0, "the tick counted its sampling"
 
     # Second tick: the self monitor is sampled *inside* the loop, so what it
     # persists is what an operator actually reads. Asserting the stored value
@@ -820,8 +826,59 @@ def test_self_sampler_publishes_the_last_completed_tick_rb_02(tmp_path):
 
     stored = core.conn.execute(
         "SELECT s.value FROM series se JOIN samples s ON s.series_id = se.id "
-        "WHERE se.monitor = 'self' AND se.metric = 'sampling_s' "
+        "WHERE se.monitor = 'self' AND se.metric = 'sampling_seconds_total' "
         "ORDER BY s.ts DESC LIMIT 1"
     ).fetchone()
     assert stored is not None, "the self monitor never persisted sampling_s"
     assert stored[0] > 0.0, "stage gauges reached the sampler as zero"
+
+
+def test_stage_counters_accumulate_across_sparse_ticks_rb_02(tmp_path):
+    """[RB-02] Counters, not last-tick gauges, because stages are sparse.
+
+    The self monitor samples every 60 s while ticks run every 5 s, so a
+    last-tick reading of a stage that runs on only some ticks is 0 almost
+    always: measured on the canary as 0 in 10 of 10 samples for sampling and
+    retention, against 6 of 10 for commit, which every tick performs. A
+    counter makes the one-tick publication lag harmless because each sample
+    observes all work completed up to that point.
+    """
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths
+
+    env = {
+        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+        "FTMON_DATA_DIR": str(tmp_path / "data"),
+        "FTMON_STATE_DIR": str(tmp_path / "state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
+    }
+    paths = get_paths(env)
+    paths.ensure()
+    (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
+
+    clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
+
+    class _CostlySampler(ScriptedSampler):
+        def sample(self, now, deadline_mono, options):
+            clock.advance(0.25)
+            return super().sample(now, deadline_mono, options)
+
+    core.samplers["process"] = _CostlySampler()
+    core.samplers["process"].push(grower(0))
+
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)
+    after_first = core.stats.sampling_seconds_total
+    assert after_first >= 0.25
+
+    # A tick with nothing due adds nothing, and must not reset the total --
+    # that is the whole difference from a last-tick gauge.
+    clock.advance(5)
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)
+    assert core.stats.sampling_seconds_total == pytest.approx(after_first)
+
+    # A later tick that does work advances it again.
+    clock.advance(60)
+    core.samplers["process"].push(grower(1))
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)
+    assert core.stats.sampling_seconds_total > after_first

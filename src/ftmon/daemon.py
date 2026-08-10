@@ -668,12 +668,14 @@ class DaemonCore:
         self._sample_db_pages()
         # Per-tick, not cumulative: the operator's question is where *this*
         # tick went, and a monotonically rising total answers a different one.
-        # Only the internal accumulators reset here. The published gauges are
-        # assigned once, at whichever exit this tick takes, because the self
-        # *sampler* runs inside the monitor loop below -- long before the tick
-        # ends -- and therefore reports the last completed tick, exactly as
-        # cycle_s does. Zeroing them at entry made the sampler read the zeros
-        # it had just written and publish 0.000 forever (caught on canary).
+        # Per-tick accumulators, summed into the monotonic counters at
+        # whichever exit this tick takes. The counters themselves are never
+        # reset: the self monitor samples every 60 s while ticks run every
+        # 5 s, so a last-tick reading of a stage that runs on only some ticks
+        # is 0 almost always -- measured on the canary as 0 in 10 of 10
+        # samples for sampling and retention. A counter makes the one-tick
+        # publication lag harmless, because every sample sees all work
+        # completed up to that point.
         self.pipeline.sample_s = 0.0
         self.pipeline.evaluate_s = 0.0
         cache: dict = {}
@@ -753,20 +755,16 @@ class DaemonCore:
             # A commit that blocked to the busy_timeout is the most expensive
             # commit there is; dropping it from the breakdown would hide the
             # very tick an operator is investigating (PM-10). The stages after
-            # the commit never ran on this path, so they publish zero rather
-            # than the previous tick's cost.
-            self.stats.commit_s = self.clock.monotonic() - commit_started
-            self.stats.sampling_s = self.pipeline.sample_s
-            self.stats.pipeline_s = self.pipeline.evaluate_s
-            self.stats.actions_outbox_s = 0.0
-            self.stats.retention_s = 0.0
-            self.stats.prune_s = 0.0
-            self.stats.reap_s = 0.0
+            # the commit never ran on this path, so nothing is added for
+            # them -- a counter records work done, and none was.
+            self.stats.commit_seconds_total += self.clock.monotonic() - commit_started
+            self.stats.sampling_seconds_total += self.pipeline.sample_s
+            self.stats.pipeline_seconds_total += self.pipeline.evaluate_s
             self.stats.cycle_s = self.clock.monotonic() - started
             return
         # AC-02 actions are post-commit so their 30-second timeout cannot
         # extend the daemon's single tick transaction (PM-03).
-        self.stats.commit_s = self.clock.monotonic() - commit_started
+        self.stats.commit_seconds_total += self.clock.monotonic() - commit_started
         outbox_started = self.clock.monotonic()
         self.actions.run_pending(self.executor.drain_actions(), wall)
         # NO-04: delivery strictly after the transition committed.
@@ -774,23 +772,27 @@ class DaemonCore:
             self.outbox.flush(wall)
         else:
             self.dispatch_worker.wake()
-        self.stats.actions_outbox_s = self.clock.monotonic() - outbox_started
+        self.stats.actions_outbox_seconds_total += (
+            self.clock.monotonic() - outbox_started
+        )
+        # Nothing is added on ticks that run no retention: a counter that only
+        # advances when work happens needs no else-branch, which is the second
+        # reason this shape suits a stage running once per twelve ticks.
         if mono - self._last_retention >= _RETENTION_EVERY_S:
             self._last_retention = mono
             retention_started = self.clock.monotonic()
             self._run_retention(wall)
-            self.stats.retention_s = self.clock.monotonic() - retention_started
-            self.stats.prune_s = self.retention.prune_s
-            self.stats.reap_s = self.retention.reap_s
-        else:
-            # Retention runs once a minute inside a 5 s tick, so most ticks do
-            # none. Zero is the honest reading for those; carrying the last
-            # pass forward would make every tick look like a retention tick.
-            self.stats.retention_s = 0.0
-            self.stats.prune_s = 0.0
-            self.stats.reap_s = 0.0
-        self.stats.sampling_s = self.pipeline.sample_s
-        self.stats.pipeline_s = self.pipeline.evaluate_s
+            self.stats.retention_seconds_total += (
+                self.clock.monotonic() - retention_started
+            )
+            # Subcomponents of the retention pass, never additive peers:
+            # summing all seven counters would double-count it.
+            self.stats.prune_seconds_total += self.retention.prune_s
+            self.stats.reap_seconds_total += self.retention.reap_s
+        self.stats.sampling_seconds_total += self.pipeline.sample_s
+        self.stats.pipeline_seconds_total += self.pipeline.evaluate_s
+        # cycle_s stays a last-completed-tick gauge: every tick has one, so
+        # the reading is always meaningful (RB-02 "cycle duration").
         self.stats.cycle_s = self.clock.monotonic() - started
 
     def _run_retention(self, wall: float) -> None:

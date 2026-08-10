@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.31**. Companion to `SPEC.md` v0.50 — every design element
+Status: **DRAFT v0.32**. Companion to `SPEC.md` v0.50 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -414,6 +414,30 @@ Effect = NotifyEffect(Notification) | ActionEffect(action: str, env: Mapping[str
        | RecordEffect(kind: str, detail: Mapping) | PersistEffect(...)   # tagged union via dataclasses
 ```
 
+**v0.32 (issue #106): stage costs are cumulative counters, not last-tick
+gauges.** v0.31's gauges were correct per tick and useless in practice. The
+self monitor samples every 60 s while ticks run every 5 s, and the self
+*sampler* runs inside the monitor loop, so each sample reports the previous
+tick. That works only for stages every tick performs. Measured on the canary
+over ten samples: `commit` and `actions_outbox` read non-zero six times, while
+`sampling`, `pipeline` and `retention` read zero **ten** times out of ten —
+retention runs once per twelve ticks, and the tick before a self-due tick
+rarely has any monitor due.
+
+The shape, not the measurement, was wrong. `*_seconds_total` counters make
+utilization the derived quantity it always was: `delta(counter) / elapsed
+wall`, ×100 for percent of one core. That survives sparse stages, tolerates a
+missed sample, needs no read-and-reset state, and makes the one-tick lag
+harmless because every sample observes all work completed so far. Restarts are
+handled by the existing counter-reset semantics — a negative delta means the
+daemon restarted and is reported as unavailable rather than as a spike.
+
+`cycle_s` stays a last-completed-tick gauge: every tick has one, so the
+reading is always meaningful. `prune_seconds_total` and `reap_seconds_total`
+remain **subcomponents** of `retention_seconds_total`, never additive peers.
+`/self` renders rates over a stated window rather than the cumulative totals,
+which answer no operator question on their own.
+
 **v0.30 → v0.31 (issue #106): the tick breakdown is seven fixed gauges.**
 DESIGN previously described `sampler_s{per-source attr}`, which was never
 implemented. That *representation* is incompatible with the current metric
@@ -823,8 +847,9 @@ FTMON deliberately does not run full `VACUUM` while the daemon is live (v0.44, i
 Metrics: `cpu_pct, rss_bytes, db_bytes, db_allocated_bytes, db_used_bytes,
 db_freelist_bytes, db_headroom_bytes, entities_persisted, series_persisted,
 cycle_s,
-sampling_s, pipeline_s, commit_s, actions_outbox_s, retention_s, prune_s,
-reap_s, tick_overruns, event_queue_depth, events_dropped,
+sampling_seconds_total, pipeline_seconds_total, commit_seconds_total,
+actions_outbox_seconds_total, retention_seconds_total, prune_seconds_total,
+reap_seconds_total, tick_overruns, event_queue_depth, events_dropped,
 events_unstored, ring_mem_bytes, source_activity_age_s, eval_unknown_total,
 samples_rejected, external_checks_skipped, external_check_failures{category
 attr}, external_perfdata_rejected{category attr}`. Fed from a `SelfStats`

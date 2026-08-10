@@ -230,8 +230,9 @@ class TestStageTimingNamespace:
     """
 
     _STAGES = (
-        "sampling_s", "pipeline_s", "commit_s",
-        "actions_outbox_s", "retention_s", "prune_s", "reap_s",
+        "sampling_seconds_total", "pipeline_seconds_total", "commit_seconds_total",
+        "actions_outbox_seconds_total", "retention_seconds_total",
+        "prune_seconds_total", "reap_seconds_total",
     )
 
     def _metrics(self, stats):
