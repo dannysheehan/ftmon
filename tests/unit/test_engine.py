@@ -664,6 +664,44 @@ class TestPipelineStageTiming:
 
         assert pipe.sample_s == pytest.approx(1.0), "second call reuses the snapshot"
 
+    def test_non_process_sources_are_counted_too(self):
+        """[SA-06][RB-02] `sampling_s` covers every shared sample, not only
+        the process source.
+
+        Counting only `process` would push disk, net, unit and self sampling
+        into `pipeline_s` — replacing one mislabelled gauge with another
+        (review of PR #126). External check *preparation* runs before the
+        monitor loop and is outside both.
+        """
+        diskdef = """
+schema = 1
+[monitor]
+name = "diskwatch"
+description = "non-process sampler timing fixture"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "disk"
+[[rule]]
+id = "full"
+when = 'used_pct > 99'
+severity = "warning"
+message = "{entity} full"
+"""
+        clock = FakeClock()
+        sampler = self._SlowSampler(clock, 1.5)
+        sampler.push(("/", {}, {"used_pct": 10.0}))
+        rings = RingStore()
+        mdef = load_text(diskdef)
+        rings.configure(mdef.name, mdef.interval_s, {m: w for m, w in mdef.windows})
+        pipe = Pipeline({"disk": sampler}, rings, lambda n: None,
+                        gone_grace_s=300.0, clock=clock)
+
+        pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), {})
+
+        assert pipe.sample_s == pytest.approx(1.5)
+
     def test_accumulates_across_monitors_within_a_tick(self):
         """[RB-02] one tick runs many monitors; the gauge is about the tick."""
         clock = FakeClock()
@@ -675,3 +713,55 @@ class TestPipelineStageTiming:
         pipe.run_monitor(mdef, 1_700_000_060.0, 10**9, NullWriter(), {})
 
         assert pipe.sample_s == pytest.approx(1.0)
+
+
+def test_locked_tick_reports_only_the_stages_it_ran_pm_10(tmp_path):
+    """[PM-10][RB-02] The lock path must not publish a previous tick's stages.
+
+    It returns before actions, outbox and retention run. Zeroing at each
+    stage instead of at tick entry left those four gauges describing the last
+    successful tick, so the breakdown of the tick an operator is actually
+    investigating would be fiction (review of PR #126).
+    """
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths
+    from ftmon.store.db import connect
+
+    env = {
+        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+        "FTMON_DATA_DIR": str(tmp_path / "data"),
+        "FTMON_STATE_DIR": str(tmp_path / "state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
+    }
+    paths = get_paths(env)
+    paths.ensure()
+    (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
+
+    clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
+    core.samplers["process"] = ScriptedSampler()
+    core.samplers["process"].push(grower(0))
+    core.conn.execute("PRAGMA busy_timeout = 50")
+
+    # Seed every stage as though a previous tick had been expensive.
+    for name in ("sampling_s", "pipeline_s", "commit_s", "actions_outbox_s",
+                 "retention_s", "prune_s", "reap_s"):
+        setattr(core.stats, name, 9.0)
+
+    locker = connect(paths.db_file)
+    locker.execute("PRAGMA busy_timeout = 0")
+    locker.execute("BEGIN IMMEDIATE")
+    try:
+        core.on_tick(clock.now(), clock.monotonic(), 0.0)
+    finally:
+        locker.rollback()
+        locker.close()
+
+    assert core.stats.counters.get("sqlite_lock_errors") == 1
+    # The stages after the failed commit never ran on this path.
+    for name in ("actions_outbox_s", "retention_s", "prune_s", "reap_s"):
+        assert getattr(core.stats, name) == 0.0, f"{name} kept a stale value"
+    # The commit did run, and blocking to the busy_timeout is the most
+    # expensive commit there is -- it must still be reported.
+    assert core.stats.commit_s >= 0.0
+    assert core.stats.sampling_s != 9.0 and core.stats.pipeline_s != 9.0

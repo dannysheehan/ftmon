@@ -51,7 +51,7 @@ class SelfStats:
     # external_check_failures is a summed total -- the self entity must stay a
     # bounded namespace against DM-16. Seconds, from the injected monotonic
     # clock only (TS-03).
-    sample_process_s: float = 0.0
+    sampling_s: float = 0.0
     pipeline_s: float = 0.0
     commit_s: float = 0.0
     actions_outbox_s: float = 0.0
@@ -106,7 +106,14 @@ class SelfSampler:
             # commit or retention explains it -- the question #107's scope
             # turns on, and one the disposable spike profiler could only
             # answer against a clone.
-            "sample_process_s": s.sample_process_s,
+            #
+            # sampling_s covers *every* SA-06 shared sample, not just the
+            # process source: restricting it to `process` would push disk,
+            # net, unit and self sampling into pipeline_s, replacing one
+            # mislabelled gauge with another. External check *preparation*
+            # runs before the monitor loop and is outside both -- it is
+            # bounded separately by EC-02 deadlines.
+            "sampling_s": s.sampling_s,
             "pipeline_s": s.pipeline_s,
             "commit_s": s.commit_s,
             "actions_outbox_s": s.actions_outbox_s,

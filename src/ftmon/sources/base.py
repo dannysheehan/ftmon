@@ -176,6 +176,19 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("series_persisted", "count", "gauge",
                "Series written this tick, against DM-16's ~270 series worksheet"),
             _m("cycle_s", "s", "gauge", "Last full tick duration"),
+            # Stage breakdown of cycle_s (RB-02, #106). Fixed names: a
+            # per-source or per-monitor dimension would make the DM-16
+            # catalog budget a function of how many monitors are installed.
+            _m("sampling_s", "s", "gauge", "Tick time in SA-06 shared sampling"),
+            _m("pipeline_s", "s", "gauge", "Tick time in projection and rule evaluation"),
+            _m("commit_s", "s", "gauge", "Tick time in the store commit"),
+            _m("actions_outbox_s", "s", "gauge", "Tick time in actions and outbox delivery"),
+            _m("retention_s", "s", "gauge",
+               "Tick time in the retention pass; 0 when it did not run"),
+            _m("prune_s", "s", "gauge",
+               "Retention time in normal pruning (part of retention_s)"),
+            _m("reap_s", "s", "gauge",
+               "Retention time in catalog reap and expiry (part of retention_s)"),
             _m("tick_overruns", "count", "counter", "Cycles skipped due to overrun (SA-01)"),
             _m("event_queue_depth", "count", "gauge", "Queued undrained events"),
             _m("events_dropped", "count", "counter", "Events dropped on overflow (SA-08)"),

@@ -668,8 +668,18 @@ class DaemonCore:
         self._sample_db_pages()
         # Per-tick, not cumulative: the operator's question is where *this*
         # tick went, and a monotonically rising total answers a different one.
+        # Zeroed at entry rather than at each stage so that any path leaving
+        # the tick early -- the PM-10 lock return below -- reports zero for
+        # the stages it never reached instead of the previous tick's cost.
         self.pipeline.sample_s = 0.0
         self.pipeline.evaluate_s = 0.0
+        self.stats.sampling_s = 0.0
+        self.stats.pipeline_s = 0.0
+        self.stats.commit_s = 0.0
+        self.stats.actions_outbox_s = 0.0
+        self.stats.retention_s = 0.0
+        self.stats.prune_s = 0.0
+        self.stats.reap_s = 0.0
         cache: dict = {}
         outcomes: list[EvalOutcome] = []
         due_names = self.due.due(mono, lambda _n: self._overrun())
@@ -746,9 +756,10 @@ class DaemonCore:
             self.executor.drain_actions()  # must not fire for uncommitted work
             # A commit that blocked to the busy_timeout is the most expensive
             # commit there is; dropping it from the breakdown would hide the
-            # very tick an operator is investigating (PM-10).
+            # very tick an operator is investigating (PM-10). The stages after
+            # the commit never ran on this path and keep their entry zeros.
             self.stats.commit_s = self.clock.monotonic() - commit_started
-            self.stats.sample_process_s = self.pipeline.sample_s
+            self.stats.sampling_s = self.pipeline.sample_s
             self.stats.pipeline_s = self.pipeline.evaluate_s
             self.stats.cycle_s = self.clock.monotonic() - started
             return
@@ -770,14 +781,10 @@ class DaemonCore:
             self.stats.retention_s = self.clock.monotonic() - retention_started
             self.stats.prune_s = self.retention.prune_s
             self.stats.reap_s = self.retention.reap_s
-        else:
-            # Retention runs once a minute inside a 5 s tick, so most ticks do
-            # none. Zero is the honest reading for those; carrying the last
-            # pass forward would make every tick look like a retention tick.
-            self.stats.retention_s = 0.0
-            self.stats.prune_s = 0.0
-            self.stats.reap_s = 0.0
-        self.stats.sample_process_s = self.pipeline.sample_s
+        # No else-branch: retention runs once a minute inside a 5 s tick, so
+        # most ticks do none and keep their entry zeros. Carrying the last
+        # pass forward would make every tick look like a retention tick.
+        self.stats.sampling_s = self.pipeline.sample_s
         self.stats.pipeline_s = self.pipeline.evaluate_s
         self.stats.cycle_s = self.clock.monotonic() - started
 
