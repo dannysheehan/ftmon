@@ -110,12 +110,12 @@ class UnitSampler:
     def _out_of_window_entity(self, item: Mapping) -> EntitySample | None:
         if "unit" in item:
             name = str(item["unit"])
-            return EntitySample(entity_id=f"unit:{name}",
+            return EntitySample(synthetic=True, entity_id=f"unit:{name}",
                                 attrs={"unit": name, "kind": "unit"},
                                 metrics={"present": 1.0})
         if "process" in item:
             pat = str(item["process"])
-            return EntitySample(entity_id=f"proc:{pat}",
+            return EntitySample(synthetic=True, entity_id=f"proc:{pat}",
                                 attrs={"unit": pat, "kind": "process"},
                                 metrics={"present": 1.0})
         return None
@@ -131,7 +131,7 @@ class UnitSampler:
             metrics["restarts"] = float(int(props.get("NRestarts", "")))
         except ValueError:
             pass  # older systemd / non-service units: no counter, not zero
-        return EntitySample(
+        return EntitySample(synthetic=True,
             entity_id=f"unit:{unit}",
             attrs={"unit": unit, "kind": "unit"},
             metrics=metrics,
@@ -150,7 +150,7 @@ class UnitSampler:
                     break
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        return EntitySample(
+        return EntitySample(synthetic=True,
             entity_id=f"proc:{pattern}",
             attrs={"unit": pattern, "kind": "process"},
             metrics={"present": present},

@@ -532,3 +532,80 @@ def test_daemon_skips_disabled_monitors_md_05(tmp_path):
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
     assert core.monitors == {}
     assert core.due.names() == []
+
+
+WATCHDEF = """
+schema = 1
+[monitor]
+name = "service"
+description = "watchlist durability fixture"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "process"
+[[rule]]
+id = "down"
+when = 'cpu_pct > 999'
+severity = "warning"
+message = "{entity} down"
+"""
+
+
+class DurabilityWriter(NullWriter):
+    """NullWriter records ids only; durability is the point here."""
+
+    def __init__(self):
+        super().__init__()
+        self.durability: dict[str, bool] = {}
+
+    def series_id(self, monitor, entity_id, metric, durable):
+        self.durability[entity_id] = durable
+        return super().series_id(monitor, entity_id, metric, durable)
+
+
+class SyntheticScriptedSampler(ScriptedSampler):
+    """Scripts entities with a per-entity synthetic flag."""
+
+    def sample(self, now, deadline_mono, options):
+        ents = self.script[min(self.calls, len(self.script) - 1)]
+        self.calls += 1
+        return Snapshot(
+            source="process", ts=now,
+            entities=tuple(
+                EntitySample(entity_id=e, attrs=a, metrics=m, synthetic=s)
+                for e, a, m, s in ents
+            ),
+        )
+
+
+class TestEntityLevelDurability:
+    """[DM-04][CA-08] Durability is an entity decision, not a monitor one.
+
+    `_DURABLE_SOURCES` assigned one value per monitor, so `net`'s watchlist
+    listeners were stored non-durable alongside its discovered `totals`.
+    Adding `net`/`unit` to that set would have mislabelled `totals` instead;
+    the synthetic flag lets one monitor hold both kinds correctly.
+    """
+
+    def _run(self, entities):
+        mdef = load_text(WATCHDEF)
+        sampler = SyntheticScriptedSampler()
+        sampler.push(*entities)
+        rings = RingStore()
+        rings.configure(mdef.name, mdef.interval_s, {})
+        pipe = Pipeline({"process": sampler}, rings, lambda n: None, gone_grace_s=300.0)
+        writer = DurabilityWriter()
+        pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, writer, {})
+        return writer.durability
+
+    def test_synthetic_entity_is_durable_on_a_non_durable_source(self):
+        got = self._run([("tcp:22", {}, {"cpu_pct": 1.0}, True)])
+        assert got == {"tcp:22": True}
+
+    def test_discovered_entity_on_the_same_monitor_stays_non_durable(self):
+        got = self._run([
+            ("tcp:22", {}, {"cpu_pct": 1.0}, True),
+            ("totals", {}, {"cpu_pct": 1.0}, False),
+        ])
+        assert got == {"tcp:22": True, "totals": False}

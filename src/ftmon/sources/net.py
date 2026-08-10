@@ -79,6 +79,9 @@ class NetSampler:
                 entity_id=f"{proto}:{port}",
                 attrs={"proto": proto, "port": str(port)},
                 metrics={"present": 1.0 if up else 0.0},
+                # DM-04 durable window; `totals` above is discovered, not
+                # synthesized, so it must not inherit it.
+                synthetic=True,
             ))
 
         return Snapshot(source=self.decl.name, ts=now, entities=tuple(entities))

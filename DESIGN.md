@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.28**. Companion to `SPEC.md` v0.50 — every design element
+Status: **DRAFT v0.29**. Companion to `SPEC.md` v0.50 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -365,6 +365,7 @@ class TriBool(Enum): TRUE; FALSE; UNKNOWN          # expr/tribool.py, re-exporte
 
 @dataclass(frozen=True) class EntitySample:
     entity_id: str; attrs: Mapping[str, str]; metrics: Mapping[str, float]
+    synthetic: bool = False            # v0.29: CA-08 watchlist provenance
 @dataclass(frozen=True) class Snapshot:            # SA-06: one ts for all entities
     source: str; ts: float; entities: tuple[EntitySample, ...]
 
@@ -389,6 +390,26 @@ class TriBool(Enum): TRUE; FALSE; UNKNOWN          # expr/tribool.py, re-exporte
 Effect = NotifyEffect(Notification) | ActionEffect(action: str, env: Mapping[str,str]) \
        | RecordEffect(kind: str, detail: Mapping) | PersistEffect(...)   # tagged union via dataclasses
 ```
+
+**v0.29 (issue #119): `EntitySample.synthetic` — sources report provenance,
+the pipeline owns retention policy.** DM-04 grants the durable window to
+"system, disk, self, **and watchlist-synthetic entities**", but durability was
+derived per monitor from `_DURABLE_SOURCES`, so `unit` and `net` watchlist
+entities were stored non-durable and given the process windows. The last
+clause of DM-04 cannot be expressed per monitor: `net` emits a synthetic
+listener watchlist beside a discovered `totals`, so one monitor holds both
+kinds and a blanket source add would simply mislabel `totals` instead.
+
+The field carries a *fact* the source alone knows — this entity was
+synthesized from a validated `source_options.watchlist` entry — and never a
+retention decision. `Pipeline._persist` applies the DM-04 policy
+(`monitor_durable or ent.synthetic`), so a source can never widen its own
+retention and the policy stays in one place. Defaulted `False`, so every
+discovered entity and every existing source is unaffected.
+
+This changes the frozen interface, not product semantics: DM-04 already
+required the behaviour, which is why DESIGN remains companion to SPEC v0.50
+rather than forcing a SPEC bump.
 
 ---
 
