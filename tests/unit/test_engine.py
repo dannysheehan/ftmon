@@ -3,6 +3,8 @@ rings, and the sampling pipeline driven by a real loaded definition."""
 
 from __future__ import annotations
 
+import importlib.resources
+
 import pytest
 
 from ftmon.clock import FakeClock
@@ -765,3 +767,61 @@ def test_locked_tick_reports_only_the_stages_it_ran_pm_10(tmp_path):
     # expensive commit there is -- it must still be reported.
     assert core.stats.commit_s >= 0.0
     assert core.stats.sampling_s != 9.0 and core.stats.pipeline_s != 9.0
+
+
+def test_self_sampler_publishes_the_last_completed_tick_rb_02(tmp_path):
+    """[RB-02] Stage gauges must reach the self sampler, not arrive as zeros.
+
+    The sampler runs inside the monitor loop, so it reports the last
+    *completed* tick -- the same contract as `cycle_s`, whose declaration
+    says "last full tick duration". An earlier revision zeroed the gauges at
+    tick entry to keep the PM-10 path honest; that also wiped them before the
+    sampler ran, so every stage published 0.000 forever. Unit tests passed and
+    the canary caught it, which is why this asserts the published value rather
+    than the field.
+    """
+    from ftmon.daemon import DaemonCore
+    from ftmon.paths import get_paths
+
+    env = {
+        "FTMON_CONFIG_DIR": str(tmp_path / "cfg"),
+        "FTMON_DATA_DIR": str(tmp_path / "data"),
+        "FTMON_STATE_DIR": str(tmp_path / "state"),
+        "FTMON_RUNTIME_DIR": str(tmp_path / "run"),
+    }
+    paths = get_paths(env)
+    paths.ensure()
+    (paths.monitors_dir / "leak.toml").write_text(LEAKDEF)
+    shipped = (
+        importlib.resources.files("ftmon.definitions") / "builtins" / "self.toml"
+    ).read_text(encoding="utf-8")
+    (paths.monitors_dir / "self.toml").write_text(shipped, encoding="utf-8")
+
+    clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+    core = DaemonCore(paths=paths, clock=clock, platform="linux")
+
+    class _CostlySampler(ScriptedSampler):
+        def sample(self, now, deadline_mono, options):
+            clock.advance(0.25)          # charge the injected clock
+            return super().sample(now, deadline_mono, options)
+
+    core.samplers["process"] = _CostlySampler()
+    core.samplers["process"].push(grower(0))
+
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)
+    assert core.stats.sampling_s > 0.0, "the tick measured its own sampling"
+
+    # Second tick: the self monitor is sampled *inside* the loop, so what it
+    # persists is what an operator actually reads. Asserting the stored value
+    # rather than the field is the whole point -- the field was always right.
+    clock.advance(60)
+    core.samplers["process"].push(grower(1))
+    core.on_tick(clock.now(), clock.monotonic(), 0.0)
+
+    stored = core.conn.execute(
+        "SELECT s.value FROM series se JOIN samples s ON s.series_id = se.id "
+        "WHERE se.monitor = 'self' AND se.metric = 'sampling_s' "
+        "ORDER BY s.ts DESC LIMIT 1"
+    ).fetchone()
+    assert stored is not None, "the self monitor never persisted sampling_s"
+    assert stored[0] > 0.0, "stage gauges reached the sampler as zero"
