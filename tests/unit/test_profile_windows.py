@@ -248,7 +248,7 @@ def _self_entity(cpu_pct: float) -> tuple[str, dict, dict]:
 class TestSelfWindowsProfile:
     def test_cpu_budget_recalibrated_and_platforms_narrowed(self):
         """[RB-01][RB-02][PL-01] Recalibrated for measured Windows overhead
-        (see WIN-BACKLOG.md); platforms narrowed to windows-only so this looser
+        (see docs/WIN-BACKLOG.md); platforms narrowed to windows-only so this looser
         threshold can never load on Linux/macOS, where RB-01's 1.0 default
         still applies via the generic builtins/self.toml."""
         parsed = tomllib.loads((WINDOWS_PROFILE / "self.toml").read_text(encoding="utf-8"))

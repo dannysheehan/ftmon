@@ -206,7 +206,7 @@ class TestInit:
             platforms = tuple(parsed["monitor"]["platforms"])
             # self.toml is windows-only-narrowed here too, unlike the generic
             # cross-platform copy: its cpu_budget_pct is recalibrated for
-            # measured Windows overhead (WIN-BACKLOG.md) and must never load
+            # measured Windows overhead (docs/WIN-BACKLOG.md) and must never load
             # elsewhere with that loosened threshold.
             assert platforms == ("windows",), f"{name}: platforms={platforms}"
 

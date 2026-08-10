@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.29**. Companion to `SPEC.md` v0.50 — every design element
+Status: **DRAFT v0.30**. Companion to `SPEC.md` v0.50 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -62,7 +62,7 @@ flowchart TB
 PROJECTS/ftmon/                  # monorepo root (git)
 ├── .ai/skills/                  # canonical portable contribution skills (AS-*)
 │   └── ftmon-add-extra-monitor/{SKILL.md,agents/openai.yaml}
-├── SPEC.md  DESIGN.md  TESTPLAN.md(next)  LICENSE(MIT)
+├── SPEC.md  DESIGN.md  LICENSE   # LICENSE is MIT
 ├── pyproject.toml  uv.lock      # single Python project at repo root
 ├── design/
 │   └── builtins/*.toml          # normative built-in defs; copied into package data by WP
@@ -70,60 +70,83 @@ PROJECTS/ftmon/                  # monorepo root (git)
 │   ├── _template/
 │   └── <recipe>/{README.md,recipe.toml,checks.toml.example,monitor.toml,fixtures/}
 ├── exchange/                    # static templates/assets; never generated output
-├── tools/build_exchange.py      # deterministic, inert catalogue publisher
 ├── src/ftmon/                   # the package (SPEC §3)
+│   ├── __main__.py              # `python -m ftmon` entry; delegates to cli
 │   ├── paths.py                 # FS-01: all filesystem paths (platformdirs)
+│   ├── config.py                # config.toml load/validate/defaults (FS-02)
 │   ├── clock.py                 # TS-03: Clock protocol + SystemClock + ControlledClock
 │   ├── model.py                 # §4 core dataclasses (FROZEN)
 │   ├── expr/                    # EX-04: stdlib-only, imports nothing from ftmon.*
-│   │   ├── parse.py  eval.py  functions.py  tribool.py
+│   │   └── parse.py  ir.py  eval.py  functions.py  tribool.py
 │   ├── definitions/
 │   │   ├── schema.py            # MD-01 validator (single source of truth)
 │   │   ├── loader.py            # TOML → MonitorDef, normalization, topo-sort (MD-08)
+│   │   ├── manage.py            # MD-05 approve/enable/disable/rescan operations
 │   │   └── builtins/*.toml      # package data, installed by `ftmon init` (FS-02)
 │   ├── sources/
 │   │   ├── base.py              # Sampler/EventSource protocols + SourceDecl (PL-05)
-│   │   ├── process.py disk.py system.py net.py unit.py selfsrc.py
-│   │   ├── journald.py          # linux EventSource
+│   │   ├── process.py disk.py system.py net.py unit.py
+│   │   ├── journald.py oslog.py win_evtlog.py   # per-platform EventSource (PL-01)
+│   │   ├── repeats.py           # DM-08 repeat collapsing for event sources
 │   │   └── fixtures.py          # TS-04 scenario-driven fakes (ship in prod pkg: PL-04)
 │   ├── checks/
 │   │   ├── registry.py          # administrator argv authority + reload (EC-01/06)
+│   │   ├── trust.py             # EC-01/SE-07 executable trust predicate
 │   │   ├── runner.py            # no-shell process-group deadline (EC-02)
 │   │   ├── sampler.py           # fair alias execution + declared projection (EC-04/08)
+│   │   ├── model.py  text.py    # check result types + bounded output handling
 │   │   └── nagios.py jsoncheck.py # strict output adapters (EC-03/04/10)
 │   ├── engine/
 │   │   ├── scheduler.py         # SA-01 tick loop
 │   │   ├── pipeline.py          # SA-06 source→snapshot→project→derive→rules
+│   │   ├── context.py           # per-entity evaluation context handed to expr
 │   │   ├── rings.py             # CA-04 ring buffers
-│   │   ├── baseline.py          # CA-05
 │   │   ├── incidents.py         # IN-06 pure state machine (FROZEN)
+│   │   ├── episodes.py          # IN-* episode grouping over incident transitions
+│   │   ├── events.py            # DM-07/08 event ingest filtering
+│   │   ├── render.py            # message/template rendering for notifications
+│   │   ├── actions.py           # AC-* action execution
 │   │   └── effects.py           # effect executor: outbox, actions (AC-*), notify dispatch
 │   ├── store/
 │   │   ├── db.py                # connection factory, pragmas, migrations runner
-│   │   ├── migrations/0001_init.sql …
+│   │   ├── migrations/*.sql     # numbered, gated by PRAGMA user_version
 │   │   ├── writer.py            # daemon-side batched writes
 │   │   ├── query.py             # DM-06 tier-transparent reads (shared by CLI/MCP/web)
-│   │   ├── retention.py         # DM-04/05 rollups, prune, vacuum
-│   │   └── outbox.py            # NO-04
-│   ├── notify/                   # adapters + per-channel delivery state
-│   │   ├── base.py desktop.py file.py ntfy.py webhook.py smtp.py
-│   │   └── dispatch.py           # retry/classification, no incident policy
+│   │   ├── retention.py         # DM-04/05 rollups, prune, vacuum, and CA-05 baselines
+│   │   ├── doctor.py            # CL-05 diagnostics + VC-03 backup
+│   │   └── outbox.py            # NO-04 durable queue + DispatchWorker (PM-12)
+│   ├── notify/                  # adapters + per-channel delivery state
+│   │   ├── base.py file.py ntfy.py webhook.py smtp.py http.py
+│   │   └── desktop.py osascript.py toast.py   # per-platform desktop (PL-01)
+│   ├── recipes/
+│   │   └── catalogue.py install.py            # XR-* curated recipe listing/install
+│   ├── web/                     # §14: operational + isolated demo factories
+│   │   └── app.py demo_app.py   # operational app; isolated synthetic demo app
 │   ├── daemon.py                # composition root; owns the only bulk-write connection
 │   ├── glance.py                # UI-04/14/17/18 read-side policy shared by web + MCP
+│   ├── selfmon.py               # RB-02 self metrics + the `self` SelfSampler source
 │   ├── mcp_server.py            # §13
-│   ├── web/                     # §14: operational + isolated demo factories
 │   ├── demo.py                  # seeded synthetic DB builder (UI-15/16)
 │   ├── systemd/                 # user unit + hardened server system unit
 │   ├── launchd/                 # macOS LaunchAgent templates (PL-01)
 │   ├── windows/                 # Task Scheduler helpers (PL-01 / #94)
-│   ├── selfmon.py               # RB-02 self metrics collection
+│   ├── deploy/                  # deployment templates
+│   ├── scenarios/               # TS-04 fixture scenarios
 │   └── cli.py                   # §15 argparse tree, every subcommand
 ├── packaging/windows/           # PyInstaller spec, WiX v7 MSI, pins (#95)
 ├── tests/                       # §16; mirrors src layout + e2e/ + scenarios/
 ├── tools/gen_reqindex.py        # TS-01 traceability index generator
+├── tools/build_exchange.py      # deterministic, inert catalogue publisher
 ├── tools/windows/               # freeze/MSI/sign/smoke helpers (#95)
-└── docs/definitions.md install.md manual.md
+└── docs/                        # definitions.md install.md manual.md + records (DO-09)
 ```
+
+Every `src/ftmon/**/*.py` module appears above, excluding `__init__.py`. A
+lint test asserts both directions — no path here that does not exist, and no
+shipped module missing from here — because this map is what contributors and
+agents are told to consult before changing code, so silent drift misroutes
+work (issue #121).
+
 
 Windows service-wrapper rationale: Task Scheduler logon tasks are registered
 by the operator-facing `Install-FTMONTasks.ps1` after `ftmon init`, never by
@@ -889,9 +912,17 @@ telling us it is busy" is how PM-10 and PM-12 drift apart later.
 
 Liveness is durable because a Python thread's death is invisible to both the
 daemon loop and any later `wake()`. The worker writes `notify_dispatch_state`
-(`starting`/`running`/`recovering`/`stopped`/`dead`), `notify_dispatch_heartbeat_ts`,
+(`DISPATCH_STATES` in `store/outbox.py`: `running`/`recovering`/`stopped`/
+`dead`), `notify_dispatch_heartbeat_ts`,
 and the last error category/timestamp to `meta` on its own connection. The
-heartbeat is throttled to 30 s and forced on state changes and non-empty
+There is deliberately no `starting` state: the row does not exist until the
+worker has connected and published, and `doctor` reads that absence as
+`unknown` (v0.30, issue #121 — DESIGN previously listed a `starting` state the
+implementation never wrote). `unknown` and `stopped` are treated alike by
+`dispatch_health`, so a state that only ever appeared between thread start and
+first write would have no operational consumer.
+
+The heartbeat is throttled to 30 s and forced on state changes and non-empty
 flushes: an unconditional per-poll write would put a 1 Hz writer against
 `commit_tick`'s `BEGIN IMMEDIATE`, manufacturing the very PM-10 contention this
 section exists to survive. The daemon records `notify_dispatch_mode`
@@ -1322,7 +1353,7 @@ application trust, which remains enforced by the demo Host and read-only rules.
 
 ## 15. CLI (`cli.py`, CL-01..05)
 
-argparse tree; every subcommand is a function taking `(Paths, Query|…, argparse.Namespace)` so tests call them directly. Mapping: `daemon→daemon.run`, `mcp→mcp_server.run`, `web→web.run|web.run_demo`, `demo build→demo.build`, `init --profile→definitions.install_builtins + explicit config scaffold`, `check→definitions.check_cli` (CL-02), `status/top/incidents/incident/events/query/monitors→store.query` renderers (each with `--json`, CL-03; `status` exit codes per CL-04), `ack/monitor approve|enable|disable→SmallWrites/definitions`, `baseline reset→store`, `doctor→store.doctor` (CL-05: quick_check/--deep, WAL checkpoint, sizes, cursor and delivery ages, channel readiness, orphans, `--backup` via `sqlite3.Connection.backup`).
+argparse tree; every subcommand is a function taking `(Paths, Query|…, argparse.Namespace)` so tests call them directly. Mapping: `daemon→daemon.run`, `mcp→mcp_server.run`, `web→web.app.run` (`--demo` builds `web.demo_app.create_demo_app`), `demo build→demo.build`, `init --profile→cli.cmd_init` (installs builtins + explicit config scaffold), `check→cli.cmd_check` (CL-02), `status/top/incidents/incident/events/query/monitors→store.query` renderers (each with `--json`, CL-03; `status` exit codes per CL-04), `ack/monitor approve|enable|disable→SmallWrites/definitions`, `baseline reset→store`, `doctor→store.doctor` (CL-05: quick_check/--deep, WAL checkpoint, sizes, cursor and delivery ages, channel readiness, orphans, `--backup` via `sqlite3.Connection.backup`).
 
 ### 15.1 Generic historical trends (M7.1, MD-10/CA-10/UI-12)
 

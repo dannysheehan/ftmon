@@ -1,6 +1,6 @@
 # macOS platform spike findings
 
-Spike-only validation per `PLAN-platform-foundation.md` -> "Spike checklist
+Spike-only validation per `docs/PLAN-platform-foundation.md` -> "Spike checklist
 per platform -> macOS". Ran on real Intel macOS hardware as a non-root
 interactive user. The account is UID 501 and is a member of the local `admin`
 group, but every probe was unelevated: no `sudo`, authorization dialog, or
