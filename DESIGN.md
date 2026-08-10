@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.30**. Companion to `SPEC.md` v0.50 — every design element
+Status: **DRAFT v0.31**. Companion to `SPEC.md` v0.50 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -414,6 +414,29 @@ Effect = NotifyEffect(Notification) | ActionEffect(action: str, env: Mapping[str
        | RecordEffect(kind: str, detail: Mapping) | PersistEffect(...)   # tagged union via dataclasses
 ```
 
+**v0.30 → v0.31 (issue #106): the tick breakdown is seven fixed gauges.**
+DESIGN previously described `sampler_s{per-source attr}`, which was never
+implemented. That *representation* is incompatible with the current metric
+model — metrics carry no attribute dimension, and an attribute-shaped series
+would make the self entity's series count vary with the sources a host runs
+(DM-16). The requirement itself is not the problem: the source registry is
+finite, so per-source duration could be expressed as bounded fixed gauges
+(`sampling_disk_s`, `sampling_net_s`, …) whenever it is implemented.
+
+What this pass delivers is the aggregate stage measurement: `sampling_s`,
+`pipeline_s`, `commit_s`, `actions_outbox_s`, `retention_s`, and within that
+pass `prune_s` and `reap_s`, which are **subcomponents of `retention_s`**
+rather than additional stages. `sampling_s` covers every SA-06 shared sample,
+not only the process source; external check *preparation* runs before the
+monitor loop and is outside it. All seven are declared in
+`SOURCE_DECLS["self"]` (PL-05) and measured on the injected Clock (TS-03).
+
+**RB-02's per-source-duration clause therefore remains outstanding**, tracked
+in #106. `sampling_s` is an aggregate and does not satisfy it. Replacing that
+clause with an aggregate would be a product decision requiring a SPEC
+amendment; it is deliberately not made here, which is why SPEC stays at v0.50
+and this PR advances #106 rather than closing it.
+
 **v0.29 (issue #119): `EntitySample.synthetic` — sources report provenance,
 the pipeline owns retention policy.** DM-04 grants the durable window to
 "system, disk, self, **and watchlist-synthetic entities**", but durability was
@@ -800,7 +823,8 @@ FTMON deliberately does not run full `VACUUM` while the daemon is live (v0.44, i
 Metrics: `cpu_pct, rss_bytes, db_bytes, db_allocated_bytes, db_used_bytes,
 db_freelist_bytes, db_headroom_bytes, entities_persisted, series_persisted,
 cycle_s,
-sampler_s{per-source attr}, tick_overruns, event_queue_depth, events_dropped,
+sampling_s, pipeline_s, commit_s, actions_outbox_s, retention_s, prune_s,
+reap_s, tick_overruns, event_queue_depth, events_dropped,
 events_unstored, ring_mem_bytes, source_activity_age_s, eval_unknown_total,
 samples_rejected, external_checks_skipped, external_check_failures{category
 attr}, external_perfdata_rejected{category attr}`. Fed from a `SelfStats`

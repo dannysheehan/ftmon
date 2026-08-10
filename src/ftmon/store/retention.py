@@ -125,6 +125,9 @@ class Retention:
         # deletion of production history is attributable, not just counted.
         self.rollup1h_expired = 0
         self.expired_keys: list[tuple[str, str]] = []
+        # RB-02 stage timings (#106), read by the daemon after each pass.
+        self.prune_s = 0.0
+        self.reap_s = 0.0
         self.reaped_keys: list[tuple[str, str]] = []  # (monitor, entity_id);
         # daemon evicts the writer's series-id cache and the baseline lookup
         # cache for each -- reap runs on its own connection/transaction, so
@@ -139,18 +142,32 @@ class Retention:
         self.reaped_keys = []
         self.rollup1h_expired = 0
         self.expired_keys = []
+        self.prune_s = 0.0
+        self.reap_s = 0.0
         notes: list[str] = []
         cur = self._conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
         try:
             self._rollup_5m(cur, now)
             self._rollup_1h(cur, now)
+            # #97's spike measured normal pruning at 87.9% of the pass with a
+            # disposable profiler against a clone. Timing it in-process makes
+            # that answerable on a live host, which is what #107's scope turns
+            # on -- and the two sub-stages differ by an order of magnitude, so
+            # one retention_s would not separate them.
+            prune_started = self._clock.monotonic()
             self._prune_normal(cur, now)
+            self.prune_s = self._clock.monotonic() - prune_started
+            reap_started = self._clock.monotonic()
             self._reap_catalog(cur, now)
             # Its own stage, not a tail of _reap_catalog: that method returns
             # early when the cursor wraps past the last entity, and expiry
             # must not be skipped on those passes.
             self._expire_gone_rollup1h(cur, now)
+            # Expiry is part of the MD-09 reap story, so it is counted with it
+            # rather than as an eighth gauge: the operator's question is what
+            # catalog maintenance costs, not which half of it.
+            self.reap_s = self._clock.monotonic() - reap_started
             self._set_meta(cur, "last_expire_rows", self.rollup1h_expired)
             self._cap_incident_history(cur)
             notes = self._degrade_if_over_budget(cur, now)

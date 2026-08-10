@@ -19,6 +19,7 @@ import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 
+from ftmon.clock import Clock, SystemClock
 from ftmon.definitions.loader import MonitorDef
 from ftmon.engine.context import EntityCtx
 from ftmon.engine.render import render_message
@@ -55,12 +56,20 @@ class Pipeline:
         counter: Callable[[str], None],
         gone_grace_s: float = 300.0,
         baseline_lookup: Callable[[str, str, str], float | None] | None = None,
+        # TS-03: stage timing needs a monotonic reading, which only a Clock
+        # may take. Defaulted so no caller loses the measurement silently.
+        clock: Clock | None = None,
     ):
         self._samplers = samplers
         self._rings = rings
         self._counter = counter
         self._gone_grace_s = gone_grace_s
         self._baseline_lookup = baseline_lookup
+        self._clock = clock if clock is not None else SystemClock()
+        # Accumulated over a tick and reset by the daemon, because one tick
+        # runs many monitors and the operator's question is about the tick.
+        self.sample_s = 0.0
+        self.evaluate_s = 0.0
         self._state: dict[str, _MonitorState] = {}
         # Self-events buffer: the daemon drains this after each tick and hands
         # the records to the writer - the pipeline must not depend on
@@ -87,6 +96,8 @@ class Pipeline:
         writer,  # store.writer.TickWriter; untyped to keep engine->store loose
         snapshot_cache: dict[object, Snapshot],
     ) -> list[EvalOutcome]:
+        entered = self._clock.monotonic()
+        sample_before = self.sample_s
         # SA-06: a source shared by several monitors runs once per tick; all
         # consumers see identical values and timestamps.
         # External definitions can map the same immutable raw plugin result to
@@ -97,7 +108,14 @@ class Pipeline:
         )
         snap = snapshot_cache.get(cache_key)
         if snap is None:
+            # SA-06: one shared sample per (source, options) per tick. Timed
+            # separately from everything below because "the tick is slow" has
+            # two very different answers -- a sampler blocking on /proc, or
+            # rule evaluation over many entities -- and cycle_s cannot tell
+            # them apart (#106). Cache hits cost nothing and are not counted.
+            sample_started = self._clock.monotonic()
             snap = self._samplers[mdef.source].sample(now, deadline_mono, mdef.source_options)
+            self.sample_s += self._clock.monotonic() - sample_started
             snapshot_cache[cache_key] = snap
 
         st = self._state.setdefault(mdef.name, _MonitorState())
@@ -152,6 +170,10 @@ class Pipeline:
 
         self._persist(mdef, snap, derived_vals, exempt_entities, st, now, writer)
         self._track_gone(mdef, st, now, writer)
+        # Everything this call spent that was not the shared sample above.
+        self.evaluate_s += (
+            (self._clock.monotonic() - entered) - (self.sample_s - sample_before)
+        )
         return outcomes
 
     def promoted(self, monitor: str) -> set[str]:

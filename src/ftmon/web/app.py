@@ -1151,10 +1151,12 @@ def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
             "degradation_age_s": (catalog or {}).get("last_degradation_age_s"),
             "monitor_attribution": monitor_attribution,
         },
-        # #106 supplies these; absent until then, and shown as such.
+        # #106's stage gauges. `prune_s`/`reap_s` are subcomponents of
+        # `retention_s`, not additional stages, so they must not be summed
+        # with it. Ordered as the tick runs them.
         "stages": [
             {"name": name, "seconds": m(name)}
-            for name in ("sample_process_s", "pipeline_s", "commit_s",
+            for name in ("sampling_s", "pipeline_s", "commit_s",
                          "actions_outbox_s", "retention_s", "prune_s", "reap_s")
         ],
     }

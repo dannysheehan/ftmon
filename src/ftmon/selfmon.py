@@ -46,6 +46,18 @@ class SelfStats:
     db_used_bytes: float = 0.0
     db_freelist_bytes: float = 0.0
     db_headroom_bytes: float = 0.0
+    # Where the tick goes (RB-02, issue #106). Fixed cardinality on purpose:
+    # no monitor or source dimension, for the same reason
+    # external_check_failures is a summed total -- the self entity must stay a
+    # bounded namespace against DM-16. Seconds, from the injected monotonic
+    # clock only (TS-03).
+    sampling_s: float = 0.0
+    pipeline_s: float = 0.0
+    commit_s: float = 0.0
+    actions_outbox_s: float = 0.0
+    retention_s: float = 0.0
+    prune_s: float = 0.0
+    reap_s: float = 0.0
     # 1 when the most recent retention pass had to degrade (DM-05).
     db_degrading: float = 0.0
     # None until a tick has run: publishing 0 on the first tick after a
@@ -89,6 +101,25 @@ class SelfSampler:
             "db_degrading": s.db_degrading,
             "db_degradations": float(s.counters.get("db_degradations", 0)),
             "cycle_s": s.cycle_s,
+            # Stage breakdown of cycle_s (#106). cycle_s alone says the tick
+            # cost 240 ms without saying whether sampling, evaluation, the
+            # commit or retention explains it -- the question #107's scope
+            # turns on, and one the disposable spike profiler could only
+            # answer against a clone.
+            #
+            # sampling_s covers *every* SA-06 shared sample, not just the
+            # process source: restricting it to `process` would push disk,
+            # net, unit and self sampling into pipeline_s, replacing one
+            # mislabelled gauge with another. External check *preparation*
+            # runs before the monitor loop and is outside both -- it is
+            # bounded separately by EC-02 deadlines.
+            "sampling_s": s.sampling_s,
+            "pipeline_s": s.pipeline_s,
+            "commit_s": s.commit_s,
+            "actions_outbox_s": s.actions_outbox_s,
+            "retention_s": s.retention_s,
+            "prune_s": s.prune_s,
+            "reap_s": s.reap_s,
             "tick_overruns": float(s.tick_overruns),
             "event_queue_depth": float(s.event_queue_depth),
             "events_dropped": float(s.events_dropped),
