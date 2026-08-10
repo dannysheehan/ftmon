@@ -217,3 +217,44 @@ def test_catalog_gauges_are_absent_until_a_tick_has_run_rb_02(tmp_path):
     metrics = SelfSampler(stats).sample(1_000, 0.0, {}).entities[0].metrics
     assert metrics["entities_persisted"] == 0.0
     assert metrics["series_persisted"] == 0.0
+
+
+class TestStageTimingNamespace:
+    """[RB-02][DM-16] Stage timings must not widen the self namespace.
+
+    The same constraint that made `external_check_failures` a summed total
+    rather than one series per category: every self metric is a persisted
+    series billing against the DM-16 catalog budget, so a per-monitor or
+    per-source timing dimension would make that budget a function of how many
+    monitors an operator installs (#106).
+    """
+
+    _STAGES = (
+        "sample_process_s", "pipeline_s", "commit_s",
+        "actions_outbox_s", "retention_s", "prune_s", "reap_s",
+    )
+
+    def _metrics(self, stats):
+        from ftmon.selfmon import SelfSampler
+
+        return SelfSampler(stats).sample(0.0, 0.0, {}).entities[0].metrics
+
+    def test_all_seven_stages_are_published(self):
+        from ftmon.selfmon import SelfStats
+
+        stats = SelfStats()
+        for i, name in enumerate(self._STAGES, start=1):
+            setattr(stats, name, float(i))
+        metrics = self._metrics(stats)
+        assert [metrics[name] for name in self._STAGES] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+
+    def test_stage_metric_names_do_not_grow_with_runtime_data(self):
+        """[DM-16] no metric name may be derived from what the host runs."""
+        from ftmon.selfmon import SelfStats
+
+        stats = SelfStats()
+        first = set(self._metrics(stats))
+        stats.counters["external_check_failures:timeout"] = 3
+        stats.counters["external_check_failures:parse"] = 4
+        assert set(self._metrics(stats)) == first
+        assert not [name for name in first if ":" in name]

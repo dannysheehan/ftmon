@@ -166,7 +166,7 @@ class DaemonCore:
         self.baselines = BaselineLookup(self.conn)
         self._last_retention = -_RETENTION_EVERY_S
         self.pipeline = Pipeline(self.samplers, self.rings, self.stats.count,
-                                 baseline_lookup=self.baselines)
+                                 baseline_lookup=self.baselines, clock=self.clock)
         self.due = DueTable()
         # Incident machinery (M2): pure engine + executor + outbox delivery.
         # Tests can inject exact channels. Production derives desktop delivery
@@ -666,6 +666,10 @@ class DaemonCore:
         # straight out of SelfStats, so measuring later would publish last
         # tick's database size against this tick's everything else.
         self._sample_db_pages()
+        # Per-tick, not cumulative: the operator's question is where *this*
+        # tick went, and a monotonically rising total answers a different one.
+        self.pipeline.sample_s = 0.0
+        self.pipeline.evaluate_s = 0.0
         cache: dict = {}
         outcomes: list[EvalOutcome] = []
         due_names = self.due.due(mono, lambda _n: self._overrun())
@@ -724,6 +728,7 @@ class DaemonCore:
         self.stats.ring_mem_bytes = self.rings.mem_bytes()
         self.rings.evict_if_over(self._is_protected, self.stats.count)
         self.writer.set_meta("last_tick_ts", repr(wall))
+        commit_started = self.clock.monotonic()
         try:
             self.writer.commit_tick()
         except sqlite3.OperationalError as exc:
@@ -739,19 +744,41 @@ class DaemonCore:
                 message=f"tick write locked; dropped buffered writes: {exc}",
             ))
             self.executor.drain_actions()  # must not fire for uncommitted work
+            # A commit that blocked to the busy_timeout is the most expensive
+            # commit there is; dropping it from the breakdown would hide the
+            # very tick an operator is investigating (PM-10).
+            self.stats.commit_s = self.clock.monotonic() - commit_started
+            self.stats.sample_process_s = self.pipeline.sample_s
+            self.stats.pipeline_s = self.pipeline.evaluate_s
             self.stats.cycle_s = self.clock.monotonic() - started
             return
         # AC-02 actions are post-commit so their 30-second timeout cannot
         # extend the daemon's single tick transaction (PM-03).
+        self.stats.commit_s = self.clock.monotonic() - commit_started
+        outbox_started = self.clock.monotonic()
         self.actions.run_pending(self.executor.drain_actions(), wall)
         # NO-04: delivery strictly after the transition committed.
         if self.dispatch_worker is None:
             self.outbox.flush(wall)
         else:
             self.dispatch_worker.wake()
+        self.stats.actions_outbox_s = self.clock.monotonic() - outbox_started
         if mono - self._last_retention >= _RETENTION_EVERY_S:
             self._last_retention = mono
+            retention_started = self.clock.monotonic()
             self._run_retention(wall)
+            self.stats.retention_s = self.clock.monotonic() - retention_started
+            self.stats.prune_s = self.retention.prune_s
+            self.stats.reap_s = self.retention.reap_s
+        else:
+            # Retention runs once a minute inside a 5 s tick, so most ticks do
+            # none. Zero is the honest reading for those; carrying the last
+            # pass forward would make every tick look like a retention tick.
+            self.stats.retention_s = 0.0
+            self.stats.prune_s = 0.0
+            self.stats.reap_s = 0.0
+        self.stats.sample_process_s = self.pipeline.sample_s
+        self.stats.pipeline_s = self.pipeline.evaluate_s
         self.stats.cycle_s = self.clock.monotonic() - started
 
     def _run_retention(self, wall: float) -> None:

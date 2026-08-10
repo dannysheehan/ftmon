@@ -5,6 +5,7 @@ reap — golden-value tests against a real SQLite db."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +24,7 @@ from tests.unit.test_engine import LEAKDEF, ScriptedSampler
 from tests.unit.test_m2_integration import core_env  # noqa: F401
 
 T0 = 1_700_000_100  # deliberately not bucket-aligned
+REPO_ROOT = Path(__file__).parent.parent.parent
 
 
 @pytest.fixture
@@ -1136,3 +1138,61 @@ class TestExpireGoneRollup1h:
         assert len(r.expired_keys) == 2
         assert r.rollup1h_expired == 4
         assert conn.execute("SELECT COUNT(*) FROM rollup1h").fetchone()[0] == 6
+
+
+class TestStageTimings:
+    """[RB-02][TS-03] Where the tick goes, measured on the injected clock.
+
+    `cycle_s` says a tick cost 240 ms without saying whether sampling,
+    evaluation, the commit or retention explains it -- the question #107's
+    scope turns on. #97 could only answer it with a disposable profiler
+    against a database clone.
+    """
+
+    def test_prune_and_reap_are_timed_separately(self, conn):
+        """[RB-02] the two differ by an order of magnitude in the spike, so
+        one retention_s would not separate them."""
+        add_series(conn, 1, durable=0)
+        add_entity(conn, gone_ts=T0 - 100)
+        conn.commit()
+
+        clock = _TickingClock(step=0.5)
+        r = Retention(conn, clock=clock)
+        r.run(now=T0)
+
+        assert r.prune_s > 0.0
+        assert r.reap_s > 0.0
+
+    def test_a_failed_pass_reports_no_timing_rather_than_the_last_one(self, conn):
+        """[RB-02][PM-10] The reset exists for the failure path.
+
+        Both gauges are assigned unconditionally when their stage completes,
+        so a *successful* pass always overwrites them. The case that needs the
+        reset is a pass that raises before reaching those assignments: without
+        it the daemon would publish the previous pass's cost as though it
+        measured the failed one, which is exactly the tick an operator is
+        investigating.
+        """
+        add_series(conn, 1)
+        conn.commit()
+
+        r = Retention(conn, clock=_TickingClock(step=0.25))
+        r.run(now=T0)
+        assert r.prune_s > 0.0, "first pass measured something"
+
+        r._rollup_5m = lambda cur, now: (_ for _ in ()).throw(RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            r.run(now=T0 + 60)
+
+        assert r.prune_s == 0.0, "a failed pass must not inherit a timing"
+        assert r.reap_s == 0.0
+
+    def test_no_direct_clock_access(self):
+        """[TS-03] timings come from the injected Clock, never time.monotonic.
+
+        Enforced globally by the TS-03 lint, asserted here because stage
+        timing is the change most tempted to reach for the wall clock.
+        """
+        source = (REPO_ROOT / "src" / "ftmon" / "store" / "retention.py").read_text()
+        assert "time.monotonic(" not in source
+        assert "self._clock.monotonic()" in source

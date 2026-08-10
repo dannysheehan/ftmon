@@ -3,6 +3,8 @@ rings, and the sampling pipeline driven by a real loaded definition."""
 
 from __future__ import annotations
 
+import pytest
+
 from ftmon.clock import FakeClock
 from ftmon.definitions import load_text
 from ftmon.engine.pipeline import Pipeline
@@ -609,3 +611,67 @@ class TestEntityLevelDurability:
             ("totals", {}, {"cpu_pct": 1.0}, False),
         ])
         assert got == {"tcp:22": True, "totals": False}
+
+
+class TestPipelineStageTiming:
+    """[RB-02][SA-06][TS-03] Sampling is timed apart from evaluation.
+
+    "The tick is slow" has two very different answers -- a sampler blocking on
+    /proc, or rule evaluation across many entities -- and a single `cycle_s`
+    cannot tell them apart (#106).
+    """
+
+    class _SlowSampler(ScriptedSampler):
+        """Charges the injected clock for the time a real sampler would block."""
+
+        def __init__(self, clock, cost):
+            super().__init__()
+            self._clock, self._cost = clock, cost
+
+        def sample(self, now, deadline_mono, options):
+            self._clock.advance(self._cost)
+            return super().sample(now, deadline_mono, options)
+
+    def _pipeline(self, sampler, clock):
+        rings = RingStore()
+        mdef = load_text(LEAKDEF)
+        rings.configure(mdef.name, mdef.interval_s, {m: w for m, w in mdef.windows})
+        return mdef, Pipeline({"process": sampler}, rings, lambda n: None,
+                              gone_grace_s=300.0, clock=clock)
+
+    def test_sampling_cost_is_attributed_to_the_sampler(self):
+        """[SA-06] a blocking sampler shows up as sample_s, not pipeline time."""
+        clock = FakeClock()
+        sampler = self._SlowSampler(clock, 2.0)
+        sampler.push(grower(0))
+        mdef, pipe = self._pipeline(sampler, clock)
+
+        pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), {})
+
+        assert pipe.sample_s == pytest.approx(2.0)
+        assert pipe.evaluate_s == pytest.approx(0.0), "sampling must not double-count"
+
+    def test_shared_snapshot_is_sampled_once_per_tick(self):
+        """[SA-06] a cache hit costs nothing and is not counted again."""
+        clock = FakeClock()
+        sampler = self._SlowSampler(clock, 1.0)
+        sampler.push(grower(0))
+        mdef, pipe = self._pipeline(sampler, clock)
+        cache: dict = {}
+
+        pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), cache)
+        pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), cache)
+
+        assert pipe.sample_s == pytest.approx(1.0), "second call reuses the snapshot"
+
+    def test_accumulates_across_monitors_within_a_tick(self):
+        """[RB-02] one tick runs many monitors; the gauge is about the tick."""
+        clock = FakeClock()
+        sampler = self._SlowSampler(clock, 0.5)
+        sampler.push(grower(0))
+        mdef, pipe = self._pipeline(sampler, clock)
+
+        pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), {})
+        pipe.run_monitor(mdef, 1_700_000_060.0, 10**9, NullWriter(), {})
+
+        assert pipe.sample_s == pytest.approx(1.0)
