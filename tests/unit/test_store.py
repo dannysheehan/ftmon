@@ -845,3 +845,190 @@ class TestTierSelectionMatchesRetention:
             now, now - 20 * self.DAY, now, monitor="nonexistent", metric="m"
         ) == "1h"
         conn.close()
+
+
+class TestSeriesDurabilityReconciliation:
+    """[DM-04] `series_id` honoured `durable` only when creating a row, so a
+    watchlist series stored non-durable stayed misclassified forever. Existing
+    installations need the flag corrected in place, one way, 0 -> 1."""
+
+    def _db(self, tmp_path):
+        conn = db.connect(tmp_path / "w.db")
+        db.migrate(conn)
+        return conn
+
+    def test_existing_non_durable_series_is_promoted(self, tmp_path):
+        """[DM-04] the misclassified row is corrected on the next write."""
+        conn = self._db(tmp_path)
+        conn.execute("INSERT INTO series(id,monitor,entity_id,metric,durable) "
+                     "VALUES(1,'service','ssh.service','present',0)")
+        conn.commit()
+
+        w = TickWriter(conn)
+        sid = w.series_id("service", "ssh.service", "present", True)
+        w.add_sample(sid, NOW, 1.0)
+        w.commit_tick()
+
+        assert conn.execute("SELECT durable FROM series WHERE id=1").fetchone()[0] == 1
+
+    def test_promotion_works_when_the_id_is_already_cached(self, tmp_path):
+        """[DM-04] The cache short-circuits before any SQL, so a fix that only
+        reconciles on the SELECT path silently misses every series after its
+        first metric in the same tick -- which is nearly all of them."""
+        conn = self._db(tmp_path)
+        conn.execute("INSERT INTO series(id,monitor,entity_id,metric,durable) "
+                     "VALUES(1,'service','ssh.service','present',0)")
+        conn.commit()
+
+        w = TickWriter(conn)
+        first = w.series_id("service", "ssh.service", "present", False)  # caches id
+        second = w.series_id("service", "ssh.service", "present", True)  # cache hit
+        assert first == second
+        w.add_sample(second, NOW, 1.0)
+        w.commit_tick()
+
+        assert conn.execute("SELECT durable FROM series WHERE id=1").fetchone()[0] == 1
+
+    def test_durable_series_is_never_downgraded(self, tmp_path):
+        """[DM-04] Reconciliation is one-way. A durable row asked for as
+        non-durable keeps its window; demoting would silently shorten
+        retention from 400 d to 90 d."""
+        conn = self._db(tmp_path)
+        conn.execute("INSERT INTO series(id,monitor,entity_id,metric,durable) "
+                     "VALUES(1,'disk','/','free_pct',1)")
+        conn.commit()
+
+        w = TickWriter(conn)
+        sid = w.series_id("disk", "/", "free_pct", False)
+        w.add_sample(sid, NOW, 1.0)
+        w.commit_tick()
+
+        assert conn.execute("SELECT durable FROM series WHERE id=1").fetchone()[0] == 1
+
+    def test_failed_tick_rolls_the_promotion_back_with_its_samples(self, tmp_path):
+        """[DM-04][PM-10] The correction is part of the tick transaction, not
+        a side write: a tick that fails leaves the flag as it was."""
+        conn = self._db(tmp_path)
+        conn.execute("INSERT INTO series(id,monitor,entity_id,metric,durable) "
+                     "VALUES(1,'service','ssh.service','present',0)")
+        conn.commit()
+
+        w = TickWriter(conn)
+        sid = w.series_id("service", "ssh.service", "present", True)
+        w.add_sample(sid, NOW, 1.0)
+        conn.execute("DROP TABLE samples")          # force commit_tick to raise
+        with pytest.raises(sqlite3.Error):
+            w.commit_tick()
+
+        assert conn.execute("SELECT durable FROM series WHERE id=1").fetchone()[0] == 0
+
+    def test_promotion_is_not_re_queued_once_applied(self, tmp_path):
+        """[DM-04] Repeated ticks must not re-issue the UPDATE for a series
+        already durable; the cache carries the corrected state forward."""
+        conn = self._db(tmp_path)
+        conn.execute("INSERT INTO series(id,monitor,entity_id,metric,durable) "
+                     "VALUES(1,'service','ssh.service','present',0)")
+        conn.commit()
+
+        w = TickWriter(conn)
+        for tick in range(3):
+            sid = w.series_id("service", "ssh.service", "present", True)
+            w.add_sample(sid, NOW + tick, 1.0)
+            w.commit_tick()
+
+        assert conn.execute("SELECT durable FROM series WHERE id=1").fetchone()[0] == 1
+        assert w.pending_durability_promotions() == 0
+
+
+class TestDurabilityPromotionChangesTierSelection:
+    """[DM-06][DM-04] Tier selection is cohort-aware, so correcting a series'
+    durability must change which window it is judged against.
+
+    #102 made `_resolution` ask whether the whole requested cohort is durable;
+    a watchlist series stuck at `durable = 0` therefore answered from the 7 d
+    process window even for data the 30 d durable window still held. Promotion
+    only helps if the query layer sees it after the tick commits.
+    """
+
+    def _seed(self, tmp_path, durable):
+        conn = _fresh(tmp_path)
+        w = TickWriter(conn)
+        sid = w.series_id("service", "ssh.service", "present", durable)
+        w.add_sample(sid, NOW, 1.0)
+        w.commit_tick()
+        # 5-minute data 20 days old: inside the durable window (30 d), outside
+        # the process one (7 d). The tier answer must differ on that alone.
+        conn.executemany(
+            "INSERT INTO rollup5m(series_id, bucket, avg, min, max, last, cnt) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [(sid, round(NOW - 20 * 86400) + i * 300, 2.0, 1.0, 3.0, 2.0, 5)
+             for i in range(5)],
+        )
+        conn.commit()
+        return conn, sid
+
+    def _resolution(self, conn, sid):
+        q = Query(conn)
+        return q.series_points(
+            sid, start=NOW - 21 * 86400, end=NOW - 19 * 86400, now=NOW
+        ).resolution
+
+    def test_non_durable_cohort_falls_to_the_hourly_tier(self, tmp_path):
+        """[DM-06] 20-day-old data is outside the 7 d process 5-minute window."""
+        conn, sid = self._seed(tmp_path, durable=False)
+        assert self._resolution(conn, sid) == "1h"
+
+    def test_all_durable_cohort_uses_the_five_minute_tier(self, tmp_path):
+        """[DM-06] the same age is inside the durable 30 d window."""
+        conn, sid = self._seed(tmp_path, durable=True)
+        assert self._resolution(conn, sid) == "5m"
+
+    def test_resolution_changes_once_the_promotion_commits(self, tmp_path):
+        """[DM-06][DM-04] the end-to-end point of this fix: a misclassified
+        watchlist series answers from the wrong tier until reconciliation
+        lands, and from the right one immediately after."""
+        conn, sid = self._seed(tmp_path, durable=False)
+        assert self._resolution(conn, sid) == "1h"
+
+        w = TickWriter(conn)
+        same = w.series_id("service", "ssh.service", "present", True)
+        w.add_sample(same, NOW + 60, 1.0)
+        w.commit_tick()
+
+        assert conn.execute("SELECT durable FROM series WHERE id=?", (sid,)).fetchone()[0] == 1
+        assert self._resolution(conn, sid) == "5m"
+
+    def test_mixed_cohort_keeps_the_shorter_window(self, tmp_path):
+        """[DM-06] promotion must not let one durable member widen a mixed
+        request: one resolution serves the whole answer, so the shorter window
+        wins or part of the response would be silently truncated."""
+        conn, _ = self._seed(tmp_path, durable=True)
+        w = TickWriter(conn)
+        # same monitor, second entity, non-durable -> the cohort is mixed
+        mixed = w.series_id("service", "other.service", "present", False)
+        w.add_sample(mixed, NOW, 1.0)
+        w.commit_tick()
+
+        q = Query(conn)
+        assert q.resolution_for(
+            NOW, NOW - 21 * 86400, NOW - 19 * 86400, monitor="service"
+        ) == "1h"
+
+    def test_all_durable_cohort_resolution_after_promotion(self, tmp_path):
+        """[DM-06] once every member of the cohort is durable, the cohort
+        answer widens to the 30 d tier -- the promotion has to be visible to
+        `_cohort_all_durable`, not just to the row."""
+        conn, _ = self._seed(tmp_path, durable=False)
+        q = Query(conn)
+        assert q.resolution_for(
+            NOW, NOW - 21 * 86400, NOW - 19 * 86400, monitor="service"
+        ) == "1h"
+
+        w = TickWriter(conn)
+        sid = w.series_id("service", "ssh.service", "present", True)
+        w.add_sample(sid, NOW + 60, 1.0)
+        w.commit_tick()
+
+        assert Query(conn).resolution_for(
+            NOW, NOW - 21 * 86400, NOW - 19 * 86400, monitor="service"
+        ) == "5m"

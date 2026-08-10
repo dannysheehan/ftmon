@@ -146,3 +146,39 @@ class TestNetSampler:
         assert by_id[f"tcp:{port}"].metrics["present"] == 1.0
         assert by_id["tcp:1"].metrics["present"] == 0.0
         assert len(by_id) == 3  # bogus entry produced nothing
+
+
+class TestWatchlistSyntheticFlag:
+    """[DM-04][CA-08] Sources mark the entities they synthesize from a
+    watchlist. DM-04 promises those the durable window, and only the source
+    knows which of its entities the watchlist produced -- `net` also emits a
+    discovered `totals` entity that must not inherit it."""
+
+    def test_unit_watchlist_entities_are_synthetic(self):
+        sampler = UnitSampler(FakeClock(), run_cmd=lambda unit: "ActiveState=active\n")
+        snap = sampler.sample(1000.0, 1e9, {"watchlist": [{"unit": "ssh.service"}]})
+        assert [e.entity_id for e in snap.entities] == ["unit:ssh.service"]
+        assert all(e.synthetic for e in snap.entities)
+
+    def test_net_listener_watchlist_entity_is_synthetic(self):
+        snap = NetSampler(FakeClock()).sample(
+            1000.0, 1e9, {"watchlist": [{"listen": "tcp:22"}]})
+        by_id = {e.entity_id: e for e in snap.entities}
+        assert "tcp:22" in by_id
+        assert by_id["tcp:22"].synthetic is True
+
+    def test_net_totals_entity_is_not_synthetic(self):
+        snap = NetSampler(FakeClock()).sample(
+            1000.0, 1e9, {"watchlist": [{"listen": "tcp:22"}]})
+        by_id = {e.entity_id: e for e in snap.entities}
+        assert "totals" in by_id
+        assert by_id["totals"].synthetic is False
+
+    def test_malformed_watchlist_entries_synthesize_nothing(self):
+        """[DM-04][PL-03] A broken entry must not classify an unrelated entity
+        as durable: it produces no entity at all, so `totals` stays alone."""
+        snap = NetSampler(FakeClock()).sample(
+            1000.0, 1e9,
+            {"watchlist": [{"listen": "tcp:not-a-port"}, {"nope": 1}, "garbage"]})
+        assert [e.entity_id for e in snap.entities] == ["totals"]
+        assert snap.entities[0].synthetic is False

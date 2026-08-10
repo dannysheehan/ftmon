@@ -70,6 +70,11 @@ class EntitySample:
     entity_id: str
     attrs: Mapping[str, str]
     metrics: Mapping[str, float]
+    # CA-08: synthesized from a watchlist entry rather than discovered. Only
+    # the source knows which of its entities the watchlist produced -- `net`
+    # emits both -- and DM-04 gives these the durable window. The pipeline
+    # turns this fact into the retention policy; the source never decides it.
+    synthetic: bool = False
 
 
 @dataclass(frozen=True)

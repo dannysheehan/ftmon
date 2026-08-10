@@ -209,7 +209,11 @@ class Pipeline:
         # and a monitor that stops selecting an entity must stop counting it.
         self._persisted[mdef.name] = len(selected)
         series_written = 0
-        durable = mdef.source in _DURABLE_SOURCES
+        # DM-04 names "system, disk, self, and watchlist-synthetic entities"
+        # as durable. A per-monitor flag could not express the last clause:
+        # `net` emits a synthetic listener watchlist beside a discovered
+        # `totals`, so one monitor legitimately holds both kinds (issue #119).
+        monitor_durable = mdef.source in _DURABLE_SOURCES
         for ent in snap.entities:
             if ent.entity_id in exempt_entities:
                 # Purging handles definitions or attributes that become exempt
@@ -223,7 +227,10 @@ class Pipeline:
             values.update(derived_vals.get(ent.entity_id, {}))
             series_written += len(values)
             for metric, value in values.items():
-                sid = writer.series_id(mdef.name, ent.entity_id, metric, durable)
+                sid = writer.series_id(
+                    mdef.name, ent.entity_id, metric,
+                    monitor_durable or ent.synthetic,
+                )
                 writer.add_sample(sid, snap.ts, value)
         self._persisted_series[mdef.name] = series_written
 

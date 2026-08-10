@@ -67,7 +67,14 @@ class TickWriter:
         if delivery_channels is not None:
             self._delivery_channels.update(delivery_channels)
 
-        self._series_cache: dict[tuple[str, str, str], int] = {}
+        # (id, durable) -- the flag matters because series_id() honoured
+        # `durable` only when INSERTing, so a watchlist series stored
+        # non-durable stayed misclassified forever (issue #119). Caching
+        # the known value lets a cache hit still queue a correction
+        # without a SELECT per sample.
+        self._series_cache: dict[tuple[str, str, str], tuple[int, bool]] = {}
+        # One-way 0 -> 1 promotions, applied as a single UPDATE per tick.
+        self._pending_durability: set[int] = set()
         self._next_series_id: int | None = None
         self._next_event_id: int | None = None
 
@@ -105,15 +112,28 @@ class TickWriter:
         key = (monitor, entity_id, metric)
         cached = self._series_cache.get(key)
         if cached is not None:
-            return cached
+            sid, known_durable = cached
+            # The cache short-circuits before any SQL, and a monitor writes
+            # many metrics per entity per tick, so reconciling only on the
+            # SELECT path below would miss all but the first.
+            if durable and not known_durable:
+                self._pending_durability.add(sid)
+                self._series_cache[key] = (sid, True)
+            return sid
 
         row = self._conn.execute(
-            "SELECT id FROM series WHERE monitor=? AND entity_id=? AND metric=?",
+            "SELECT id, durable FROM series WHERE monitor=? AND entity_id=? AND metric=?",
             key,
         ).fetchone()
         if row is not None:
-            self._series_cache[key] = row["id"]
-            return row["id"]
+            sid, stored = row["id"], bool(row["durable"])
+            # One-way only: never demote. A durable row asked for as
+            # non-durable would silently drop from 400 d to 90 d.
+            if durable and not stored:
+                self._pending_durability.add(sid)
+                stored = True
+            self._series_cache[key] = (sid, stored)
+            return sid
 
         if self._next_series_id is None:
             (max_id,) = self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM series").fetchone()
@@ -122,8 +142,12 @@ class TickWriter:
         self._next_series_id += 1
 
         self._pending_series.append((new_id, monitor, entity_id, metric, int(durable)))
-        self._series_cache[key] = new_id
+        self._series_cache[key] = (new_id, bool(durable))
         return new_id
+
+    def pending_durability_promotions(self) -> int:
+        """Corrections queued for the next commit (tests and diagnostics)."""
+        return len(self._pending_durability)
 
     def _alloc_event_id(self) -> int:
         if self._next_event_id is None:
@@ -339,6 +363,16 @@ class TickWriter:
                     "VALUES (?, ?, ?, ?, ?)",
                     self._pending_series,
                 )
+            if self._pending_durability:
+                # One statement per tick, not per sample. Guarded on durable=0
+                # so a concurrent correction cannot be undone, and inside the
+                # tick transaction so a failed tick rolls it back with its
+                # samples rather than leaving a half-applied migration.
+                cur.execute(
+                    "UPDATE series SET durable = 1 WHERE durable = 0 AND id IN "
+                    f"({','.join('?' * len(self._pending_durability))})",
+                    tuple(self._pending_durability),
+                )
             if self._pending_samples:
                 cur.executemany(
                     "INSERT OR REPLACE INTO samples(series_id, ts, value) VALUES (?, ?, ?)",
@@ -467,6 +501,7 @@ class TickWriter:
         else:
             self._conn.commit()
         finally:
+            self._pending_durability.clear()
             self._pending_series.clear()
             self._pending_samples.clear()
             self._pending_entities.clear()
