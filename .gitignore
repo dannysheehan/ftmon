@@ -16,6 +16,11 @@ soak/
 tuning/evidence/
 *.egg-info/
 .coverage
+# Local scratch: issue drafts staged before promotion to GitHub, which is
+# the canonical backlog (CONTRIBUTING.md). The file says so in its own
+# header; committing it contradicts that.
+/BACKLOG.md
+
 # Local AI-agent session state (tool permission grants), not project content.
 .claude/
 # The original GPLv2 Perl project is published on SourceForge. Keep any local

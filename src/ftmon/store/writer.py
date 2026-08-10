@@ -145,9 +145,6 @@ class TickWriter:
         self._series_cache[key] = (new_id, bool(durable))
         return new_id
 
-    def pending_durability_promotions(self) -> int:
-        """Corrections queued for the next commit (tests and diagnostics)."""
-        return len(self._pending_durability)
 
     def _alloc_event_id(self) -> int:
         if self._next_event_id is None:

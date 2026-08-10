@@ -923,21 +923,33 @@ class TestSeriesDurabilityReconciliation:
         assert conn.execute("SELECT durable FROM series WHERE id=1").fetchone()[0] == 0
 
     def test_promotion_is_not_re_queued_once_applied(self, tmp_path):
-        """[DM-04] Repeated ticks must not re-issue the UPDATE for a series
-        already durable; the cache carries the corrected state forward."""
+        """[DM-04] The cache carries the corrected state forward, so a later
+        tick short-circuits without re-queueing.
+
+        Asserted on the queue immediately after `series_id()` rather than
+        after `commit_tick()`: the latter only proves the finally block
+        emptied it, which would still pass if every tick re-queued the same
+        promotion forever.
+        """
         conn = self._db(tmp_path)
         conn.execute("INSERT INTO series(id,monitor,entity_id,metric,durable) "
                      "VALUES(1,'service','ssh.service','present',0)")
         conn.commit()
 
         w = TickWriter(conn)
-        for tick in range(3):
-            sid = w.series_id("service", "ssh.service", "present", True)
-            w.add_sample(sid, NOW + tick, 1.0)
+        sid = w.series_id("service", "ssh.service", "present", True)
+        assert w._pending_durability == {sid}, "first sight must queue the fix"
+        w.add_sample(sid, NOW, 1.0)
+        w.commit_tick()
+
+        for tick in range(1, 3):
+            again = w.series_id("service", "ssh.service", "present", True)
+            assert again == sid
+            assert w._pending_durability == set(), "cache hit must not re-queue"
+            w.add_sample(again, NOW + tick, 1.0)
             w.commit_tick()
 
         assert conn.execute("SELECT durable FROM series WHERE id=1").fetchone()[0] == 1
-        assert w.pending_durability_promotions() == 0
 
 
 class TestDurabilityPromotionChangesTierSelection:
