@@ -14,7 +14,7 @@
 # itself or claim Windows meets it -- it stops a correctly-firing watchdog
 # from being permanently stuck open over a gap that needs a real
 # ProcessSampler optimization pass to close, tracked separately
-# (WIN-BACKLOG.md), not a silenced alarm pretending the gap doesn't exist.
+# (docs/WIN-BACKLOG.md), not a silenced alarm pretending the gap doesn't exist.
 #
 # stall_s is also recalibrated here (600 -> 5400), root-caused the same way:
 # WindowsEventSource (win_evtlog.py) only watches the System and Application

@@ -233,3 +233,70 @@ class TestDocVersionCoherence:
             f"DESIGN.md says companion to SPEC v{match.group(1)} but SPEC.md "
             f"header is v{self._spec_header_version()}; update both together"
         )
+
+
+class TestDesignInventory:
+    """[DO-09][TS-19] DESIGN §1 must match the shipped tree in both directions.
+
+    Contributors and agents are told to consult DESIGN before changing code,
+    so a stale map misroutes work rather than merely being untidy. It had
+    drifted to naming three modules that did not exist -- `engine/baseline.py`,
+    `sources/selfsrc.py` and `notify/dispatch.py`, the last being the largest
+    gap since dispatch actually lives in `store/outbox.py` -- while omitting
+    twenty-two shipped ones (issue #121).
+    """
+
+    _EXCLUDED = {"__init__.py"}
+
+    def _tree(self) -> str:
+        text = (REPO_ROOT / "DESIGN.md").read_text(encoding="utf-8")
+        section = text.split("## 1. Repository and package layout")[1]
+        return section.split("```")[1]
+
+    def _declared_paths(self) -> list[str]:
+        """Full paths reconstructed from the ASCII tree's indentation."""
+        import re
+
+        stack: dict[int, str] = {}
+        out: list[str] = []
+        for raw in self._tree().splitlines():
+            marker = re.search(r"[├└]── ", raw)
+            if marker is None:
+                continue
+            depth = marker.start() // 4
+            name = raw[marker.end():].split("#")[0].strip()
+            if not name:
+                continue
+            parent = stack.get(depth - 1, "")
+            if name.endswith("/"):
+                stack[depth] = parent + name
+                out.append(parent + name)
+                continue
+            for token in name.split():
+                out.append(parent + token)
+        return out
+
+    def test_every_declared_path_exists(self):
+        """[DO-09] no entry names a file or directory that is not shipped."""
+        missing = [
+            path for path in self._declared_paths()
+            if not any(ch in path for ch in "{}*<>")      # shorthand, not literal
+            and not (REPO_ROOT / path).exists()
+        ]
+        assert missing == [], (
+            f"DESIGN §1 names paths that do not exist: {missing}. "
+            "Point them at their real owner rather than deleting the entry."
+        )
+
+    def test_every_shipped_module_is_mapped(self):
+        """[DO-09] no architecture-significant module is missing from the map."""
+        declared = {path.rsplit("/", 1)[-1] for path in self._declared_paths()}
+        unmapped = sorted(
+            str(path.relative_to(REPO_ROOT))
+            for path in (REPO_ROOT / "src" / "ftmon").glob("**/*.py")
+            if path.name not in self._EXCLUDED and path.name not in declared
+        )
+        assert unmapped == [], (
+            f"shipped modules absent from DESIGN §1: {unmapped}. "
+            "§1 claims to be exhaustive for src/ftmon modules."
+        )

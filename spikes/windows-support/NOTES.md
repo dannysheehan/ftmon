@@ -1,6 +1,6 @@
 # Windows platform spike findings
 
-Spike-only validation per `PLAN-platform-foundation.md` -> "Spike checklist
+Spike-only validation per `docs/PLAN-platform-foundation.md` -> "Spike checklist
 per platform -> Windows". Ran on real Windows 11 hardware, non-admin user
 (UAC split token: member of `BUILTIN\Administrators` but "deny only" -- i.e.
 a normal unelevated interactive session, not run-as-admin).
@@ -196,7 +196,7 @@ package from running at all on Windows today: `os.fchmod` (paths.py),
 described above), and `fcntl` (daemon.py, PM-02 lock). None of these are
 new information relative to PL-01's stated scope ("no platform conditionals
 outside the four seams") -- they're confirmation, with exact file:line
-locations, of the gap PLAN-platform-foundation.md already predicted, plus
+locations, of the gap docs/PLAN-platform-foundation.md already predicted, plus
 one previously-unlisted item: the check-registry trust model (EC-01/SE-07)
 needs its own Windows design, not just a fifth seam.
 
@@ -210,5 +210,5 @@ needs its own Windows design, not just a fifth seam.
 | Service wrapper (Task Scheduler logon) | Creation blocked by access denial on this machine for a standard user; needs re-test on a clean install and a documented Startup-folder fallback either way |
 | PM-11 reload equivalent | Not provided by Task Scheduler; named Win32 Event object spiked and confirmed working as the substitute |
 | `paths.py` (`os.fchmod`) | Confirmed hard blocker, real fix belongs on platform-foundation |
-| `checks/trust.py` (`os.geteuid`, `st_uid`) | Confirmed hard blocker *and* a deeper EC-01/SE-07 design gap (POSIX ownership model doesn't map to Windows ACLs at all) -- not previously listed in PLAN-platform-foundation.md, worth adding as its own line item |
+| `checks/trust.py` (`os.geteuid`, `st_uid`) | Confirmed hard blocker *and* a deeper EC-01/SE-07 design gap (POSIX ownership model doesn't map to Windows ACLs at all) -- not previously listed in docs/PLAN-platform-foundation.md, worth adding as its own line item |
 | `daemon.py` (`fcntl`, PM-02 lock) | Confirmed hard blocker, single call site, needs a Windows lock primitive behind the seam |
