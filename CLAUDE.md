@@ -76,15 +76,13 @@ narrate mechanics. Every module docstring cites the spec IDs that shaped it.
 Package layout: the full annotated tree lives in DESIGN.md §1 — read it there
 rather than duplicating it here. The constraints that tree does not carry:
 
-- `expr/` is **stdlib-only and imports nothing from `ftmon.*`** (EX-04); `eval`
-  never raises (EX-06) — errors become `None` plus a counter tick.
+- `expr`'s `eval` **never raises** (EX-06) — errors become `None` plus a
+  counter tick, so a bad expression degrades one metric, not the tick.
 - **Definitions are data, never code.** The normative built-ins live in
   `design/builtins/*.toml` and are mirrored into
   `src/ftmon/definitions/builtins/`; keep the two trees identical.
 - AI and definitions may *reference* a check alias but can never create one
   (EC-01) — `checks.toml` is the administrator's argv authority.
-- `sources/fixtures.py` ships in the prod package on purpose: the deterministic
-  fakes are what keep the platform seams honest (PL-04).
 - `.ai/skills/` holds canonical, portable contribution workflows. Read the
   complete matching `SKILL.md` when asked to use one, but treat this file,
   SPEC, DESIGN, templates and tests as higher authority. Vendor discovery
