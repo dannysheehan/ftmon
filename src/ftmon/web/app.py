@@ -1089,6 +1089,58 @@ def _budget_row(row_id, label, value, limit, unit, *, spec=None,
             "tone": tone, "spec": spec}
 
 
+_STAGE_COUNTERS = (
+    ("sampling_seconds_total", "sampling"),
+    ("pipeline_seconds_total", "pipeline"),
+    ("commit_seconds_total", "commit"),
+    ("actions_outbox_seconds_total", "actions + outbox"),
+    ("retention_seconds_total", "retention"),
+    ("prune_seconds_total", "prune"),
+    ("reap_seconds_total", "reap"),
+)
+_STAGE_WINDOW_S = 3600.0
+
+
+def stage_rates(conn, *, now: float, window_s: float = _STAGE_WINDOW_S) -> dict:
+    """Utilization per stage from counter deltas (#106).
+
+    Cumulative seconds answer no operator question directly; the useful
+    quantity is the fraction of wall time a stage consumed, which is
+    `delta / elapsed`. Elapsed is measured between the *actual* first and last
+    sample timestamps rather than the nominal window, so a gap in sampling
+    understates nothing.
+
+    A negative delta means the counter reset -- the daemon restarted inside
+    the window -- and is reported as unavailable rather than as a spike.
+    """
+    out: dict = {"window_s": window_s, "elapsed_s": None, "stages": [], "reset": False}
+    for metric, label in _STAGE_COUNTERS:
+        rows = conn.execute(
+            "SELECT s.ts, s.value FROM series se JOIN samples s ON s.series_id = se.id "
+            "WHERE se.monitor = 'self' AND se.metric = ? AND s.ts >= ? "
+            "ORDER BY s.ts",
+            (metric, now - window_s),
+        ).fetchall()
+        if len(rows) < 2:
+            out["stages"].append({"name": label, "metric": metric, "pct": None,
+                                  "seconds": None})
+            continue
+        elapsed = rows[-1][0] - rows[0][0]
+        delta = rows[-1][1] - rows[0][1]
+        if delta < 0:
+            out["reset"] = True
+            out["stages"].append({"name": label, "metric": metric, "pct": None,
+                                  "seconds": None})
+            continue
+        out["elapsed_s"] = elapsed
+        out["stages"].append({
+            "name": label, "metric": metric, "seconds": delta,
+            # Percent of one core's wall-clock capacity.
+            "pct": (100.0 * delta / elapsed) if elapsed > 0 else None,
+        })
+    return out
+
+
 def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
     """Compose the operational Self panel (#105) from already-read values.
 
@@ -1151,14 +1203,13 @@ def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
             "degradation_age_s": (catalog or {}).get("last_degradation_age_s"),
             "monitor_attribution": monitor_attribution,
         },
-        # #106's stage gauges. `prune_s`/`reap_s` are subcomponents of
-        # `retention_s`, not additional stages, so they must not be summed
-        # with it. Ordered as the tick runs them.
-        "stages": [
-            {"name": name, "seconds": m(name)}
-            for name in ("sampling_s", "pipeline_s", "commit_s",
-                         "actions_outbox_s", "retention_s", "prune_s", "reap_s")
-        ],
+        # Supplied by the caller from counter deltas (#106): the cumulative
+        # totals answer no question on their own. prune and reap are
+        # subcomponents of retention, not additive peers.
+        "stages": (catalog or {}).get("stage_rates") or {
+            "window_s": _STAGE_WINDOW_S, "elapsed_s": None,
+            "stages": [], "reset": False,
+        },
     }
 
 
@@ -1232,7 +1283,9 @@ async def self_page(request: Request):
             # Read-side, so the per-channel split costs no persisted series
             # against the DM-16 catalog budget (DESIGN 10.7).
             dispatch = dispatch_health(q._conn)
-            catalog = catalog_report(q._conn, now=request.app.state.clock.now())
+            now = request.app.state.clock.now()
+            catalog = catalog_report(q._conn, now=now)
+            catalog["stage_rates"] = stage_rates(q._conn, now=now)
     defs, errors = loader.load_dir(
         paths.monitors_dir, actions_dir=paths.actions_dir, require_actions=True
     )

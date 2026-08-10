@@ -46,18 +46,25 @@ class SelfStats:
     db_used_bytes: float = 0.0
     db_freelist_bytes: float = 0.0
     db_headroom_bytes: float = 0.0
-    # Where the tick goes (RB-02, issue #106). Fixed cardinality on purpose:
-    # no monitor or source dimension, for the same reason
-    # external_check_failures is a summed total -- the self entity must stay a
-    # bounded namespace against DM-16. Seconds, from the injected monotonic
-    # clock only (TS-03).
-    sampling_s: float = 0.0
-    pipeline_s: float = 0.0
-    commit_s: float = 0.0
-    actions_outbox_s: float = 0.0
-    retention_s: float = 0.0
-    prune_s: float = 0.0
-    reap_s: float = 0.0
+    # Where the tick goes (RB-02, issue #106). Cumulative seconds, not
+    # last-tick gauges: the self monitor samples every 60 s while ticks run
+    # every 5 s, so a last-tick reading of a stage that only runs on some
+    # ticks -- sampling, retention -- reports 0 almost always. Measured on the
+    # canary: sampling and retention read zero in 10 of 10 samples while
+    # commit, which every tick performs, read non-zero in 6.
+    #
+    # Counters make utilization the derived quantity it actually is:
+    # delta(counter) / elapsed_wall gives the fraction of one core, correctly
+    # even when a sample is missed. Fixed cardinality on purpose -- no monitor
+    # or source dimension -- for the same reason external_check_failures is a
+    # summed total: the self entity must stay bounded against DM-16.
+    sampling_seconds_total: float = 0.0
+    pipeline_seconds_total: float = 0.0
+    commit_seconds_total: float = 0.0
+    actions_outbox_seconds_total: float = 0.0
+    retention_seconds_total: float = 0.0
+    prune_seconds_total: float = 0.0
+    reap_seconds_total: float = 0.0
     # 1 when the most recent retention pass had to degrade (DM-05).
     db_degrading: float = 0.0
     # None until a tick has run: publishing 0 on the first tick after a
@@ -107,19 +114,22 @@ class SelfSampler:
             # turns on, and one the disposable spike profiler could only
             # answer against a clone.
             #
-            # sampling_s covers *every* SA-06 shared sample, not just the
+            # sampling covers *every* SA-06 shared sample, not just the
             # process source: restricting it to `process` would push disk,
-            # net, unit and self sampling into pipeline_s, replacing one
-            # mislabelled gauge with another. External check *preparation*
-            # runs before the monitor loop and is outside both -- it is
-            # bounded separately by EC-02 deadlines.
-            "sampling_s": s.sampling_s,
-            "pipeline_s": s.pipeline_s,
-            "commit_s": s.commit_s,
-            "actions_outbox_s": s.actions_outbox_s,
-            "retention_s": s.retention_s,
-            "prune_s": s.prune_s,
-            "reap_s": s.reap_s,
+            # net, unit and self sampling into the pipeline counter,
+            # replacing one mislabelled metric with another. External check
+            # *preparation* runs before the monitor loop and is outside both
+            # -- it is bounded separately by EC-02 deadlines.
+            #
+            # prune and reap are subcomponents of retention, never additive
+            # peers: summing all seven would double-count the retention pass.
+            "sampling_seconds_total": s.sampling_seconds_total,
+            "pipeline_seconds_total": s.pipeline_seconds_total,
+            "commit_seconds_total": s.commit_seconds_total,
+            "actions_outbox_seconds_total": s.actions_outbox_seconds_total,
+            "retention_seconds_total": s.retention_seconds_total,
+            "prune_seconds_total": s.prune_seconds_total,
+            "reap_seconds_total": s.reap_seconds_total,
             "tick_overruns": float(s.tick_overruns),
             "event_queue_depth": float(s.event_queue_depth),
             "events_dropped": float(s.events_dropped),
