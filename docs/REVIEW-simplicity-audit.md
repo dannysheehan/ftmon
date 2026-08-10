@@ -1,6 +1,12 @@
 # FTMON v2 — Code Simplicity & Dead-Code Audit
 
-Date: 2026-08-10 (rev. 2 — corrected per maintainer review)
+Date: 2026-08-10 (rev. 3 — disposition recorded after the fixes landed)
+
+> **Reading this document.** It is a DO-09 maintainer record, so its original
+> findings are preserved even where they turned out to be wrong. Statements
+> corrected by later evidence carry a **Disposition** note; read those as the
+> current fact and the surrounding text as what was believed at the time.
+
 Scope: `src/ftmon/` (≈18,700 LOC) compared against `SPEC.md` and `DESIGN.md`.
 Method: full lint (`ruff check` — clean), targeted grep + read-through of every
 module family, parallel deep-dive agents on the large top-level modules.
@@ -83,6 +89,12 @@ render,events}.py`, `store/doctor.py`, `notify/{http,osascript,toast}.py`,
 `sources/{oslog,win_evtlog,repeats}.py`, `definitions/manage.py`,
 `checks/{text,trust,model}.py` — none dead, tree simply out of date.
 
+> **Disposition (#121 / PR #124):** this list was incomplete. The true count
+> was **22**, not 12: `web/` and `recipes/` appeared as bare directories with
+> no files, and `config.py`, `__main__.py` and `expr/ir.py` were absent
+> entirely. §1 is now exhaustive for `src/ftmon` modules excluding
+> `__init__.py`, enforced in both directions by `TestDesignInventory`.
+
 **DESIGN CLI mappings that don't match (`DESIGN.md:1304`):** `web.run_demo` (real
 entry is `web/app.py:run` + `web/demo_app.py:create_demo_app`);
 `definitions.install_builtins` → `cli.py:cmd_init`; `definitions.check_cli` →
@@ -93,6 +105,17 @@ foundation.md`, `PLAN-windows-msi-task-scheduler.md`, `WIN-BACKLOG.md` are
 committed files referenced by no living document, contradicting the M10 "root
 limited to living documents" rule. Archive to the issue tracker or `docs/`, or
 delete.
+
+> **Disposition (#121 / PR #124):** "referenced by no living document" was
+> wrong for two of the four. `WIN-BACKLOG.md` is cited by **shipped package
+> data** (`definitions/profile/windows/self.toml`) and two test files as the
+> record of measured Windows overhead justifying a loosened threshold, and
+> `PLAN-platform-foundation.md` is cited substantively by both spike NOTES.
+> Deleting either would have left shipped configuration pointing at a missing
+> file. Both moved to `docs/` with their six references updated.
+> `PLAN-baseline-visibility.md` and `PLAN-windows-msi-task-scheduler.md` were
+> genuinely obsolete and are deleted; their work shipped and git history is
+> sufficient.
 
 Recommendation: refresh DESIGN §1 (exact file tree + the three CLI mappings) —
 the doc/module drift is exactly the failure mode the repo's lint tests prevent
@@ -133,6 +156,24 @@ to `_DURABLE_SOURCES` would incorrectly classify the non-watchlist totals an
 alongside the `system`/`disk`/`self` full-monitor case. File as a bug with
 regression tests (assert watchlist `unit`/`listen` entities are `durable = 1`
 while non-watchlist `net` totals are `durable = 0`).
+
+> **Disposition (#119 / PR #123, merged):** fixed. The diagnosis held; the
+> mechanism differs from the recommendation above. Rather than recomputing
+> `source_options.watchlist` membership in the pipeline — which would couple it
+> to each source's entity-id format (`tcp:22` for `net`, `unit:<name>` for
+> `unit`) — `EntitySample` gained `synthetic: bool = False`, set by the source
+> that synthesizes the entity. The source reports provenance; the pipeline
+> applies the DM-04 policy as `monitor_durable or ent.synthetic`, so a source
+> can never widen its own retention. That is a change to the FROZEN §4 model,
+> recorded as DESIGN v0.29.
+>
+> A second requirement the audit correctly anticipated proved to be the larger
+> half: `TickWriter.series_id` honoured `durable` only when INSERTing, on
+> **both** the cache-hit and existing-row paths, so a classifier-only fix would
+> have left every existing installation misclassified. The cache now carries
+> `(id, durable)` and queues one-way `0 → 1` promotions applied as a single
+> UPDATE per tick inside the tick transaction. Rollups already pruned under the
+> old flag are not recoverable.
 
 ### 3.2 Daemon SQLite connection and lock file not explicitly cleaned up [MEDIUM/LOW]
 
@@ -298,6 +339,11 @@ tooling and deliberate modularity, not in design over-engineering:
 6. **Other duplication only when a concrete change touches those paths** (§4.2
    plausible items); skip §4.3–4.5 speculative abstraction.
 
+> **Disposition (rev. 3):** items 1 and 2 are done — §3.1 by PR #123 and §2 by
+> PR #124, which also deleted the two genuinely obsolete root plans and moved
+> the two with live citations. Items 3 and 5 are now issues #120 and #122.
+> Items 4 and 6 remain open and unowned.
+
 Validation commands (unchanged): `uv run ruff check src tests tools` and
 `uv run pytest -q`.
 
@@ -305,10 +351,12 @@ Validation commands (unchanged): `uv run ruff check src tests tools` and
 
 ## Appendix — GitHub issue cross-reference
 
-> **Staleness note (rev. 2):** issue states in the first revision were a
+> **Staleness note (rev. 3):** issue states in the first revision were a
 > point-in-time snapshot from `gh issue list` and quickly drifted from `main`.
 > This section records only what is verifiable in this checkout, not live issue
-> state.
+> state. Rev. 3 adds **Disposition** notes where later work settled a finding;
+> those cite the PR that landed it, which is checkable from git history rather
+> than from live issue state.
 
 - **Issue #102** (durable/process retention split): fixed in this checkout —
   `retention.py:79-82`/`312-338` apply the split to both the 5-minute and hourly
@@ -324,6 +372,12 @@ Validation commands (unchanged): `uv run ruff check src tests tools` and
   they should be co-ordinated.
 - Other review findings (§1 dead code, §2 DESIGN drift, §3.2 teardown) are not
   tracked as issues in this checkout and would be new backlog items.
+
+  > **Disposition (rev. 3):** they are tracked now. §3.2 teardown is **#120**
+  > (*Daemon: make process-lifetime resource ownership explicit*); §3.5/§4.2
+  > read-model ownership is **#122** (*Read model: own shared health and
+  > self-metric queries in `Query`*); §2 DESIGN drift is **#121**, resolved by
+  > PR #124, which also landed this document. §1 dead code remains untracked.
 - Open self-monitoring work (#97/#106/#107 family, incl. per-series pruning
   cursors) overlaps §3.5/§4.2 — co-ordinate any session-query refactor with that
   work rather than competing query paths.
