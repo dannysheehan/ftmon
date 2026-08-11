@@ -624,10 +624,24 @@ Two thresholds govern it, and they mean different things. `db_budget_mb`
 `db_warn_mb` (230) is the alarm level. They differ deliberately: retention's
 job is to hold the footprint just under 200 MB, so an alarm set at 200 MB
 fires whenever retention is succeeding. Setting it higher makes the incident
-mean *retention is failing*. The three `self` budget rules also own separate
+mean *retention is failing*. The `self` budget rules own separate
 incident groups — `cpu-budget`, `rss-budget`, `db-budget` — so a long
 incident is attributable to CPU, memory or storage rather than to all three
 at once.
+
+`self.toml` v3 adds a fourth group, `rss-growth`. The `rss-budget` rule is a
+*level* backstop: it fires once memory is already over budget. The growth
+rules fire on the approach, so you see a trend instead of an arrival. They
+follow the same four gates the `leak` monitor uses on other processes —
+coverage of the 6 h window, a minimum net rise, the slope itself, and ten
+confirming cycles — so a restart, a spike that fell back, or a short history
+cannot produce a six-hour verdict. It is a separate group for the same reason
+the others are: "FTMON is over its memory budget" and "FTMON's memory is
+climbing" are different conditions with different remedies.
+
+CPU deliberately has no growth rule. A rising slope is not evidence of a hog
+— the same reasoning SPEC applies to `monot` in the leak rules — so CPU stays
+level evidence, read as `cpu_pct` and its 10-minute average.
 
 **After upgrading**, your own `self.toml` keeps whatever rule it had, because
 FTMON never overwrites a definition you already have. A rule carried over

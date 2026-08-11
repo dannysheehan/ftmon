@@ -6,7 +6,7 @@ schema = 1
 [monitor]
 name = "self"
 description = "FTMON watches its own resource budget and pipeline health"
-version = 2
+version = 3
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -24,6 +24,19 @@ db_budget_mb = { value = 200, doc = "DM-05's normative enforcement target (used 
 # "retention is failing," not "retention is working."
 db_warn_mb = { value = 230, doc = "Alarm threshold for db-budget, deliberately above db_budget_mb (see comment above)" }
 stall_s = { value = 600, doc = "Warn when the event reader has been silent this long (s)" }
+# --- RSS growth (#106) -------------------------------------------------
+# rss-budget above is a *level* backstop: it fires once RSS is already over
+# budget. These catch the approach, so an operator sees a trend rather than
+# an arrival. Sized against rss_budget_mb, not guessed: 1 MB/h is 24 MB/day,
+# roughly a quarter of the 100 MB budget per day, which no healthy daemon
+# should sustain. Deliberately NOT tuned to alarm on the ~0.6 MB/h a 24-hour
+# canary measured -- that rise is real but not yet shown to be pathological,
+# and a threshold set to make today's reading fire proves nothing tomorrow.
+rss_growth_warn_mb_per_h = { value = 1.0, doc = "Warn when daemon RSS grows faster than this (MB/hour), sustained" }
+rss_growth_crit_mb_per_h = { value = 4.0, doc = "Error when daemon RSS grows this fast (MB/hour) - a quarter of the budget in a day" }
+rss_growth_min_coverage = { value = 0.8, doc = "Fraction of the 6h slope window that must actually be observed - otherwise a restart or a gap can pass for a six-hour verdict" }
+rss_growth_min_net_mb = { value = 4, doc = "Net RSS growth (MB) the 6h window must show - a rise that has since fallen back is not growth" }
+rss_growth_confidence = { value = 0.7, doc = "Fraction of rising samples used as the trend-profile confidence signal (not an alert gate)" }
 
 [[rule]]
 id = "cpu-budget"
@@ -53,6 +66,32 @@ severity = "warning"
 confirm_cycles = 3
 message = "FTMON database over budget: {db_used_mb:.0f} MB used (pruning should engage)"
 
+# Own incident group (RB-02): sharing rss-budget would let one incident stay
+# open while ownership moved between "over budget" and "growing", so its
+# duration and recovery history would describe nothing in particular.
+#
+# Gated on coverage and net delta before the slope is trusted, exactly as
+# leak.toml does: coverage rejects a verdict resting on a handful of samples
+# after a restart, and net delta rejects a sawtooth that has already fallen
+# back. Growth confidence is deliberately NOT a gate -- a stepwise leak
+# (grow, plateau, grow) scores low on consecutive-delta confidence while
+# being precisely what this must catch; it stays the trend signal only.
+[[rule]]
+id = "rss-growth-warn"
+group = "rss-growth"
+when = 'coverage(rss_bytes, "6h") >= rss_growth_min_coverage and delta(rss_bytes, "6h") > rss_growth_min_net_mb * MB and slope(rss_bytes, "6h") * 3600 > rss_growth_warn_mb_per_h * MB'
+severity = "warning"
+confirm_cycles = 10
+message = "FTMON RSS growing: {rss_slope_mbph:.1f} MB/h sustained (now {rss_mb:.0f} MB)"
+
+[[rule]]
+id = "rss-growth-crit"
+group = "rss-growth"
+when = 'coverage(rss_bytes, "6h") >= rss_growth_min_coverage and delta(rss_bytes, "6h") > rss_growth_min_net_mb * MB and slope(rss_bytes, "6h") * 3600 > rss_growth_crit_mb_per_h * MB'
+severity = "error"
+confirm_cycles = 10
+message = "FTMON RSS growing fast: {rss_slope_mbph:.1f} MB/h sustained (now {rss_mb:.0f} MB)"
+
 [[rule]]
 id = "event-stall"
 when = 'source_activity_age_s > stall_s'
@@ -71,3 +110,48 @@ expr = 'rss_bytes / MB'
 [[derived]]
 name = "db_used_mb"
 expr = 'db_used_bytes / MB'
+
+[[derived]]
+name = "rss_slope_mbph"
+expr = 'slope(rss_bytes, "6h") * 3600 / MB'
+
+[[derived]]
+name = "rss_growth_conf"
+expr = 'monot(rss_bytes, "6h")'
+
+# Signed on purpose: retention pushing the footprint back down is the
+# interesting case, and clamping at zero would erase it (DM-05).
+[[derived]]
+name = "db_used_slope_mbph"
+expr = 'slope(db_used_bytes, "6h") * 3600 / MB'
+
+[[derived]]
+name = "db_headroom_mb"
+expr = 'db_headroom_bytes / MB'
+
+[[trend]]
+id = "rss-growth"
+kind = "growth"
+title = "FTMON memory growth"
+value_metric = "rss_mb"
+value_unit = "MiB"
+rate_metric = "rss_slope_mbph"
+rate_unit = "MiB/hour"
+confidence_metric = "rss_growth_conf"
+confidence_threshold_param = "rss_growth_confidence"
+rate_threshold_params = ["rss_growth_warn_mb_per_h", "rss_growth_crit_mb_per_h"]
+incident_group = "rss-growth"
+
+# Capacity, not growth: the question is headroom against DM-05's target, and
+# the rate may legitimately be negative when retention is winning.
+[[trend]]
+id = "db-capacity"
+kind = "capacity"
+title = "FTMON database capacity"
+value_metric = "db_used_mb"
+value_unit = "MiB"
+rate_metric = "db_used_slope_mbph"
+rate_unit = "MiB/hour"
+remaining_metric = "db_headroom_mb"
+value_threshold_params = ["db_budget_mb", "db_warn_mb"]
+incident_group = "db-budget"
