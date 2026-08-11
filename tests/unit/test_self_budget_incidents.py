@@ -316,9 +316,11 @@ def test_sustained_rss_growth_opens_only_after_every_gate_rb_02(tmp_path):
 def test_plateau_after_a_rise_does_not_open_rb_02(tmp_path):
     """[RB-02] A rise that has stopped is not growth.
 
-    Net delta over the window is what rejects it: the slope across a window
-    that is half ramp and half flat is still positive, so slope alone would
-    open here. This is the sawtooth case the leak rules learned in v0.19.
+    Behavioural, not gate-isolating: the flat stretch outlasts the window, so
+    the trailing 6 h is entirely flat and *both* slope (0.00 MB/h) and net
+    delta (0.00 MB) reject it. It asserts the outcome an operator cares about
+    -- no incident for memory that stopped climbing -- and says nothing about
+    which gate did the work.
     """
     paths = _core_with_shipped_self(tmp_path)
     sampler = ScriptedSelfSampler()
@@ -354,12 +356,13 @@ def test_cpu_evidence_is_level_never_slope_rb_02(tmp_path):
 
 
 def test_rise_that_falls_back_does_not_open_rb_02(tmp_path):
-    """[RB-02] The net-delta gate, isolated.
+    """[RB-02] A rise that has fallen back is not growth.
 
-    A long rise followed by a sharp fall keeps a positive least-squares slope
-    — most of the window is rising — while `delta` over the window is ~0.
-    Slope alone would open here; net delta is what rejects it. This is the
-    sawtooth the leak rules learned in v0.19, on the daemon.
+    Also behavioural rather than gate-isolating, contrary to an earlier
+    claim: the trailing window regresses to +0.22 MB/h, under the 1 MB/h
+    threshold, so slope rejects it before net delta (-4.00 MB) is consulted.
+    No test here isolates the net-delta gate; see the note on it in
+    self.toml.
     """
     paths = _core_with_shipped_self(tmp_path)
     sampler = ScriptedSelfSampler()

@@ -33,7 +33,7 @@ stall_s = { value = 600, doc = "Warn when the event reader has been silent this 
 # canary measured -- that rise is real but not yet shown to be pathological,
 # and a threshold set to make today's reading fire proves nothing tomorrow.
 rss_growth_warn_mb_per_h = { value = 1.0, doc = "Warn when daemon RSS grows faster than this (MB/hour), sustained" }
-rss_growth_crit_mb_per_h = { value = 4.0, doc = "Error when daemon RSS grows this fast (MB/hour) - a quarter of the budget in a day" }
+rss_growth_crit_mb_per_h = { value = 4.0, doc = "Error when daemon RSS grows this fast (MB/hour) - 96 MB/day, essentially the whole budget in a day" }
 rss_growth_min_coverage = { value = 0.8, doc = "Fraction of the 6h slope window that must actually be observed - otherwise a restart or a gap can pass for a six-hour verdict" }
 rss_growth_min_net_mb = { value = 4, doc = "Net RSS growth (MB) the 6h window must show - a rise that has since fallen back is not growth" }
 rss_growth_confidence = { value = 0.7, doc = "Fraction of rising samples used as the trend-profile confidence signal (not an alert gate)" }
@@ -76,6 +76,12 @@ message = "FTMON database over budget: {db_used_mb:.0f} MB used (pruning should 
 # back. Growth confidence is deliberately NOT a gate -- a stepwise leak
 # (grow, plateau, grow) scores low on consecutive-delta confidence while
 # being precisely what this must catch; it stays the trend signal only.
+#
+# The net-delta gate is defence in depth inherited from leak.toml and is not
+# isolated by any test: for a series ending near where it started the fitted
+# slope is also near zero, so slope rejects first. Removing it breaks no
+# test. Kept for consistency with leak.toml, not because it is load-bearing
+# here (#106 review).
 [[rule]]
 id = "rss-growth-warn"
 group = "rss-growth"
