@@ -86,10 +86,11 @@ message = "FTMON database over budget: {db_used_mb:.0f} MB used (pruning should 
 # KNOWN LIMITATION -- the first eligible window after a restart can contain
 # allocator warm-up. Coverage measures sample *density*, not whether the
 # process has reached steady state, so a daemon 4.8 h old satisfies the 0.8
-# gate while most of its window is warm-up. Observed on a canary: RSS rose
-# 51 -> 71 MB in the first 2 h, then 4.4 MB over the next 10.6 h; the rule
-# opened at 5.0 h uptime reading 1.88 MB/h and self-cleared 1.4 h later as
-# the warm-up scrolled out of the window.
+# gate with the early warm-up still inside the window, where it can dominate
+# the fitted slope. Observed on one canary: RSS rose 51 -> 71 MB in the first
+# 2 h, then 4.4 MB over the next 10.6 h; the rule opened at 5.0 h uptime
+# reading 1.88 MB/h and self-cleared 1.4 h later as that warm-up scrolled out
+# of the window.
 #
 # Deliberately not "fixed". The warning was factually correct and left no bad
 # state. Raising coverage to 1.0 only delays the same biased window, and a
