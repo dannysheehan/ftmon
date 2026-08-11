@@ -643,6 +643,24 @@ CPU deliberately has no growth rule. A rising slope is not evidence of a hog
 — the same reasoning SPEC applies to `monot` in the leak rules — so CPU stays
 level evidence, read as `cpu_pct` and its 10-minute average.
 
+**After a restart, expect one possible self-clearing growth warning.** FTMON's
+memory rises while allocator arenas and caches fill — on one measured host,
+51 MB to 71 MB over roughly two hours, then only 4 MB across the following ten.
+The coverage gate counts how much of the six-hour window was *observed*, not
+whether the daemon has settled, so the first eligible verdict at about five
+hours' uptime can still be dominated by that warm-up. It opens a warning and
+clears itself an hour or two later, once the early climb scrolls out of the
+window.
+
+That is left as-is on purpose. The warning is factually true — memory really
+was climbing that fast over the window it measured — and it resolves without
+intervention. Requiring full coverage would only postpone the same skewed
+window, and refusing to judge until the daemon had been up for hours would
+suppress exactly the case most worth catching: a leak that begins immediately
+after a restart. If you see one growth warning shortly after starting FTMON
+and it clears on its own, that is the expected behaviour; a warning that
+persists past a few hours of uptime is not.
+
 **After upgrading**, your own `self.toml` keeps whatever rule it had, because
 FTMON never overwrites a definition you already have. A rule carried over
 from before this change alarms on file size rather than used pages, so
