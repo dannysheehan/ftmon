@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.32**. Companion to `SPEC.md` v0.50 — every design element
+Status: **DRAFT v0.33**. Companion to `SPEC.md` v0.51 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -718,7 +718,21 @@ exit.
 
 ## 9. Capacity worksheet (DM-16) — and the two SPEC amendments
 
-Assumptions (become validation limits): ≤ 400 persisted entities; active persisted series ≈ **270** (top-15 procs × 6 metrics + ~10 promoted × 6 + ~10 watchlist × 6 + disk 6 mounts × 5 + system 12 + net 8 + self 12); 60 s intervals; WITHOUT ROWID sample row ≈ 35 B, rollup row ≈ 45 B effective (incl. b-tree overhead); stored events ≈ 2 000/day at ≈ 350 B.
+Planning assumptions: ≤ 400 persisted entities; active persisted series ≈
+**270** (top-15 procs × 6 metrics + ~10 promoted × 6 + ~10 watchlist ×
+6 + disk 6 mounts × 5 + system 12 + net 8 + self 12); 60 s intervals;
+WITHOUT ROWID sample row ≈ 35 B, rollup row ≈ 45 B effective (incl.
+b-tree overhead); stored events ≈ 2 000/day at ≈ 350 B. The ~10 promoted
+term is a **host-wide planning estimate** for one dominant promotion monitor,
+not a per-monitor allocation. The separately chosen runtime cap is ten per
+monitor, so *N* monitors with promotion expressions can admit up to 10*N*
+promotions. That can exceed the worksheet's ~270-series scenario; the binding
+host-wide constraints remain the 400 persisted-entity budget and DM-05's used-
+page budget. On the reference canary at 2026-08-14, four of five enabled
+process monitors carry promotion expressions, so the per-monitor cap permits
+40 promotion admissions rather than the planning estimate's ~10. Static
+quantities become validation limits where the definition loader can know them;
+runtime quantities are bounded and reported where they are admitted.
 
 | Store | Rows | Size |
 | --- | --- | --- |
@@ -831,6 +845,23 @@ gone-detection: entities seen before but absent → CA-08 grace timer
 ### 10.3 Promotion (SA-05)
 
 The process source keeps its own all-process short window (15 samples) in `rings` under a non-persisted namespace. After each cycle, `promotion.expr` (from `leak.toml` et al.) is evaluated per process against that window; newly-true → promote (start persisting + full ring), false for 30 min → demote. Transitions → self-events.
+
+Promotion is a persistence decision, not an evaluation gate: every non-exempt
+sampled process reaches the rules before `_select_persisted` runs. Admission is
+bounded to the chosen concentration guardrail
+`PROMOTION_LIMIT_PER_MONITOR = 10`; this is separate from §9's host-wide ~10
+planning estimate and permits up to 10*N* admissions across *N* promotion
+monitors. Existing true promotions are refreshed first; expired promotions
+demote; new matching entity IDs are sorted and admitted into remaining slots.
+The sort provides deterministic admission, not severity ranking: the boolean
+promotion expression exposes no scalar by which matches could be ranked, so a
+more severe match may be refused while an earlier entity ID holds a slot.
+Further matches are retained only in bounded rings and counted as distinct
+refusals while they remain denied. The first denied set emits one notice event
+with provider `ftmon.<monitor>` / event ID `promotion-limit`; returning below
+the limit emits one recovery event. Fixed self metrics publish current limited
+monitor count and cumulative admission refusals without creating a metric name
+per monitor. Rule evaluation and top-N selection are unchanged.
 
 ### 10.4 Incident engine (IN-01..08) — pure
 

@@ -69,6 +69,19 @@
       </td>
     </tr>
     <tr>
+      <th scope="row">Promotion guardrail</th>
+      <td colspan="2">
+        {% if panel.catalog.promotion_limited_monitors is none %}
+        <span class="panel-absent">not available yet</span> — no daemon has published it
+        {% else %}
+        <strong>{{ panel.catalog.promotion_limited_monitors }}</strong> monitors currently limited,
+        <strong>{{ panel.catalog.promotion_rejections_total }}</strong> admissions refused
+        since daemon start
+        <span class="panel-limit">— {{ panel.catalog.promotion_limit_per_monitor }} promoted entities per monitor</span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
       <th scope="row">Running</th>
       <td colspan="2">
         {{ panel.catalog.entities_not_gone }} entities,

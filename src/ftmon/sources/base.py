@@ -175,6 +175,10 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
                "Entities being written durable history now, against the DM-16 budget"),
             _m("series_persisted", "count", "gauge",
                "Series written this tick, against DM-16's ~270 series worksheet"),
+            _m("promotion_limited_monitors", "count", "gauge",
+               "Process monitors currently refusing promotion admissions at the DM-16 cap"),
+            _m("promotion_rejections_total", "count", "counter",
+               "Promotion admission refusals at the per-monitor runtime cap"),
             _m("cycle_s", "s", "gauge", "Last full tick duration"),
             # Stage breakdown (RB-02, #106) as cumulative counters, not
             # last-tick gauges: the self monitor samples every 60 s while

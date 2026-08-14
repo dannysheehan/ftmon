@@ -195,6 +195,12 @@ out the interval. Three knobs cover most needs:
   report a generic process name (`MainThread`, `node`), so match on
   `exe_base` (the executable's basename) instead of `name` when targeting
   them — alerts likewise show the executable, e.g. `agent (MainThread)`.
+- **`promotion`** (process monitors) — a durable-history selector, not an
+  alert selector. Rules already evaluate every non-exempt sampled process.
+  Broadly promoting every browser tab, worker, or other churning class creates
+  catalog and rollup history without improving alert coverage. Promotion is
+  capped at ten entities per monitor; `ftmon doctor`, `/self`, and a
+  monitor-naming self-event report when further matches are refused.
 
 For systematic threshold calibration on a live host, see the
 [tuning procedure](tuning-procedure.md) (`tools/tuning/leaky.py` and
@@ -695,6 +701,12 @@ breach. Those two count *selection*, not what happens
 to be running: a process FTMON samples but does not persist costs nothing
 against the catalog, so a much larger "running" count is normal and `doctor`
 reports it separately, without a budget comparison.
+
+The same surfaces report the promotion guardrail: monitors currently refusing
+matches at the ten-entity promotion limit and admission refusals since daemon start.
+Refusal affects durable history only. Top-N persistence and rule evaluation
+continue, so an over-broad promotion expression degrades charts rather than
+silencing alerts.
 
 Never run direct SQL or full `VACUUM` against the live daemon
 database.

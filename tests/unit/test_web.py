@@ -180,6 +180,22 @@ def test_self_panel_reports_absent_metrics_as_unavailable_ui_09(tmp_path):
     assert "0.0%" not in page
 
 
+def test_self_panel_surfaces_promotion_runtime_guardrail_ui_02_dm_16(tmp_path):
+    """[UI-02][DM-16] Runtime-only promotion pressure is visible without a
+    dynamic per-monitor metric namespace."""
+    client, paths = _client(tmp_path)
+    _seed_self_metrics(
+        paths,
+        promotion_limited_monitors=2,
+        promotion_rejections_total=17,
+    )
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    assert "Promotion guardrail" in page
+    assert "<strong>2</strong> monitors currently limited" in page
+    assert "<strong>17</strong> admissions refused" in page
+    assert "10 promoted entities per monitor" in page
+
+
 def test_self_panel_states_values_in_text_not_only_meters_ui_09(tmp_path):
     """[UI-09] Colour and bar length are never the only carriers of a reading."""
     client, paths = _client(tmp_path)

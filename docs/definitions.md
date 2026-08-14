@@ -89,6 +89,20 @@ Section reference:
 | `[[rule]]` | yes (≥1) | see below |
 | `[[trend]]` | no | validated presentation profile joining persisted value/rate metrics; see below |
 
+For a `process` monitor, `[promotion]` controls **durable history only**. Rules
+already evaluate for every non-exempt sampled process, whether it is selected
+for persistence or not. Do not broadly promote a churning class merely so a
+quiet member can alert later; that adds catalog/rollup cost without adding
+alert coverage. Promote only the bounded, currently interesting subset whose
+charts need to survive beyond the in-memory ring. FTMON admits at most ten
+promoted entities per monitor; this chosen concentration guardrail is separate
+from DM-16's host-wide capacity estimate. Further matches remain rule-visible
+but are refused durable admission, with a monitor-naming self-event and
+promotion-guardrail counts in `ftmon doctor` and `/self`. At the limit, stable
+entity-ID order makes admission deterministic but does not rank severity: a
+promotion expression exposes only a match, not a score, so keep its predicate
+selective.
+
 ### Dashboard glance readouts
 
 `[glance]` is optional and sampler-only. It tells the dashboard which one
@@ -539,7 +553,7 @@ source = "process"
 warn_bph = { value = 10000000, doc = "Warn bytes/hour of RSS growth" }
 
 [promotion]
-expr = 'matches(name, "^worker") or matches(exe_base, "^worker")'
+expr = '(matches(name, "^worker") or matches(exe_base, "^worker")) and monot(rss_bytes, "15m") >= 0.8 and delta(rss_bytes, "15m") > 16*MB'
 
 [[derived]]
 name = "growth_bph"
@@ -552,6 +566,11 @@ severity = "warning"
 confirm_cycles = 3
 message = "{display} RSS rising {growth_bph:.0f} B/h"
 ```
+
+The worker-name predicate belongs on the rule because rules see every
+non-exempt process. Promotion repeats it only to retain history for workers
+that are already exhibiting the trend; promoting every worker lifetime would
+spend durable catalog space without making the rule any more likely to fire.
 
 `exe_base` and `cmd_hint` may be absent on some entities; then
 `matches(exe_base, ...)` is unknown (EX-06), not a silent false. `display` is
