@@ -275,10 +275,9 @@ class TestStageTimingNamespace:
         assert not [name for name in first if ":" in name]
 
 
-# --- RSS growth (#106 §2) -------------------------------------------------
-# 6 h window at a 60 s interval = 360 samples; ticks below are sized from that
-# rather than guessed, because coverage() is the first gate and a short run
-# would be rejected for coverage no matter what the slope did.
+# --- RSS projected exhaustion (#106 §2b) ---------------------------------
+# 6 h window at a 60 s interval = 360 samples; ticks are sized from that
+# because coverage is the first gate and a short run is rejected regardless.
 _WINDOW_TICKS = 360
 
 
@@ -287,115 +286,202 @@ def _rss_ramp(sampler, *, start_mb, per_tick_mb, ticks):
         sampler.push(_metrics(rss=(start_mb + i * per_tick_mb) * MB))
 
 
-def test_sustained_rss_growth_opens_only_after_every_gate_rb_02(tmp_path):
-    """[RB-02] Growth opens once coverage, net delta, slope and confirmation
-    all pass — the same four-gate shape leak.toml uses, on the daemon itself.
+class TestProjectedExhaustion:
+    """[RB-02] The rule asks whether the trend exhausts the budget, not
+    whether the rate exceeds a constant.
 
-    2 MB/h is above the 1 MB/h warn threshold and below the 4 MB/h error one,
-    so this asserts the warning rung specifically rather than "something
-    opened".
+    A 59-hour canary soak grew linearly at ~0.42 MB/h from 55 MB to a 100 MB
+    breach while the v3 fixed gate of 1.0 MB/h never fired. The same rate is
+    benign with 45 MB of headroom and terminal with 3 MB; a rate threshold
+    cannot see the difference.
     """
-    paths = _core_with_shipped_self(tmp_path)
-    sampler = ScriptedSelfSampler()
-    # 2 MB/h = 1/30 MB per 60 s tick. Starts well under rss_budget_mb so the
-    # level rule cannot open instead and satisfy the assertion for us.
-    _rss_ramp(sampler, start_mb=20, per_tick_mb=2.0 / 60, ticks=_WINDOW_TICKS + 40)
-    _run(paths, sampler, ticks=_WINDOW_TICKS + 40)
 
-    states = _incidents(paths, "rss-growth")
-    assert states, "sustained growth past every gate must open rss-growth"
-    assert states[-1][0] == "open"
-    # The warning rung, not the error one: 2 MB/h sits between the two
-    # thresholds, so this pins which rung owns the incident.
-    assert states[-1][1] == "rss-growth-warn"
-    # Its own group (RB-02): the level rule must not have opened instead,
-    # which is what sharing a group would have allowed.
-    assert not _incidents(paths, "rss-budget")
+    # 0.42 MB/h, the rate the soak actually measured, per 60 s tick.
+    SOAK_RATE = 0.42 / 60
 
+    def test_soak_rate_inside_the_72h_horizon_warns(self, tmp_path):
+        """[RB-02] the case v3 missed: real growth, headroom inside 72 h.
 
-def test_plateau_after_a_rise_does_not_open_rb_02(tmp_path):
-    """[RB-02] A rise that has stopped is not growth.
+        Headroom is chosen to sit between the two horizons — 0.42 MB/h spans
+        10.1 MB in 24 h and 30.2 MB in 72 h — so this pins the *warning* rung
+        specifically. Asserting only `state == "open"` would pass on the error
+        rung too, and did: a mutation replacing this rule with a fixed
+        1 MB/h gate survived until the owning rule was asserted.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        # ends near 80.8 MB -> ~19 MB headroom: inside 72 h, outside 24 h
+        _rss_ramp(sampler, start_mb=78, per_tick_mb=self.SOAK_RATE,
+                  ticks=_WINDOW_TICKS + 40)
+        _run(paths, sampler, ticks=_WINDOW_TICKS + 40)
 
-    Behavioural, not gate-isolating: the flat stretch outlasts the window, so
-    the trailing 6 h is entirely flat and *both* slope (0.00 MB/h) and net
-    delta (0.00 MB) reject it. It asserts the outcome an operator cares about
-    -- no incident for memory that stopped climbing -- and says nothing about
-    which gate did the work.
-    """
-    paths = _core_with_shipped_self(tmp_path)
-    sampler = ScriptedSelfSampler()
-    _rss_ramp(sampler, start_mb=20, per_tick_mb=2.0 / 60, ticks=60)
-    # then flat for a full window, so the trailing 6 h shows no net growth
-    sampler.push(_metrics(rss=22 * MB), times=_WINDOW_TICKS + 60)
-    _run(paths, sampler, ticks=_WINDOW_TICKS + 120)
+        states = _incidents(paths, "rss-growth")
+        assert states, "growth that exhausts the budget within 72 h must warn"
+        assert states[-1][0] == "open"
+        assert states[-1][1] == "rss-growth-warn", "the warning rung, not the error one"
 
-    assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"], (
-        "RSS that rose and then stopped is not actively growing"
-    )
+    def test_headroom_inside_24h_escalates_to_error(self, tmp_path):
+        """[RB-02] the shorter horizon owns the error rung."""
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        # ends near 97.8 MB -> ~2 MB headroom: inside 24 h
+        _rss_ramp(sampler, start_mb=95, per_tick_mb=self.SOAK_RATE,
+                  ticks=_WINDOW_TICKS + 40)
+        _run(paths, sampler, ticks=_WINDOW_TICKS + 40)
 
+        states = _incidents(paths, "rss-growth")
+        assert states and states[-1][0] == "open"
+        assert states[-1][1] == "rss-growth-crit"
 
-def test_cpu_evidence_is_level_never_slope_rb_02(tmp_path):
-    """[RB-02][MD-10] CPU rising steadily must not open a growth incident.
+    def test_same_rate_with_ample_headroom_stays_quiet(self, tmp_path):
+        """[RB-02] the discrimination a fixed rate cannot make.
 
-    The issue is explicit that CPU stays level evidence: a slope is not hog
-    evidence, which is the same reasoning SPEC already applies to `monot` in
-    the leak rules. A definition that grew a CPU growth rate would open here.
-    """
-    paths = _core_with_shipped_self(tmp_path)
-    sampler = ScriptedSelfSampler()
-    # Rising, but every sample stays under cpu_budget_pct (1.5), so the level
-    # rule correctly stays quiet and only a slope rule could fire.
-    for i in range(_WINDOW_TICKS + 40):
-        sampler.push(_metrics(cpu=0.1 + i * 0.002))
-    _run(paths, sampler, ticks=_WINDOW_TICKS + 40)
+        Identical slope to the test above. Only the headroom differs, and at
+        50 MB the trend needs ~120 h to exhaust the budget — outside the 72 h
+        horizon, so no incident.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        _rss_ramp(sampler, start_mb=48, per_tick_mb=self.SOAK_RATE,
+                  ticks=_WINDOW_TICKS + 40)
+        _run(paths, sampler, ticks=_WINDOW_TICKS + 40)
 
-    for group in ("cpu-budget", "cpu-growth", "rss-growth"):
-        assert not [s for s in _incidents(paths, group) if s[0] == "open"], (
-            f"rising CPU under budget must not open {group}"
+        assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"], (
+            "the same slope with 50 MB of headroom is not an exhaustion risk"
         )
 
+    def test_silent_once_actually_over_budget(self, tmp_path):
+        """[RB-02] positive headroom is required, so the prediction hands off
+        to rss-budget rather than duplicating it once the breach is real."""
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        _rss_ramp(sampler, start_mb=101, per_tick_mb=self.SOAK_RATE,
+                  ticks=_WINDOW_TICKS + 40)
+        _run(paths, sampler, ticks=_WINDOW_TICKS + 40)
 
-def test_rise_that_falls_back_does_not_open_rb_02(tmp_path):
-    """[RB-02] A rise that has fallen back is not growth.
+        assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"], (
+            "over budget is rss-budget's condition, not a prediction"
+        )
+        assert _incidents(paths, "rss-budget"), "the level rule owns it instead"
 
-    Also behavioural rather than gate-isolating, contrary to an earlier
-    claim: the trailing window regresses to +0.22 MB/h, under the 1 MB/h
-    threshold, so slope rejects it before net delta (-4.00 MB) is consulted.
-    No test here isolates the net-delta gate; see the note on it in
-    self.toml.
-    """
-    paths = _core_with_shipped_self(tmp_path)
-    sampler = ScriptedSelfSampler()
-    # 5 h climbing at 6 MB/h (well past both thresholds), then 1 h back down
-    # to the starting level, so the window ends where it began.
-    rise, fall = 300, 60
-    for i in range(rise):
-        sampler.push(_metrics(rss=(20 + i * 6.0 / 60) * MB))
-    top = 20 + rise * 6.0 / 60
-    for i in range(fall):
-        sampler.push(_metrics(rss=(top - (top - 20) * (i + 1) / fall) * MB))
-    sampler.push(_metrics(rss=20 * MB), times=40)
-    _run(paths, sampler, ticks=rise + fall + 40)
+    def test_flat_memory_near_the_budget_stays_quiet(self, tmp_path):
+        """[RB-02] small headroom alone is not a risk; the slope must be
+        positive. A daemon parked just under budget is not exhausting it."""
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        sampler.push(_metrics(rss=97 * MB), times=_WINDOW_TICKS + 40)
+        _run(paths, sampler, ticks=_WINDOW_TICKS + 40)
 
-    assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"], (
-        "a rise that has fallen back is not active growth"
-    )
+        assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"]
 
+    def test_hysteresis_holds_the_incident_through_a_quiet_patch(self, tmp_path):
+        """[RB-02] clear_cycles is the anti-flap guard.
 
-def test_short_history_does_not_open_however_steep_rb_02(tmp_path):
-    """[RB-02] The coverage gate, isolated.
+        Headroom shrinks as RSS climbs, so the condition sits near its own
+        boundary and 6 h slope noise would otherwise open and close it
+        repeatedly. A few quiet cycles must not clear a 30-cycle rule.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        _rss_ramp(sampler, start_mb=95, per_tick_mb=self.SOAK_RATE,
+                  ticks=_WINDOW_TICKS + 40)
+        # A sharp drop makes the condition genuinely FALSE — a flat patch
+        # would not, because the 6 h slope stays positive while the ramp is
+        # still inside the window, so it would not exercise clearing at all.
+        sampler.push(_metrics(rss=40 * MB), times=5)
+        _run(paths, sampler, ticks=_WINDOW_TICKS + 45)
 
-    Steep enough to pass slope and net delta easily, but observed for far
-    less than the 6 h window — the situation after a restart. Without
-    coverage, a handful of samples would deliver a six-hour verdict.
-    """
-    paths = _core_with_shipped_self(tmp_path)
-    sampler = ScriptedSelfSampler()
-    # 20 MB/h for 40 minutes: slope and net delta both far past their gates,
-    # coverage only 40/360 of the window.
-    _rss_ramp(sampler, start_mb=20, per_tick_mb=20.0 / 60, ticks=40)
-    _run(paths, sampler, ticks=40)
+        states = _incidents(paths, "rss-growth")
+        assert states and states[-1][0] == "open", (
+            "5 false cycles must not clear a 30-cycle rule"
+        )
 
-    assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"], (
-        "40 minutes of history cannot support a six-hour verdict"
-    )
+    def test_short_history_cannot_produce_a_verdict(self, tmp_path):
+        """[RB-02] the coverage gate, isolated.
+
+        Steep enough that slope, net growth and the horizon all pass easily,
+        but observed for far less than the 6 h window — the situation after a
+        restart. Without coverage a handful of samples would deliver a
+        six-hour verdict on the daemon's remaining life.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        # 6 MB/h for 40 min, ending ~4 MB below budget: every other gate open
+        _rss_ramp(sampler, start_mb=92, per_tick_mb=6.0 / 60, ticks=40)
+        _run(paths, sampler, ticks=40)
+
+        assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"], (
+            "40 minutes of history cannot support a six-hour projection"
+        )
+
+    def test_dip_and_recovery_near_the_budget_stays_quiet(self, tmp_path):
+        """[RB-02] the positive-net-growth gate, isolated.
+
+        Memory that dipped and climbed back to where it started is not
+        growing, but the fitted slope over the window is positive because
+        most of it rises. With little headroom the horizon test passes, so
+        `delta > 0` is the only thing rejecting it.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        # 97 -> 88 -> 96 inside one window: delta -1.00 MB (negative) while
+        # the long recovery leg leaves slope at +0.268 MB/h and headroom at
+        # 4 MB, so the horizon test passes. Shape checked numerically: a
+        # shallower dip gives a negative slope and would prove nothing,
+        # because the horizon test would reject it on its own.
+        sampler.push(_metrics(rss=97 * MB), times=40)
+        for i in range(40):
+            sampler.push(_metrics(rss=(97 - 9 * (i + 1) / 40) * MB))
+        for i in range(280):
+            sampler.push(_metrics(rss=(88 + 8 * (i + 1) / 280) * MB))
+        _run(paths, sampler, ticks=_WINDOW_TICKS)
+
+        assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"], (
+            "recovering to a previous level is not growth toward exhaustion"
+        )
+
+    def test_clear_requires_the_full_thirty_cycles(self, tmp_path):
+        """[RB-02] the hysteresis magnitude, not merely its presence.
+
+        The companion test proves 5 false cycles do not clear. That passes
+        for any clear_cycles above 5, so it cannot distinguish 30 from 60.
+        This one runs 35 false cycles and requires the incident to have
+        cleared, which fails if the value is raised.
+
+        Together the two bound the setting to (5, 35] rather than pinning it.
+        That is intentional: 30 is provisional pending backtesting against
+        rollup5m history, and 10 is a plausible outcome. Asserting 30 exactly
+        would encode an unvalidated number as a requirement and would have to
+        be edited by whatever the backtest concludes. The pair still rejects
+        the values that would break the rule -- 1 removes hysteresis entirely
+        and 60 is slow enough to hold a stale incident for an hour.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        _rss_ramp(sampler, start_mb=95, per_tick_mb=self.SOAK_RATE,
+                  ticks=_WINDOW_TICKS + 40)
+        sampler.push(_metrics(rss=40 * MB), times=35)
+        _run(paths, sampler, ticks=_WINDOW_TICKS + 75)
+
+        states = _incidents(paths, "rss-growth")
+        assert states and states[-1][0] == "cleared", (
+            "35 false cycles must clear a 30-cycle rule"
+        )
+
+    def test_cpu_evidence_is_level_never_slope_rb_02(self, tmp_path):
+        """[RB-02][MD-10] CPU rising steadily must not open a growth incident.
+
+        A slope is not hog evidence, the same reasoning SPEC applies to
+        `monot` in the leak rules. A definition that grew a CPU growth or
+        CPU-exhaustion rule would open here.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        for i in range(_WINDOW_TICKS + 40):
+            sampler.push(_metrics(cpu=0.1 + i * 0.002))
+        _run(paths, sampler, ticks=_WINDOW_TICKS + 40)
+
+        for group in ("cpu-budget", "cpu-growth", "rss-growth"):
+            assert not [s for s in _incidents(paths, group) if s[0] == "open"], (
+                f"rising CPU under budget must not open {group}"
+            )

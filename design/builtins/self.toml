@@ -6,7 +6,7 @@ schema = 1
 [monitor]
 name = "self"
 description = "FTMON watches its own resource budget and pipeline health"
-version = 3
+version = 4
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -24,18 +24,22 @@ db_budget_mb = { value = 200, doc = "DM-05's normative enforcement target (used 
 # "retention is failing," not "retention is working."
 db_warn_mb = { value = 230, doc = "Alarm threshold for db-budget, deliberately above db_budget_mb (see comment above)" }
 stall_s = { value = 600, doc = "Warn when the event reader has been silent this long (s)" }
-# --- RSS growth (#106) -------------------------------------------------
+# --- RSS exhaustion horizons (#106) ------------------------------------
 # rss-budget above is a *level* backstop: it fires once RSS is already over
 # budget. These catch the approach, so an operator sees a trend rather than
-# an arrival. Sized against rss_budget_mb, not guessed: 1 MB/h is 24 MB/day,
-# roughly a quarter of the 100 MB budget per day, which no healthy daemon
-# should sustain. Deliberately NOT tuned to alarm on the ~0.6 MB/h a 24-hour
-# canary measured -- that rise is real but not yet shown to be pathological,
-# and a threshold set to make today's reading fire proves nothing tomorrow.
-rss_growth_warn_mb_per_h = { value = 1.0, doc = "Warn when daemon RSS grows faster than this (MB/hour), sustained" }
-rss_growth_crit_mb_per_h = { value = 4.0, doc = "Error when daemon RSS grows this fast (MB/hour) - 96 MB/day, essentially the whole budget in a day" }
+# an arrival.
+#
+# Horizons, not rates. A 59-hour canary soak grew steadily at ~0.42 MB/h
+# from 55 MB to a 100 MB breach while a fixed 1 MB/h threshold never fired.
+# The same rate is unremarkable with 45 MB of headroom and terminal with 3,
+# so what matters is how long the trend takes to consume what is left.
+#
+# There is no clear_cycles parameter: the loader accepts only a literal int
+# there, so a parameter could be declared but never referenced. The value
+# lives on the rules, with its rationale above them.
+rss_exhaustion_warn_h = { value = 72, doc = "Warn when the 6h trend would consume all remaining RSS headroom within this many hours" }
+rss_exhaustion_crit_h = { value = 24, doc = "Error when the 6h trend would consume all remaining headroom within this many hours" }
 rss_growth_min_coverage = { value = 0.8, doc = "Fraction of the 6h slope window that must actually be observed - otherwise a restart or a gap can pass for a six-hour verdict" }
-rss_growth_min_net_mb = { value = 4, doc = "Net RSS growth (MB) the 6h window must show - a rise that has since fallen back is not growth" }
 rss_growth_confidence = { value = 0.7, doc = "Fraction of rising samples used as the trend-profile confidence signal (not an alert gate)" }
 
 [[rule]]
@@ -70,47 +74,55 @@ message = "FTMON database over budget: {db_used_mb:.0f} MB used (pruning should 
 # open while ownership moved between "over budget" and "growing", so its
 # duration and recovery history would describe nothing in particular.
 #
-# Gated on coverage and net delta before the slope is trusted, exactly as
-# leak.toml does: coverage rejects a verdict resting on a handful of samples
-# after a restart, and net delta rejects a sawtooth that has already fallen
-# back. Growth confidence is deliberately NOT a gate -- a stepwise leak
-# (grow, plateau, grow) scores low on consecutive-delta confidence while
-# being precisely what this must catch; it stays the trend signal only.
+# v4 replaces a fixed MB/hour threshold with projected exhaustion. A 59-hour
+# canary soak grew linearly at ~0.42 MB/h from 55 MB to a 100 MB breach while
+# the 1.0 MB/h gate never fired -- correctly, by its own definition. No fixed
+# rate can work: 0.42 MB/h is benign with 45 MB of headroom and terminal with
+# 3 MB, and the threshold cannot see the difference. Headroom can.
 #
-# The net-delta gate is defence in depth inherited from leak.toml and is not
-# isolated by any test: for a series ending near where it started the fitted
-# slope is also near zero, so slope rejects first. Removing it breaks no
-# test. Kept for consistency with leak.toml, not because it is load-bearing
-# here (#106 review).
+# Stated as a multiplication, never a division: `headroom < slope x hours`
+# rather than `headroom / slope < hours`. Slope crosses zero routinely on a
+# flat daemon, and EX-06 would turn each division by ~0 into an UNKNOWN plus
+# a counter tick rather than a decision.
 #
-# KNOWN LIMITATION -- the first eligible window after a restart can contain
-# allocator warm-up. Coverage measures sample *density*, not whether the
-# process has reached steady state, so a daemon 4.8 h old satisfies the 0.8
-# gate with the early warm-up still inside the window, where it can dominate
-# the fitted slope. Observed on one canary: RSS rose 51 -> 71 MB in the first
-# 2 h, then 4.4 MB over the next 10.6 h; the rule opened at 5.0 h uptime
-# reading 1.88 MB/h and self-cleared 1.4 h later as that warm-up scrolled out
-# of the window.
+# Positive headroom is required so this hands off cleanly: once RSS is
+# actually over budget the prediction is spent and rss-budget owns it.
 #
-# Deliberately not "fixed". The warning was factually correct and left no bad
-# state. Raising coverage to 1.0 only delays the same biased window, and a
-# minimum-uptime gate would suppress a genuine leak that starts right after a
-# restart -- the case most worth catching.
+# There is deliberately no separate `slope > 0` guard: the multiplication
+# form already is one. A negative slope makes `slope x hours` negative, and
+# positive headroom is never less than a negative number, so the comparison
+# cannot fire on shrinking memory. An explicit guard would be dead
+# expression -- no mutation of it changes any outcome.
+#
+# The v3 net-growth gate of 4 MB is deliberately NOT carried over. At the
+# 0.42 MB/h the soak measured, six hours of growth is ~2.5 MB -- the gate
+# would have rejected the very trend this rule exists to catch, recreating
+# the blind spot in a new place. Positive net growth is required instead,
+# which still rejects a rise that has fallen back.
+#
+# clear_cycles is the hysteresis. Headroom shrinks as RSS climbs, so
+# projected time falls even at constant slope and the rule grows more eager
+# near the budget -- desirable, but it puts the condition close to its own
+# boundary where 6h slope noise (0.23-0.64 MB/h observed) can flap it. 30
+# cycles is 30 minutes of continuous quiet and is PROVISIONAL: backtesting
+# against rollup5m history should decide between roughly 10 and 30.
 [[rule]]
 id = "rss-growth-warn"
 group = "rss-growth"
-when = 'coverage(rss_bytes, "6h") >= rss_growth_min_coverage and delta(rss_bytes, "6h") > rss_growth_min_net_mb * MB and slope(rss_bytes, "6h") * 3600 > rss_growth_warn_mb_per_h * MB'
+when = 'coverage(rss_bytes, "6h") >= rss_growth_min_coverage and delta(rss_bytes, "6h") > 0 and rss_budget_mb * MB - rss_bytes > 0 and rss_budget_mb * MB - rss_bytes < slope(rss_bytes, "6h") * rss_exhaustion_warn_h * 3600'
 severity = "warning"
 confirm_cycles = 10
-message = "FTMON RSS growing: {rss_slope_mbph:.1f} MB/h sustained (now {rss_mb:.0f} MB)"
+clear_cycles = 30
+message = "FTMON RSS on course to exhaust its budget: {rss_headroom_mb:.1f} MB left at {rss_slope_mbph:.2f} MB/h"
 
 [[rule]]
 id = "rss-growth-crit"
 group = "rss-growth"
-when = 'coverage(rss_bytes, "6h") >= rss_growth_min_coverage and delta(rss_bytes, "6h") > rss_growth_min_net_mb * MB and slope(rss_bytes, "6h") * 3600 > rss_growth_crit_mb_per_h * MB'
+when = 'coverage(rss_bytes, "6h") >= rss_growth_min_coverage and delta(rss_bytes, "6h") > 0 and rss_budget_mb * MB - rss_bytes > 0 and rss_budget_mb * MB - rss_bytes < slope(rss_bytes, "6h") * rss_exhaustion_crit_h * 3600'
 severity = "error"
 confirm_cycles = 10
-message = "FTMON RSS growing fast: {rss_slope_mbph:.1f} MB/h sustained (now {rss_mb:.0f} MB)"
+clear_cycles = 30
+message = "FTMON RSS will exhaust its budget within a day: {rss_headroom_mb:.1f} MB left at {rss_slope_mbph:.2f} MB/h"
 
 [[rule]]
 id = "event-stall"
@@ -130,6 +142,10 @@ expr = 'rss_bytes / MB'
 [[derived]]
 name = "db_used_mb"
 expr = 'db_used_bytes / MB'
+
+[[derived]]
+name = "rss_headroom_mb"
+expr = 'rss_budget_mb - rss_bytes / MB'
 
 [[derived]]
 name = "rss_slope_mbph"
@@ -159,7 +175,6 @@ rate_metric = "rss_slope_mbph"
 rate_unit = "MiB/hour"
 confidence_metric = "rss_growth_conf"
 confidence_threshold_param = "rss_growth_confidence"
-rate_threshold_params = ["rss_growth_warn_mb_per_h", "rss_growth_crit_mb_per_h"]
 incident_group = "rss-growth"
 
 # Capacity, not growth: the question is headroom against DM-05's target, and
