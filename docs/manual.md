@@ -629,15 +629,27 @@ incident groups — `cpu-budget`, `rss-budget`, `db-budget` — so a long
 incident is attributable to CPU, memory or storage rather than to all three
 at once.
 
-`self.toml` v3 adds a fourth group, `rss-growth`. The `rss-budget` rule is a
+`self.toml` v4 adds a fourth group, `rss-growth`. The `rss-budget` rule is a
 *level* backstop: it fires once memory is already over budget. The growth
-rules fire on the approach, so you see a trend instead of an arrival. They
-follow the same four gates the `leak` monitor uses on other processes —
-coverage of the 6 h window, a minimum net rise, the slope itself, and ten
-confirming cycles — so a restart, a spike that fell back, or a short history
-cannot produce a six-hour verdict. It is a separate group for the same reason
-the others are: "FTMON is over its memory budget" and "FTMON's memory is
-climbing" are different conditions with different remedies.
+rules fire on the approach, so you see a trend instead of an arrival. It is a
+separate group for the same reason the others are: "FTMON is over its memory
+budget" and "FTMON's memory is climbing" are different conditions with
+different remedies.
+
+They alarm on **projected exhaustion**, not on a fixed growth rate: a warning
+when the six-hour trend would consume the remaining headroom within 72 hours,
+an error within 24. The distinction matters because the same rate means
+different things at different occupancy — 0.42 MB/h is unremarkable with
+45 MB of headroom and terminal with 3 MB. A rate threshold cannot tell those
+apart. This was measured, not assumed: a 59-hour run grew steadily at about
+0.42 MB/h from 55 MB to a 100 MB breach while the earlier fixed 1 MB/h rule
+never fired once, correctly by its own definition.
+
+Coverage of the six-hour window and a positive net rise still gate the
+verdict, so a restart, a short history or a rise that has fallen back cannot
+produce one. `clear_cycles` holds the incident through brief quiet patches:
+headroom shrinks as memory climbs, so the condition sits near its own boundary
+where slope noise would otherwise flap it.
 
 CPU deliberately has no growth rule. A rising slope is not evidence of a hog
 — the same reasoning SPEC applies to `monot` in the leak rules — so CPU stays
