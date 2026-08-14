@@ -1248,20 +1248,58 @@ def test_self_panel_decomposes_sampling_without_double_counting_rb_02(tmp_path):
             "sampling_seconds_total": 10.0,
             "sampling_process_seconds_total": 4.0,
             "sampling_disk_seconds_total": 3.0,
-            "sampling_self_seconds_total": 3.0,
+            "sampling_self_seconds_total": 2.0,
+            "sampling_external_seconds_total": 1.0,
         },
         second={
             "sampling_seconds_total": 17.0,
             "sampling_process_seconds_total": 8.0,
             "sampling_disk_seconds_total": 6.0,
-            "sampling_self_seconds_total": 4.0,
+            "sampling_self_seconds_total": 2.0,
+            "sampling_external_seconds_total": 1.0,
         },
     )
     page = client.get("/self", headers={"host": "localhost:8420"}).text
-    assert "sampling — process" in page
-    assert "sampling — disk" in page
-    assert "sampling — self" in page
+    for label in ("process", "disk", "self", "external projection"):
+        assert f">{label}<" in page
+    assert page.count("part of sampling") == 4
+    assert "Relationship" in page
     assert "Child rows are explanations, not additional tick cost" in page
+
+
+def test_self_panel_uses_one_post_upgrade_span_for_stage_rates_rb_02(tmp_path):
+    """[RB-02] New child counters must not be compared with older aggregates.
+
+    A rolling upgrade leaves aggregate history from before the child metrics
+    existed. The partition and its caption are honest only when every visible
+    counter uses the same pair of timestamps.
+    """
+    import time
+
+    client, paths = _client(tmp_path)
+    base = time.time() - 3600
+    conn = connect(paths.db_file)
+    for series_id, metric, samples in (
+        (8180, "sampling_seconds_total", ((base, 10.0), (base + 3000, 40.0),
+                                           (base + 3600, 46.0))),
+        (8181, "sampling_process_seconds_total", ((base + 3000, 4.0),
+                                                   (base + 3600, 10.0))),
+    ):
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (?,'self','ftmon',?,1)", (series_id, metric),
+        )
+        conn.executemany(
+            "INSERT INTO samples(series_id,ts,value) VALUES (?,?,?)",
+            ((series_id, ts, value) for ts, value in samples),
+        )
+    conn.commit()
+    conn.close()
+
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    assert "0.2 h" in page
+    assert page.count("6.0s") == 2, "aggregate and child use the shared 10m span"
+    assert page.count("1.00%") == 2
 
 
 def test_self_panel_links_to_six_and_twenty_four_hour_history_ui_12(tmp_path):

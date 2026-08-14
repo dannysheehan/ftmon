@@ -261,9 +261,12 @@ class TestStageTimingNamespace:
         from ftmon.selfmon import SelfStats
         from ftmon.sources.base import SAMPLER_SOURCE_NAMES, SOURCE_DECLS
 
-        assert tuple(
+        assert {
             name for name, decl in SOURCE_DECLS.items() if decl.kind == "sampler"
-        ) == SAMPLER_SOURCE_NAMES
+        } == set(SAMPLER_SOURCE_NAMES)
+        assert SAMPLER_SOURCE_NAMES == (
+            "process", "disk", "system", "net", "unit", "self", "external"
+        ), "presentation order is a separate, intentional contract"
         stats = SelfStats()
         for i, source in enumerate(SAMPLER_SOURCE_NAMES, start=1):
             stats.sampling_seconds_by_source[source] = float(i)

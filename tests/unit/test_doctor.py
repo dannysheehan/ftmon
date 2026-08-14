@@ -73,7 +73,7 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
     assert report["series_not_gone"] == 0
     assert report["dm16"] == {
         "max_entities_persisted": 400,
-        "max_series_persisted": 270,
+        "max_series_persisted": 320,
         # No daemon has published the DM-16 figures on a fresh database, and
         # doctor says so rather than substituting the counts DM-16 rejects.
         "entities_persisted": None,

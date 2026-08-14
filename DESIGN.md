@@ -428,9 +428,11 @@ The external bucket measures `ExternalSampler.sample()` projection, matching
 the boundary of `sampling_seconds_total`. Alias preparation/execution precedes
 the monitor loop, is outside both the aggregate and its decomposition, and
 retains EC-02's separate deadline. Moving that phase into this family would be
-a different stage-boundary decision, not an attribution fix. `/self` displays
-the source counters beneath sampling and labels child/subcomponent rows so they
-are not added to total tick cost.
+a different stage-boundary decision, not an attribution fix. `/self` labels
+that child `external projection`, displays explicit parent relationships, and
+derives every visible rate from one pair of timestamps common to the available
+counters. The common span prevents older aggregate history from being compared
+with child metrics that began only after an upgrade.
 
 **v0.32 (issue #106): stage costs are cumulative counters, not last-tick
 gauges.** v0.31's gauges were correct per tick and useless in practice. The
@@ -736,14 +738,15 @@ exit.
 ## 9. Capacity worksheet (DM-16) — and the two SPEC amendments
 
 Planning assumptions: ≤ 400 persisted entities; active persisted series ≈
-**270** (top-15 procs × 6 metrics + ~10 promoted × 6 + ~10 watchlist ×
-6 + disk 6 mounts × 5 + system 12 + net 8 + self 12); 60 s intervals;
+**320** (the earlier ~270 scenario, recalculated for the built-in self
+monitor's 58 declared and derived series rather than its obsolete 12-series
+allowance); 60 s intervals;
 WITHOUT ROWID sample row ≈ 35 B, rollup row ≈ 45 B effective (incl.
 b-tree overhead); stored events ≈ 2 000/day at ≈ 350 B. The ~10 promoted
 term is a **host-wide planning estimate** for one dominant promotion monitor,
 not a per-monitor allocation. The separately chosen runtime cap is ten per
 monitor, so *N* monitors with promotion expressions can admit up to 10*N*
-promotions. That can exceed the worksheet's ~270-series scenario; the binding
+promotions. That can exceed the worksheet's ~320-series scenario; the binding
 host-wide constraints remain the 400 persisted-entity budget and DM-05's used-
 page budget. On the reference canary at 2026-08-14, four of five enabled
 process monitors carry promotion expressions, so the per-monitor cap permits
@@ -753,13 +756,21 @@ runtime quantities are bounded and reported where they are admitted.
 
 | Store | Rows | Size |
 | --- | --- | --- |
-| raw 48 h | 270 × 2 880 ≈ 0.78 M | ≈ 27 MB |
-| 5-min 30 d | 270 × 288 × 30 ≈ 2.33 M | ≈ 105 MB |
-| 1-h, durable series (≈ 90) × 400 d | 0.86 M | ≈ 39 MB |
+| raw 48 h | 320 × 2 880 ≈ 0.92 M | ≈ 32 MB |
+| 5-min 30 d | 320 × 288 × 30 ≈ 2.76 M | ≈ 124 MB |
+| 1-h, durable series (≈ 136) × 400 d | 1.31 M | ≈ 59 MB |
 | 1-h, process series × **90 d** | ≈ 0.39 M | ≈ 18 MB |
 | events 30 d (filtered) | 60 k | ≈ 21 MB |
 | incidents + history + misc | — | ≈ 5 MB |
-| **Total steady state** | | **≈ 215 MB → DM-05 trims 5-min tail to land < 200 MB** (effective ~27 d of 5-min data; honest and self-correcting) |
+| **Total before pressure degradation** | | **≈ 259 MB → DM-05 degradation is required to land < 200 MB** |
+
+The worksheet is deliberately honest about that pressure: the static
+retention maxima do not all fit simultaneously once the current self catalogue
+is counted. DM-05's used-page controller shortens lower-priority retention
+tiers until the database is back under budget, and `db_degrading` exposes that
+compromise.
+The calculation does not silently retain the historical `self 12` allowance
+after adding observability series.
 
 Two findings forced SPEC amendments (recorded as v0.3):
 
@@ -768,7 +779,7 @@ Two findings forced SPEC amendments (recorded as v0.3):
 
 Ring-buffer RAM (CA-04): worst case all-processes window = 300 procs × 2 metrics × 15 samples × 32 B ≈ 0.3 MB; promoted/watchlist long windows: 40 series × 720 points × 32 B ≈ 0.9 MB; comfortably inside the 64 MB cap; cap exists for pathological definitions.
 
-**Active vs. total catalog (v0.43, issue #74).** The ≤400 entity / ~270
+**Active vs. total catalog (v0.43, issue #74).** The ≤400 entity / ~320
 series figures above describe *active* catalog — what's concurrently
 persisted in a steady tick. They are not a cap on the *total* rows retained
 in `entities`/`series`/`baselines` over time: under process churn (the
@@ -781,7 +792,7 @@ workstation: ~248k `entities` rows (~246k already `gone`) against the ≤400
 assumption, ~18 MB of that in `entities` alone, none of it prunable by the
 observation-retention logic that existed before MD-09's reap rule (see
 `retention.py`'s `_reap_catalog`). Reap makes total catalog **bounded by
-DM-04's retention windows**, not convergent to the ~270/≤400 active-state
+DM-04's retention windows**, not convergent to the ~320/≤400 active-state
 assumptions — `ftmon doctor` (CL-05) reports both counts separately rather
 than treating the active-state assumption as a total-catalog budget, since
 doing so would produce routine false pressure on any host with real process

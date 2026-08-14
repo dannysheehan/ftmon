@@ -156,9 +156,14 @@
     <code>prune</code> and <code>reap</code> are parts of <code>retention</code>.
     Child rows are explanations, not additional tick cost.
   </caption>
+  <thead>
+    <tr><th scope="col">Stage</th><th scope="col">Relationship</th>
+        <th scope="col">Share</th><th scope="col">Time</th></tr>
+  </thead>
   <tbody>
     {% for stage in panel.stages.stages if stage.pct is not none %}
     <tr><th scope="row">{{ stage.name }}</th>
+        <td>{{ 'part of ' ~ stage.parent if stage.parent else 'top level' }}</td>
         <td>{{ '%.2f'|format(stage.pct) }}%</td>
         <td>{{ '%.1f'|format(stage.seconds) }}s</td></tr>
     {% endfor %}

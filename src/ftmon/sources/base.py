@@ -194,7 +194,7 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("entities_persisted", "count", "gauge",
                "Entities being written durable history now, against the DM-16 budget"),
             _m("series_persisted", "count", "gauge",
-               "Series written this tick, against DM-16's ~270 series worksheet"),
+               "Series written this tick, against DM-16's ~320 series worksheet"),
             _m("promotion_limited_monitors", "count", "gauge",
                "Process monitors currently refusing promotion admissions at the DM-16 cap"),
             _m("promotion_rejections_total", "count", "counter",

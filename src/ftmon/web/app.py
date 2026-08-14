@@ -1202,17 +1202,21 @@ def _budget_row(row_id, label, value, limit, unit, *, spec=None,
 
 
 _STAGE_COUNTERS = (
-    ("sampling_seconds_total", "sampling"),
+    ("sampling_seconds_total", "sampling", None),
     *(
-        (f"sampling_{source}_seconds_total", f"sampling — {source}")
+        (
+            f"sampling_{source}_seconds_total",
+            "external projection" if source == "external" else source,
+            "sampling",
+        )
         for source in SAMPLER_SOURCE_NAMES
     ),
-    ("pipeline_seconds_total", "pipeline"),
-    ("commit_seconds_total", "commit"),
-    ("actions_outbox_seconds_total", "actions + outbox"),
-    ("retention_seconds_total", "retention"),
-    ("prune_seconds_total", "prune"),
-    ("reap_seconds_total", "reap"),
+    ("pipeline_seconds_total", "pipeline", None),
+    ("commit_seconds_total", "commit", None),
+    ("actions_outbox_seconds_total", "actions + outbox", None),
+    ("retention_seconds_total", "retention", None),
+    ("prune_seconds_total", "prune", "retention"),
+    ("reap_seconds_total", "reap", "retention"),
 )
 _STAGE_WINDOW_S = 3600.0
 
@@ -1222,38 +1226,57 @@ def stage_rates(conn, *, now: float, window_s: float = _STAGE_WINDOW_S) -> dict:
 
     Cumulative seconds answer no operator question directly; the useful
     quantity is the fraction of wall time a stage consumed, which is
-    `delta / elapsed`. Elapsed is measured between the *actual* first and last
-    sample timestamps rather than the nominal window, so a gap in sampling
-    understates nothing.
+    `delta / elapsed`. Elapsed is measured between two timestamps shared by
+    every available counter rather than the nominal window. This matters after
+    an upgrade: an older aggregate can have an hour of history while newly
+    added child counters have only minutes. Comparing each over its own span
+    would make the displayed partition irreconcilable and its caption false.
 
     A negative delta means the counter reset -- the daemon restarted inside
     the window -- and is reported as unavailable rather than as a spike.
     """
     out: dict = {"window_s": window_s, "elapsed_s": None, "stages": [], "reset": False}
-    for metric, label in _STAGE_COUNTERS:
-        rows = conn.execute(
+    histories = {}
+    for metric, _label, _parent in _STAGE_COUNTERS:
+        histories[metric] = conn.execute(
             "SELECT s.ts, s.value FROM series se JOIN samples s ON s.series_id = se.id "
             "WHERE se.monitor = 'self' AND se.metric = ? AND s.ts >= ? "
             "ORDER BY s.ts",
             (metric, now - window_s),
         ).fetchall()
+
+    available = [rows for rows in histories.values() if len(rows) >= 2]
+    common_timestamps = (
+        set.intersection(*(set(row[0] for row in rows) for rows in available))
+        if available else set()
+    )
+    if len(common_timestamps) >= 2:
+        first_ts, last_ts = min(common_timestamps), max(common_timestamps)
+        out["elapsed_s"] = last_ts - first_ts
+    else:
+        first_ts = last_ts = None
+
+    for metric, label, parent in _STAGE_COUNTERS:
+        row = {"name": label, "metric": metric, "parent": parent,
+               "pct": None, "seconds": None}
+        rows = histories[metric]
         if len(rows) < 2:
-            out["stages"].append({"name": label, "metric": metric, "pct": None,
-                                  "seconds": None})
+            out["stages"].append(row)
             continue
-        elapsed = rows[-1][0] - rows[0][0]
-        delta = rows[-1][1] - rows[0][1]
+        values = {sample_ts: value for sample_ts, value in rows}
+        if first_ts not in values or last_ts not in values:
+            out["stages"].append(row)
+            continue
+        elapsed = last_ts - first_ts
+        delta = values[last_ts] - values[first_ts]
         if delta < 0:
             out["reset"] = True
-            out["stages"].append({"name": label, "metric": metric, "pct": None,
-                                  "seconds": None})
+            out["stages"].append(row)
             continue
-        out["elapsed_s"] = elapsed
-        out["stages"].append({
-            "name": label, "metric": metric, "seconds": delta,
-            # Percent of one core's wall-clock capacity.
-            "pct": (100.0 * delta / elapsed) if elapsed > 0 else None,
-        })
+        row["seconds"] = delta
+        # Percent of one core's wall-clock capacity.
+        row["pct"] = (100.0 * delta / elapsed) if elapsed > 0 else None
+        out["stages"].append(row)
     return out
 
 
@@ -1265,9 +1288,8 @@ def _self_panel(metrics: dict, params: dict, catalog: dict | None) -> dict:
     catalog figures one in store.doctor, and a view that re-derived either
     would be the drift issue #104 removed.
 
-    Missing metrics render as unavailable rather than zero. The stage timings
-    #106 will add do not exist yet, and a panel that showed them as 0 would be
-    asserting a measurement nobody made.
+    Missing metrics render as unavailable rather than zero, including stage
+    counters that lack the two shared samples needed to derive a rate.
     """
     def m(name):
         value = metrics.get(name)

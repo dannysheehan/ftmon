@@ -183,7 +183,7 @@ def catalog_report(conn: sqlite3.Connection, *, now: float) -> dict:
         "dm16": {
             "max_entities_persisted": 400,
             "entities_persisted": _latest_self("entities_persisted"),
-            "max_series_persisted": 270,
+            "max_series_persisted": 320,
             "series_persisted": _latest_self("series_persisted"),
             "promotion_limit_per_monitor": 10,
             "promotion_limited_monitors": _latest_self("promotion_limited_monitors"),
@@ -240,7 +240,7 @@ def inspect(
     cursors = [{"source": row["source"], "age_s": max(0, now-row["updated_ts"])}
                for row in conn.execute("SELECT source,updated_ts FROM cursors ORDER BY source")]
     size = db_size_report(conn)
-    # DM-16's ≤400/~270 figures describe persisted catalog pressure, not a cap
+    # DM-16's ≤400/~320 figures describe persisted catalog pressure, not a cap
     # on total retained rows (which legitimately grow under process churn even
     # with the MD-09 reap running); report the two separately (CL-05, #74).
     catalog = catalog_report(conn, now=now)
