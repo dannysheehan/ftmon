@@ -361,6 +361,14 @@ intentionally one series at a time and never invents rate, confidence, or
 forecast meaning; when a definition declares such meaning, **Open Trend**
 moves to that curated view.
 
+An incident detail page has an **Evidence** section when FTMON knows the
+diagnostic history for that group. Self CPU incidents open the ten-minute
+average in Metrics; RSS-growth incidents open the memory-growth Trend; an RSS
+budget breach offers both raw RSS Metrics and that Trend; database-budget
+incidents open the used-capacity Trend. These links retain the incident entity,
+a 24-hour range, and the originating group. The group filters chart markers,
+which matters when RSS level and growth incidents share the same Trend panels.
+
 When the selected series has a learned baseline, Metrics also shows its current
 EWMA level and learning coverage. A visible **Baseline — learning** or
 **Baseline — ready** key distinguishes it from an absent overlay. Rules still

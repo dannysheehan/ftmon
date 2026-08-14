@@ -5,7 +5,7 @@ const refresh=Number(document.body.dataset.refreshMs||0);if(refresh)window.setTi
    sets it consistently for same-origin POSTs and preserves UI-08's strict
    server-side check. */
 document.querySelectorAll('form[method="post"]').forEach((form)=>form.addEventListener('submit',async(event)=>{event.preventDefault();const response=await fetch(form.action,{method:'POST',body:new URLSearchParams(new FormData(form)),headers:{'Content-Type':'application/x-www-form-urlencoded'},redirect:'follow'});if(response.ok){window.location.assign(response.url)}else{document.body.textContent=await response.text()}}));
-document.querySelectorAll('[data-trend-select]').forEach(select=>select.addEventListener('change',()=>{const range=new URLSearchParams(window.location.search).get('range')||'24h';window.location.assign(`/trends/${select.value}?range=${encodeURIComponent(range)}`)}));
+document.querySelectorAll('[data-trend-select]').forEach(select=>select.addEventListener('change',()=>{const current=new URLSearchParams(window.location.search),params=new URLSearchParams({range:current.get('range')||'24h'});if(current.get('group'))params.set('group',current.get('group'));window.location.assign(`/trends/${select.value}?${params}`)}));
 /* Monitor/entity choices are dependent. Reloading at each boundary keeps the
    URL canonical and makes the database—not stale browser state—the catalog. */
 document.querySelectorAll('[data-metric-monitor]').forEach(select=>select.addEventListener('change',()=>{const form=select.form,params=new URLSearchParams(new FormData(form));params.delete('entity');params.delete('metric');window.location.assign(`/metrics?${params}`)}));

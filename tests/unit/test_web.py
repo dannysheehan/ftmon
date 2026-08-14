@@ -955,6 +955,106 @@ def test_generic_leak_trend_and_context_links_ui_12_ts_10(tmp_path):
     assert "/trends/leak/rss-growth?entity=firefox%3A7%3A1" in incident
 
 
+def test_self_incidents_link_to_their_explicit_history_ui_12(tmp_path):
+    """[UI-12] Each self budget opens the evidence that explains that group."""
+    client, paths = _client(tmp_path)
+    builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/self.toml"
+    (paths.monitors_dir / "self.toml").write_text(builtin.read_text())
+    conn = connect(paths.db_file)
+    for iid, group, rule in (
+        (20, "cpu-budget", "cpu-budget"),
+        (21, "rss-growth", "rss-growth-warn"),
+        (22, "rss-budget", "rss-budget"),
+        (23, "db-budget", "db-budget"),
+    ):
+        conn.execute(
+            "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+            "opened_ts,last_change_ts,notify_count,occurrences) "
+            "VALUES(?,'self',?,'ftmon','open',2,?,900,900,1,1)",
+            (iid, group, rule),
+        )
+    conn.commit()
+    conn.close()
+    headers = {"host": "localhost:8420"}
+
+    cpu = client.get("/incidents/20", headers=headers).text
+    assert "metric=cpu_10m" in cpu and "statistic=avg" in cpu
+    assert "range=24h" in cpu and "group=cpu-budget" in cpu
+    assert "/trends/self/" not in cpu
+
+    growth = client.get("/incidents/21", headers=headers).text
+    assert "/trends/self/rss-growth?" in growth
+    assert "group=rss-growth" in growth
+
+    rss_budget = client.get("/incidents/22", headers=headers).text
+    assert "metric=rss_bytes" in rss_budget
+    assert "/trends/self/rss-growth?" in rss_budget
+    assert rss_budget.count("group=rss-budget") == 2
+
+    database = client.get("/incidents/23", headers=headers).text
+    assert "/trends/self/db-capacity?" in database
+    assert "group=db-budget" in database
+
+
+def test_incident_history_group_filters_metric_and_trend_markers_ui_12(tmp_path):
+    """[UI-12] A cross-group evidence link keeps only its incident markers."""
+    client, paths = _client(tmp_path)
+    builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/self.toml"
+    (paths.monitors_dir / "self.toml").write_text(builtin.read_text())
+    conn = connect(paths.db_file)
+    for sid, (metric, value) in enumerate({
+        "rss_bytes": 80 * 1024 * 1024,
+        "rss_mb": 80.0,
+        "rss_slope_mbph": 0.5,
+        "rss_growth_conf": 0.8,
+    }.items(), 40):
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES(?,'self','ftmon',?,1)",
+            (sid, metric),
+        )
+        conn.execute(
+            "INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)",
+            (sid, 900, value),
+        )
+    for iid, group, rule in (
+        (30, "rss-growth", "rss-growth-warn"),
+        (31, "rss-budget", "rss-budget"),
+    ):
+        conn.execute(
+            "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+            "opened_ts,last_change_ts,notify_count,occurrences) "
+            "VALUES(?,'self',?,'ftmon','open',2,?,900,900,1,1)",
+            (iid, group, rule),
+        )
+    conn.commit()
+    conn.close()
+    headers = {"host": "localhost:8420"}
+
+    metric = client.get(
+        "/api/series?monitor=self&entity=ftmon&metric=rss_bytes&"
+        "range=15m&group=rss-budget",
+        headers=headers,
+    ).json()
+    assert metric["incident_group"] == "rss-budget"
+    assert [item["id"] for item in metric["incidents"]] == [31]
+
+    trend = client.get(
+        "/api/trend?monitor=self&profile=rss-growth&entity=ftmon&"
+        "range=15m&group=rss-budget",
+        headers=headers,
+    ).json()
+    assert trend["incident_group"] == "rss-budget"
+    assert [item["id"] for item in trend["incidents"]] == [31]
+
+    page = client.get(
+        "/trends/self/rss-growth?entity=ftmon&range=15m&group=rss-budget",
+        headers=headers,
+    ).text
+    assert 'type="hidden" name="group" value="rss-budget"' in page
+    assert "#31" in page and "#30" not in page
+
+
 def test_trends_selector_hides_gone_entities_but_keeps_linked_history_ui_12(tmp_path):
     """[UI-12] The primary selector stays operational without breaking incident links."""
     client, paths = _client(tmp_path)

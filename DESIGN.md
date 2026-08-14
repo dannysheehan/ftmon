@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.33**. Companion to `SPEC.md` v0.51 — every design element
+Status: **DRAFT v0.34**. Companion to `SPEC.md` v0.52 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -1358,6 +1358,16 @@ CORP same-origin and COOP same-origin; neither middleware emits CORS (UI-08).
 
 Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics` explorer (state in query string, UI-02) · `GET /baselines` read-only index · `GET /events` · `GET /monitors`, `POST /monitors/{name}/(enable|disable|approve|delete-draft)` · `GET /self` · `GET /api/series`. Templates: `base.html` + one per page; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts carry a server-rendered text alternative. The locally packaged FTMON mark supplies the header image, PNG/ICO favicons, and touch icon without weakening UI-01's offline guarantee. Its header image is decorative beside a real-text wordmark so branding cannot obscure the home link's accessible name or become unreadable when images fail.
 
+Incident detail composes evidence links through a closed built-in `self` map:
+`cpu-budget` → Metrics `cpu_10m`/`avg`; `rss-growth` → Trend `rss-growth`;
+`rss-budget` → Metrics `rss_bytes` and Trend `rss-growth`; `db-budget` →
+Trend `db-capacity`. Other monitors retain the declared `incident_group`
+profile match. The hard-coded self map is deliberate: these four groups are
+normative product semantics, while adding definition syntax would expose a new
+authoring contract solely to configure built-in navigation. Every generated
+URL carries `entity`, `range=24h`, and `group`. Metrics and Trends keep `group`
+in their forms and use it as the marker filter (UI-12).
+
 Metrics payloads always include `baseline`: null when the selected persisted
 series has no CA-05 row, otherwise the current record plus native five-minute
 `points[[ts,value]]`, explicit exact-300-second `runs`, and range-relative
@@ -1441,9 +1451,9 @@ argparse tree; every subcommand is a function taking `(Paths, Query|…, argpars
 
 The generic view uses up to four synchronized panels: required value and signed-rate panels, optional confidence on a fixed 0..1 scale, and optional qualified time remaining. `null` means the concept is not meaningful for the profile; an existing panel with empty points means data has not arrived. Separate panels preserve distinct units and failure modes while synchronized cursors retain temporal correlation.
 
-`Query.trend(monitor, entity, profile, …)` returns explicit units, resolution, coverage, declared thresholds and group-filtered incident markers. Projection uses persisted rate + remaining + optional confidence and never differentiates display points or fills absent buckets. `Query.disk_trend` remains a v0.x compatibility adapter.
+`Query.trend(monitor, entity, profile, …)` returns explicit units, resolution, coverage, declared thresholds and group-filtered incident markers. Its optional incident-group override takes precedence over the profile default so a shared panel can investigate another group without mixing markers. Metrics applies the same optional `group` filter. Projection uses persisted rate + remaining + optional confidence and never differentiates display points or fills absent buckets. `Query.disk_trend` remains a v0.x compatibility adapter.
 
-Routes: `GET /trends[/{monitor}/{profile}]?entity=…&range=…` and `GET /api/trend?monitor=…&profile=…&entity=…&range=…`. `/disks` redirects to `/trends/disk/space_growth`. Dashboard, monitor and incident links all target this same explorer rather than creating alternate render/query paths.
+Routes: `GET /trends[/{monitor}/{profile}]?entity=…&range=…[&group=…]` and `GET /api/trend?monitor=…&profile=…&entity=…&range=…[&group=…]`. `/disks` redirects to `/trends/disk/space_growth`. Dashboard, monitor and incident links all target this same explorer rather than creating alternate render/query paths.
 
 The Trends selector queries active entity rows seen within the greater of two
 monitor intervals or CA-08's default five-minute grace. The freshness bound
