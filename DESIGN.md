@@ -718,7 +718,21 @@ exit.
 
 ## 9. Capacity worksheet (DM-16) — and the two SPEC amendments
 
-Assumptions (become validation limits): ≤ 400 persisted entities; active persisted series ≈ **270** (top-15 procs × 6 metrics + ~10 promoted × 6 + ~10 watchlist × 6 + disk 6 mounts × 5 + system 12 + net 8 + self 12); 60 s intervals; WITHOUT ROWID sample row ≈ 35 B, rollup row ≈ 45 B effective (incl. b-tree overhead); stored events ≈ 2 000/day at ≈ 350 B.
+Planning assumptions: ≤ 400 persisted entities; active persisted series ≈
+**270** (top-15 procs × 6 metrics + ~10 promoted × 6 + ~10 watchlist ×
+6 + disk 6 mounts × 5 + system 12 + net 8 + self 12); 60 s intervals;
+WITHOUT ROWID sample row ≈ 35 B, rollup row ≈ 45 B effective (incl.
+b-tree overhead); stored events ≈ 2 000/day at ≈ 350 B. The ~10 promoted
+term is a **host-wide planning estimate** for one dominant promotion monitor,
+not a per-monitor allocation. The separately chosen runtime cap is ten per
+monitor, so *N* monitors with promotion expressions can admit up to 10*N*
+promotions. That can exceed the worksheet's ~270-series scenario; the binding
+host-wide constraints remain the 400 persisted-entity budget and DM-05's used-
+page budget. On the reference canary at 2026-08-14, four of five enabled
+process monitors carry promotion expressions, so the per-monitor cap permits
+40 promotion admissions rather than the planning estimate's ~10. Static
+quantities become validation limits where the definition loader can know them;
+runtime quantities are bounded and reported where they are admitted.
 
 | Store | Rows | Size |
 | --- | --- | --- |
@@ -834,9 +848,14 @@ The process source keeps its own all-process short window (15 samples) in `rings
 
 Promotion is a persistence decision, not an evaluation gate: every non-exempt
 sampled process reaches the rules before `_select_persisted` runs. Admission is
-bounded to `PROMOTION_LIMIT_PER_MONITOR = 10`, directly matching §9's promoted
-allowance. Existing true promotions are refreshed first; expired promotions
+bounded to the chosen concentration guardrail
+`PROMOTION_LIMIT_PER_MONITOR = 10`; this is separate from §9's host-wide ~10
+planning estimate and permits up to 10*N* admissions across *N* promotion
+monitors. Existing true promotions are refreshed first; expired promotions
 demote; new matching entity IDs are sorted and admitted into remaining slots.
+The sort provides deterministic admission, not severity ranking: the boolean
+promotion expression exposes no scalar by which matches could be ranked, so a
+more severe match may be refused while an earlier entity ID holds a slot.
 Further matches are retained only in bounded rings and counted as distinct
 refusals while they remain denied. The first denied set emits one notice event
 with provider `ftmon.<monitor>` / event ID `promotion-limit`; returning below

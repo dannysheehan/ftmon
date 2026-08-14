@@ -29,7 +29,7 @@ from ftmon.model import EventRecord, Snapshot, TriBool, severity_name
 from ftmon.sources.base import Sampler
 
 _DEMOTE_AFTER_S = 30 * 60  # SA-05: demote after 30m without the heuristic holding
-PROMOTION_LIMIT_PER_MONITOR = 10  # DM-16 worksheet's promoted-entity allowance
+PROMOTION_LIMIT_PER_MONITOR = 10  # Chosen per-monitor concentration guardrail
 _DURABLE_SOURCES = {"system", "disk", "self"}  # DM-04 retention split (DESIGN 9)
 
 
@@ -307,6 +307,8 @@ class Pipeline:
         # Existing admissions keep their slots while the heuristic remains
         # true. New candidates are sorted so sampler enumeration order cannot
         # decide which entities receive durable history at the runtime cap.
+        # This is stable admission, not severity ranking: promotion expressions
+        # return only a boolean and expose no score by which to rank matches.
         for entity_id in promotion_matches & st.promoted.keys():
             st.promoted[entity_id] = now
         for entity_id, last_true in list(st.promoted.items()):

@@ -95,9 +95,13 @@ for persistence or not. Do not broadly promote a churning class merely so a
 quiet member can alert later; that adds catalog/rollup cost without adding
 alert coverage. Promote only the bounded, currently interesting subset whose
 charts need to survive beyond the in-memory ring. FTMON admits at most ten
-promoted entities per monitor (the DM-16 worksheet allowance); further matches
-remain rule-visible but are refused durable admission, with a monitor-naming
-self-event and promotion-guardrail counts in `ftmon doctor` and `/self`.
+promoted entities per monitor; this chosen concentration guardrail is separate
+from DM-16's host-wide capacity estimate. Further matches remain rule-visible
+but are refused durable admission, with a monitor-naming self-event and
+promotion-guardrail counts in `ftmon doctor` and `/self`. At the limit, stable
+entity-ID order makes admission deterministic but does not rank severity: a
+promotion expression exposes only a match, not a score, so keep its predicate
+selective.
 
 ### Dashboard glance readouts
 
