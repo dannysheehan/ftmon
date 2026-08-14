@@ -750,6 +750,7 @@ class Query:
         end: float,
         parameters: dict[str, float],
         max_points: int = 2000,
+        incident_group: str | None = None,
     ) -> dict:
         """Build generic declared panels without inventing semantics (CA-10).
 
@@ -819,12 +820,13 @@ class Query:
         incident_sql = (
             "SELECT id,state,severity,opened_ts,last_change_ts,cleared_ts,grp "
             "FROM incidents WHERE monitor=? AND entity_id=? "
-            "AND last_change_ts>=? AND opened_ts<=?"
+            "AND (cleared_ts IS NULL OR cleared_ts>=?) AND opened_ts<=?"
         )
         incident_params: list[object] = [monitor, entity_id, round(start), round(end)]
-        if profile.incident_group:
+        selected_incident_group = incident_group or profile.incident_group
+        if selected_incident_group:
             incident_sql += " AND grp=?"
-            incident_params.append(profile.incident_group)
+            incident_params.append(selected_incident_group)
         incident_sql += " ORDER BY opened_ts"
         incidents = []
         for row in self._conn.execute(incident_sql, incident_params):
@@ -907,6 +909,7 @@ class Query:
                                if profile.remaining_metric else None),
             },
             "incidents": incidents,
+            "incident_group": selected_incident_group,
             "summary": summary,
         }
 

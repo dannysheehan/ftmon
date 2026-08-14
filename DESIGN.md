@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.33**. Companion to `SPEC.md` v0.51 — every design element
+Status: **DRAFT v0.34**. Companion to `SPEC.md` v0.52 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -1356,7 +1356,23 @@ headers are the SE-02 CSP (`default-src 'self'`, `frame-ancestors 'none'`,
 `form-action 'self'`, `base-uri 'none'`), `nosniff`, `DENY` framing, no-referrer,
 CORP same-origin and COOP same-origin; neither middleware emits CORS (UI-08).
 
-Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics` explorer (state in query string, UI-02) · `GET /baselines` read-only index · `GET /events` · `GET /monitors`, `POST /monitors/{name}/(enable|disable|approve|delete-draft)` · `GET /self` · `GET /api/series`. Templates: `base.html` + one per page; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts carry a server-rendered text alternative. The locally packaged FTMON mark supplies the header image, PNG/ICO favicons, and touch icon without weakening UI-01's offline guarantee. Its header image is decorative beside a real-text wordmark so branding cannot obscure the home link's accessible name or become unreadable when images fail.
+Routes: `GET /` dashboard · `GET/POST /incidents[/{id}][/ack]` · `GET /metrics?monitor=…&entity=…&metric=…&range=…&statistic=…[&group=…]` explorer (state in query string, UI-02) · `GET /baselines` read-only index · `GET /events` · `GET /monitors`, `POST /monitors/{name}/(enable|disable|approve|delete-draft)` · `GET /self` · `GET /api/series?monitor=…&entity=…&metric=…&range=…&statistic=…[&group=…]`. Templates: `base.html` + one per page; severity rendered as `<span class="sev sev-error">▲ error</span>` (icon + text, UI-09); charts carry a server-rendered text alternative. The locally packaged FTMON mark supplies the header image, PNG/ICO favicons, and touch icon without weakening UI-01's offline guarantee. Its header image is decorative beside a real-text wordmark so branding cannot obscure the home link's accessible name or become unreadable when images fail.
+
+Incident detail composes evidence links through a closed built-in `self` map:
+`cpu-budget` → Metrics `cpu_10m`/`avg`; `rss-growth` → Trend `rss-growth`;
+`rss-budget` → Metrics `rss_bytes`/`max` and Trend `rss-growth`; `db-budget` →
+Trend `db-capacity`. Other monitors retain the declared `incident_group`
+profile match. The hard-coded self map is deliberate: these four groups are
+normative product semantics, while adding definition syntax would expose a new
+authoring contract solely to configure built-in navigation. Every generated
+URL carries `entity`, `range=24h`, and `group`. Metrics and Trends keep `group`
+in their forms and use it as the marker filter, visibly reporting the filter
+and a no-matches state and offering a clear link. Changing monitor/profile
+drops the old group because group names are monitor-scoped; direct URLs remain
+valid for retained historical incidents. Trend targets are checked against the
+live definition catalog because a Trend is a definition-owned presentation
+contract. Metrics targets deliberately are not: an exact persisted-series
+bookmark retains UI-13's honest expired/no-observations state (UI-12/UI-13).
 
 Metrics payloads always include `baseline`: null when the selected persisted
 series has no CA-05 row, otherwise the current record plus native five-minute
@@ -1441,9 +1457,9 @@ argparse tree; every subcommand is a function taking `(Paths, Query|…, argpars
 
 The generic view uses up to four synchronized panels: required value and signed-rate panels, optional confidence on a fixed 0..1 scale, and optional qualified time remaining. `null` means the concept is not meaningful for the profile; an existing panel with empty points means data has not arrived. Separate panels preserve distinct units and failure modes while synchronized cursors retain temporal correlation.
 
-`Query.trend(monitor, entity, profile, …)` returns explicit units, resolution, coverage, declared thresholds and group-filtered incident markers. Projection uses persisted rate + remaining + optional confidence and never differentiates display points or fills absent buckets. `Query.disk_trend` remains a v0.x compatibility adapter.
+`Query.trend(monitor, entity, profile, …)` returns explicit units, resolution, coverage, declared thresholds and group-filtered incident markers. Its optional incident-group override takes precedence over the profile default so a shared panel can investigate another group without mixing markers. Metrics and Trends select incidents whose lifetime overlaps the requested range (`opened_ts <= end` and not cleared before `start`); acknowledgment is quieting, not recovery, and therefore does not end that lifetime. Projection uses persisted rate + remaining + optional confidence and never differentiates display points or fills absent buckets. `Query.disk_trend` remains a v0.x compatibility adapter.
 
-Routes: `GET /trends[/{monitor}/{profile}]?entity=…&range=…` and `GET /api/trend?monitor=…&profile=…&entity=…&range=…`. `/disks` redirects to `/trends/disk/space_growth`. Dashboard, monitor and incident links all target this same explorer rather than creating alternate render/query paths.
+Routes: `GET /trends[/{monitor}/{profile}]?entity=…&range=…[&group=…]` and `GET /api/trend?monitor=…&profile=…&entity=…&range=…[&group=…]`. `/disks` redirects to `/trends/disk/space_growth`. Dashboard, monitor and incident links all target this same explorer rather than creating alternate render/query paths.
 
 The Trends selector queries active entity rows seen within the greater of two
 monitor intervals or CA-08's default five-minute grace. The freshness bound
@@ -1461,7 +1477,7 @@ Metrics and Trends share one uPlot adapter, series-envelope JSON shape, cursor/t
 
 Their semantics remain deliberately separate. `/metrics` selects one persisted `(monitor, entity, metric)` and a rollup statistic; its selector catalogue uses `EXISTS` against the same raw/5-minute/hourly tier selected for the requested range, so expired metadata cannot produce default empty charts. An exact requested series bypasses catalogue filtering for stable bookmarks but renders no chart when that tier has no points. Metrics reports observations and never infers that a name containing `slope`, `pct`, or `rate` has special meaning. `/trends` joins only definition-declared panels and may qualify confidence or projection. A matching-profile link is navigation, not automatic interpretation inside Metrics.
 
-`GET /api/series?monitor=…&entity=…&metric=…&range=…&statistic=…` returns `{monitor, entity, metric, unit, statistic, resolution, points, lower, upper, incidents, summary, matching_trends}`. Raw metric units come from `SourceDecl`; derived units come from explicit trend-profile use when available, otherwise the neutral label `value`. Server-side Query remains authoritative for tier selection, envelopes, incident filtering, and the 2 000-point cap.
+`GET /api/series?monitor=…&entity=…&metric=…&range=…&statistic=…[&group=…]` returns `{monitor, entity, metric, unit, statistic, resolution, points, lower, upper, incidents, incident_group, summary, matching_trends}`. The optional group filters incident markers and is echoed as `incident_group`; it does not change the series. Raw metric units come from `SourceDecl`; derived units come from explicit trend-profile use when available, otherwise the neutral label `value`. Server-side Query remains authoritative for tier selection, envelopes, incident filtering, and the 2 000-point cap.
 
 ### 15.3 Dashboard health tiles (M7.3, UI-14/UI-17/UI-18)
 

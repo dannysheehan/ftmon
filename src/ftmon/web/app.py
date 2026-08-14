@@ -88,6 +88,49 @@ class TileGlance:
     meter: TileGlanceMeter | None
 
 
+@dataclass(frozen=True)
+class IncidentEvidenceLink:
+    """One explicit route from an incident to the history that explains it."""
+
+    href: str
+    label: str
+
+
+@dataclass(frozen=True)
+class _IncidentEvidenceTarget:
+    """Product-owned evidence semantics for one incident link."""
+
+    kind: str
+    target: str
+    label: str
+    statistic: str = "avg"
+
+
+# UI-12: these built-in groups have different evidence semantics, so matching
+# names or always choosing the first Trend would invent meaning. Keep the map
+# closed over the normative self monitor rather than exposing another authoring
+# surface merely to describe four product-owned groups.
+_SELF_INCIDENT_EVIDENCE = {
+    "cpu-budget": (
+        _IncidentEvidenceTarget(
+            "metric", "cpu_10m", "View 10-minute average CPU history"
+        ),
+    ),
+    "rss-growth": (
+        _IncidentEvidenceTarget("trend", "rss-growth", "View FTMON memory growth"),
+    ),
+    "rss-budget": (
+        _IncidentEvidenceTarget(
+            "metric", "rss_bytes", "View peak RSS history", statistic="max"
+        ),
+        _IncidentEvidenceTarget("trend", "rss-growth", "View FTMON memory growth"),
+    ),
+    "db-budget": (
+        _IncidentEvidenceTarget("trend", "db-capacity", "View FTMON database capacity"),
+    ),
+}
+
+
 # Icon + visible text per UI-14 state; color alone never carries health (UI-09).
 _STATE_PRESENTATION = {
     "clear": ("✓", "clear"),
@@ -480,14 +523,61 @@ async def incident_detail(request: Request):
     # showing the sampled attrs (including cmdline) here is in-posture; only
     # notification content stays governed by SE-04's raw-cmdline ban.
     entity_attrs = json.loads(entity_row["attrs"]) if entity_row and entity_row["attrs"] else {}
-    trend_profile = next((
-        profile for mdef, profile in _trend_catalog(request)
-        if mdef.name == row["monitor"]
-        and (profile.incident_group is None or profile.incident_group == row["grp"])
-    ), None)
+    evidence_links = _incident_evidence_links(row, _trend_catalog(request))
     return _render("incident.html", request, title=f"Incident #{iid}", row=row,
-                   history=history, status=status, trend_profile=trend_profile,
+                   history=history, status=status, evidence_links=evidence_links,
                    entity_attrs=entity_attrs, refresh_ms=5000)
+
+
+def _incident_evidence_links(row, catalog) -> tuple[IncidentEvidenceLink, ...]:
+    """Map a stored incident to explicit Metrics/Trends evidence (UI-12/UI-13)."""
+    specs = _SELF_INCIDENT_EVIDENCE.get(row["grp"]) if row["monitor"] == "self" else None
+    if specs is None:
+        profile = next((
+            candidate for mdef, candidate in catalog
+            if mdef.name == row["monitor"]
+            and (candidate.incident_group is None or candidate.incident_group == row["grp"])
+        ), None)
+        if profile is None:
+            return ()
+        return (
+            IncidentEvidenceLink(
+                href=f"/trends/{row['monitor']}/{profile.id}?" + urlencode({
+                    "entity": row["entity_id"],
+                    "range": "24h",
+                    "group": row["grp"],
+                }),
+                label=f"View {profile.title} around this incident",
+            ),
+        )
+
+    # Trend profiles are definition-owned presentation contracts and disappear
+    # when a host-tuned definition predates one of these links. Metrics accepts
+    # an exact persisted-series bookmark even after observations expire, so its
+    # links intentionally remain available without catalog validation (UI-13).
+    available_profiles = {
+        (mdef.name, profile.id) for mdef, profile in catalog
+    }
+    links = []
+    common = {
+        "entity": row["entity_id"],
+        "range": "24h",
+        "group": row["grp"],
+    }
+    for spec in specs:
+        if spec.kind == "trend":
+            if (row["monitor"], spec.target) not in available_profiles:
+                continue
+            href = f"/trends/{row['monitor']}/{spec.target}?" + urlencode(common)
+        else:
+            href = "/metrics?" + urlencode({
+                "monitor": row["monitor"],
+                **common,
+                "metric": spec.target,
+                "statistic": spec.statistic,
+            })
+        links.append(IncidentEvidenceLink(href=href, label=spec.label))
+    return tuple(links)
 
 
 async def ack(request: Request):
@@ -515,6 +605,7 @@ async def metrics(request: Request):
     p = request.query_params
     monitor, entity, metric = p.get("monitor"), p.get("entity"), p.get("metric")
     statistic = p.get("statistic", "avg")
+    incident_group = p.get("group") or None
     if statistic not in {"avg", "min", "max", "last"}:
         return Response("Statistic must be avg, min, max, or last", status_code=400)
     try:
@@ -564,14 +655,19 @@ async def metrics(request: Request):
         )
         payload = None if q is None or not rows else _series_payload(
             request.app.state.paths, q, rows[0], monitor, entity, metric,
-            statistic, now-seconds, now,
+            statistic, now-seconds, now, incident_group,
         )
     selected = {"monitor": monitor, "entity": entity, "metric": metric,
-                "range": range_text, "statistic": statistic}
+                "range": range_text, "statistic": statistic,
+                "group": incident_group}
+    clear_group_href = "/metrics?" + urlencode({
+        key: value for key, value in selected.items()
+        if key != "group" and value is not None
+    })
     return _render(
         "metrics.html", request, title="Metrics", choices=choices,
         monitors=monitors, entities=entities, metrics=metrics,
-        payload=payload, selected=selected,
+        payload=payload, selected=selected, clear_group_href=clear_group_href,
     )
 
 
@@ -678,16 +774,23 @@ def _chart_y_domain(unit: str, *point_sets) -> list[float] | None:
 
 def _series_payload(
     paths: Paths, q: Query, result, monitor: str, entity: str, metric: str,
-    statistic: str, start: float, end: float,
+    statistic: str, start: float, end: float, incident_group: str | None = None,
 ) -> dict:
     """Build the shared Metrics chart/data contract (UI-13/TS-11)."""
     unit, matching = _metric_metadata(paths, monitor, metric)
-    incidents = [dict(row) for row in q._conn.execute(
+    incident_sql = (
         "SELECT id,state,severity,opened_ts,last_change_ts,cleared_ts,grp "
         "FROM incidents WHERE monitor=? AND entity_id=? "
-        "AND (cleared_ts IS NULL OR cleared_ts>=?) AND opened_ts<=? ORDER BY opened_ts",
-        (monitor, entity, round(start), round(end)),
-    )]
+        "AND (cleared_ts IS NULL OR cleared_ts>=?) AND opened_ts<=?"
+    )
+    incident_params: list[object] = [monitor, entity, round(start), round(end)]
+    if incident_group:
+        incident_sql += " AND grp=?"
+        incident_params.append(incident_group)
+    incident_sql += " ORDER BY opened_ts"
+    incidents = [
+        dict(row) for row in q._conn.execute(incident_sql, incident_params)
+    ]
     values = [point.value for point in result.points]
     summary = {
         "current": values[-1] if values else None,
@@ -741,7 +844,8 @@ def _series_payload(
                 unit, panel_points, panel_lower, panel_upper, baseline_points
             ),
         },
-        "incidents": incidents, "summary": summary, "baseline": baseline,
+        "incidents": incidents, "incident_group": incident_group,
+        "summary": summary, "baseline": baseline,
         "matching_trends": matching,
     }
 
@@ -756,6 +860,7 @@ async def series_api(request: Request):
     if statistic not in {"avg", "min", "max", "last"}:
         return Response("Statistic must be avg, min, max, or last", status_code=400)
     range_text = p.get("range", "24h")
+    incident_group = p.get("group") or None
     try:
         seconds = parse_duration(range_text)
     except ExprError:
@@ -775,7 +880,7 @@ async def series_api(request: Request):
             return Response("Series not found", status_code=404)
         payload = _series_payload(
             request.app.state.paths, q, rows[0], monitor, entity, metric,
-            statistic, now-seconds, now,
+            statistic, now-seconds, now, incident_group,
         )
     return JSONResponse(payload)
 
@@ -921,6 +1026,7 @@ async def trend_api(request: Request):
     entity, start, end, range_text = parsed
     monitor = request.query_params.get("monitor")
     profile_id = request.query_params.get("profile")
+    incident_group = request.query_params.get("group") or None
     selected = _selected_profile(request, monitor, profile_id)
     if not entity or selected is None:
         return Response("monitor, profile, and entity are required", status_code=400)
@@ -930,7 +1036,7 @@ async def trend_api(request: Request):
             return Response("Database not found", status_code=404)
         trend = q.trend(
             mdef.name, entity, profile, now=end, start=start, end=end,
-            parameters=mdef.parameters,
+            parameters=mdef.parameters, incident_group=incident_group,
         )
     trend["range"]["label"] = range_text
     return JSONResponse(trend)
@@ -944,6 +1050,7 @@ async def trends(request: Request):
     entity, start, end, range_text = parsed
     monitor = request.path_params.get("monitor") or request.query_params.get("monitor")
     profile_id = request.path_params.get("profile") or request.query_params.get("profile")
+    incident_group = request.query_params.get("group") or None
     selection = request.query_params.get("selection", "")
     if "/" in selection:
         monitor, profile_id = selection.split("/", 1)
@@ -970,14 +1077,19 @@ async def trends(request: Request):
         entity = entity or (entities[0] if entities else None)
         trend = None if q is None or entity is None or profile is None else q.trend(
             mdef.name, entity, profile, now=end, start=start, end=end,
-            parameters=mdef.parameters,
+            parameters=mdef.parameters, incident_group=incident_group,
         )
     if trend:
         trend["range"]["label"] = range_text
+    clear_group_href = f"/trends/{mdef.name}/{profile.id}?" + urlencode({
+        key: value for key, value in {"entity": entity, "range": range_text}.items()
+        if value is not None
+    }) if mdef is not None and profile is not None else "/trends"
     return _render(
         "trends.html", request, title="Trends", catalog=catalog,
         selected_monitor=mdef, selected_profile=profile, entities=entities,
-        entity=entity, range_text=range_text, trend=trend,
+        entity=entity, range_text=range_text, incident_group=incident_group,
+        trend=trend, clear_group_href=clear_group_href,
     )
 
 
