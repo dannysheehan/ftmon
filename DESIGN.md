@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.34**. Companion to `SPEC.md` v0.52 — every design element
+Status: **DRAFT v0.35**. Companion to `SPEC.md` v0.53 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -414,6 +414,24 @@ Effect = NotifyEffect(Notification) | ActionEffect(action: str, env: Mapping[str
        | RecordEffect(kind: str, detail: Mapping) | PersistEffect(...)   # tagged union via dataclasses
 ```
 
+**v0.35 (issue #106): the aggregate sampling counter has a closed
+decomposition.** `SAMPLER_SOURCE_NAMES` is the compile-time vocabulary:
+`process, disk, system, net, unit, self, external`. `Pipeline` charges each
+SA-06 cache miss to the aggregate and exactly one source accumulator; cache
+hits add neither. `DaemonCore` advances the aggregate and all seven cumulative
+self counters together on both the successful and PM-10 locked-commit exits.
+`SelfSampler` emits only the seven declared names, so a monitor, external alias,
+or plugin can never widen the metric namespace. Their deltas reconcile to the
+aggregate within floating-point precision.
+
+The external bucket measures `ExternalSampler.sample()` projection, matching
+the boundary of `sampling_seconds_total`. Alias preparation/execution precedes
+the monitor loop, is outside both the aggregate and its decomposition, and
+retains EC-02's separate deadline. Moving that phase into this family would be
+a different stage-boundary decision, not an attribution fix. `/self` displays
+the source counters beneath sampling and labels child/subcomponent rows so they
+are not added to total tick cost.
+
 **v0.32 (issue #106): stage costs are cumulative counters, not last-tick
 gauges.** v0.31's gauges were correct per tick and useless in practice. The
 self monitor samples every 60 s while ticks run every 5 s, and the self
@@ -455,11 +473,10 @@ not only the process source; external check *preparation* runs before the
 monitor loop and is outside it. All seven are declared in
 `SOURCE_DECLS["self"]` (PL-05) and measured on the injected Clock (TS-03).
 
-**RB-02's per-source-duration clause therefore remains outstanding**, tracked
-in #106. `sampling_s` is an aggregate and does not satisfy it. Replacing that
-clause with an aggregate would be a product decision requiring a SPEC
-amendment; it is deliberately not made here, which is why SPEC stays at v0.50
-and this PR advances #106 rather than closing it.
+At v0.32, **RB-02's per-source-duration clause remained outstanding**, tracked
+in #106. `sampling_s` was only an aggregate and did not satisfy it. v0.35 adds
+the fixed decomposition above rather than weakening the requirement to accept
+an aggregate.
 
 **v0.29 (issue #119): `EntitySample.synthetic` — sources report provenance,
 the pipeline owns retention policy.** DM-04 grants the durable window to
@@ -878,7 +895,8 @@ FTMON deliberately does not run full `VACUUM` while the daemon is live (v0.44, i
 Metrics: `cpu_pct, rss_bytes, db_bytes, db_allocated_bytes, db_used_bytes,
 db_freelist_bytes, db_headroom_bytes, entities_persisted, series_persisted,
 cycle_s,
-sampling_seconds_total, pipeline_seconds_total, commit_seconds_total,
+sampling_seconds_total, sampling_{process,disk,system,net,unit,self,external}_seconds_total,
+pipeline_seconds_total, commit_seconds_total,
 actions_outbox_seconds_total, retention_seconds_total, prune_seconds_total,
 reap_seconds_total, tick_overruns, event_queue_depth, events_dropped,
 events_unstored, ring_mem_bytes, source_activity_age_s, eval_unknown_total,

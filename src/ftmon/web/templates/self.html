@@ -152,8 +152,9 @@
   <caption class="panel-caption">
     Share of one core over the last
     {{ '%.1f'|format((panel.stages.elapsed_s or panel.stages.window_s) / 3600) }} h,
-    from counter deltas. <code>prune</code> and <code>reap</code> are parts of
-    <code>retention</code>, not separate stages, so they do not add to it.
+    from counter deltas. Sampling source rows partition <code>sampling</code>;
+    <code>prune</code> and <code>reap</code> are parts of <code>retention</code>.
+    Child rows are explanations, not additional tick cost.
   </caption>
   <tbody>
     {% for stage in panel.stages.stages if stage.pct is not none %}

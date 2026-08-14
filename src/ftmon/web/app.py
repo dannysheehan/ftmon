@@ -28,7 +28,7 @@ from ftmon.definitions import loader
 from ftmon.expr import ExprError, parse_duration
 from ftmon.model import severity_name
 from ftmon.paths import Paths, get_paths
-from ftmon.sources.base import SOURCE_DECLS
+from ftmon.sources.base import SAMPLER_SOURCE_NAMES, SOURCE_DECLS
 from ftmon.store.db import connect
 from ftmon.store.doctor import catalog_report, dispatch_health
 from ftmon.store.query import Query
@@ -1203,6 +1203,10 @@ def _budget_row(row_id, label, value, limit, unit, *, spec=None,
 
 _STAGE_COUNTERS = (
     ("sampling_seconds_total", "sampling"),
+    *(
+        (f"sampling_{source}_seconds_total", f"sampling — {source}")
+        for source in SAMPLER_SOURCE_NAMES
+    ),
     ("pipeline_seconds_total", "pipeline"),
     ("commit_seconds_total", "commit"),
     ("actions_outbox_seconds_total", "actions + outbox"),

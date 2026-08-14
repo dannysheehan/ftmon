@@ -1,6 +1,8 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.52** — v0.52 maps each built-in self-resource incident
+Status: **DRAFT v0.53** — v0.53 completes RB-02's per-source duration clause
+with seven fixed cumulative counters that partition shared sampling time without
+introducing runtime cardinality (issue #106). v0.52 maps each built-in self-resource incident
 to its diagnostic history: CPU to its averaged metric, RSS growth to its trend,
 RSS budget to both peak RSS and its trend, and database budget to its capacity
 trend. The incident group travels with each link and visibly filters chart
@@ -1173,7 +1175,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 ## 13. Resource budget (self-enforced)
 
 - **RB-01** Daemon steady-state: ≤ 1 % of one CPU averaged over 10 m; RSS ≤ 100 MB; DB ≤ 200 MB (DM-05). Web UI and MCP processes: RSS ≤ 80 MB each. Feasibility is demonstrated, not asserted: DM-16's capacity worksheet.
-- **RB-02** The daemon samples **itself** (cpu, rss, cycle duration, per-source duration, DB size, event queue depth, ring-buffer memory, event_source_last_activity_age) into the built-in `self` monitor (§7.7) with rules that open a `warning` incident on sustained budget breach — the monitor must not become the hog, and if it does, it tells on itself. (v0.46 amendment, issue #104.) "DB size" is five distinct quantities, not one: the physical database file, SQLite's logical page allocation, used pages, reusable freelist bytes, and signed headroom against DM-05's target. The physical file and the logical allocation are **not** interchangeable — WAL mode lets committed pages live outside the main file until a checkpoint — so only `used + freelist == allocated` holds, and the physical file participates in no budget identity. A metric that previously reported the physical file MUST keep reporting it, since redefining a persisted series introduces a step no database ever took. Headroom MUST be measured against that normative target rather than against whatever level a definition alarms at, so retuning a threshold cannot move the reported distance to the budget. The self source MUST also expose the counts of entities and series for which durable history is currently being written (DM-16). Unrelated budgets MUST occupy distinct incident groups: a single group shared by CPU, memory and storage lets one incident stay open while ownership moves between them, so its duration and recovery history describe nothing in particular.
+- **RB-02** The daemon samples **itself** (cpu, rss, cycle duration, per-source duration, DB size, event queue depth, ring-buffer memory, event_source_last_activity_age) into the built-in `self` monitor (§7.7) with rules that open a `warning` incident on sustained budget breach — the monitor must not become the hog, and if it does, it tells on itself. Per-source duration MUST partition `sampling_seconds_total` into fixed cumulative counters for the finite sampler registry: `sampling_process_seconds_total`, `sampling_disk_seconds_total`, `sampling_system_seconds_total`, `sampling_net_seconds_total`, `sampling_unit_seconds_total`, `sampling_self_seconds_total`, and `sampling_external_seconds_total`. Every cache-miss sample is charged to exactly one counter, cache hits cost none, and the seven deltas MUST sum to the aggregate delta within numeric precision. The external counter covers the existing shared-sample projection call; external-check preparation/execution remains outside `sampling_seconds_total` and is bounded separately by EC-02. No monitor, alias, plugin, or runtime source name may create another self metric. (v0.46 amendment, issue #104; v0.53 amendment, issue #106.) "DB size" is five distinct quantities, not one: the physical database file, SQLite's logical page allocation, used pages, reusable freelist bytes, and signed headroom against DM-05's target. The physical file and the logical allocation are **not** interchangeable — WAL mode lets committed pages live outside the main file until a checkpoint — so only `used + freelist == allocated` holds, and the physical file participates in no budget identity. A metric that previously reported the physical file MUST keep reporting it, since redefining a persisted series introduces a step no database ever took. Headroom MUST be measured against that normative target rather than against whatever level a definition alarms at, so retuning a threshold cannot move the reported distance to the budget. The self source MUST also expose the counts of entities and series for which durable history is currently being written (DM-16). Unrelated budgets MUST occupy distinct incident groups: a single group shared by CPU, memory and storage lets one incident stay open while ownership moves between them, so its duration and recovery history describe nothing in particular.
 - **RB-03** Tier-1 e2e tests assert cycle-time and DB-growth invariants under a synthetic 300-process, 10-events/s load (§16.4).
 
 ---
@@ -1438,6 +1440,15 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.53 (2026-08-15)** — completes RB-02's remaining per-source-duration
+implementation for issue #106. Seven fixed cumulative counters partition the
+existing `sampling_seconds_total` by the finite sampler registry; shared cache
+hits add no work, and their deltas reconcile to the aggregate. The external
+bucket retains the aggregate's established boundary around projection rather
+than claiming separately bounded check execution. The Self page renders the
+source rows as children of sampling so operators do not double-count them
+(RB-02, SA-06, DM-16, TS-03, issue #106).
 
 **v0.52 (2026-08-15)** — completes issue #106's incident-to-history
 mapping. Self incident details now choose evidence by normative group semantics

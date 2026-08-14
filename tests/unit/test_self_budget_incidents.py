@@ -224,15 +224,21 @@ class TestStageTimingNamespace:
 
     The same constraint that made `external_check_failures` a summed total
     rather than one series per category: every self metric is a persisted
-    series billing against the DM-16 catalog budget, so a per-monitor or
-    per-source timing dimension would make that budget a function of how many
-    monitors an operator installs (#106).
+    series billing against the DM-16 catalog budget. The source split is safe
+    only because its seven names are a compile-time registry, never one name
+    per monitor, alias, or runtime value (#106).
     """
 
     _STAGES = (
         "sampling_seconds_total", "pipeline_seconds_total", "commit_seconds_total",
         "actions_outbox_seconds_total", "retention_seconds_total",
         "prune_seconds_total", "reap_seconds_total",
+    )
+    _SOURCE_STAGES = tuple(
+        f"sampling_{source}_seconds_total"
+        for source in (
+            "process", "disk", "system", "net", "unit", "self", "external"
+        )
     )
 
     def _metrics(self, stats):
@@ -248,6 +254,23 @@ class TestStageTimingNamespace:
             setattr(stats, name, float(i))
         metrics = self._metrics(stats)
         assert [metrics[name] for name in self._STAGES] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+
+    def test_sampling_split_is_fixed_and_published(self):
+        """[RB-02][DM-16] The finite source registry, not runtime monitors,
+        defines the per-source counter namespace."""
+        from ftmon.selfmon import SelfStats
+        from ftmon.sources.base import SAMPLER_SOURCE_NAMES, SOURCE_DECLS
+
+        assert tuple(
+            name for name, decl in SOURCE_DECLS.items() if decl.kind == "sampler"
+        ) == SAMPLER_SOURCE_NAMES
+        stats = SelfStats()
+        for i, source in enumerate(SAMPLER_SOURCE_NAMES, start=1):
+            stats.sampling_seconds_by_source[source] = float(i)
+        metrics = self._metrics(stats)
+        assert [metrics[name] for name in self._SOURCE_STAGES] == list(
+            map(float, range(1, 8))
+        )
 
     def test_every_emitted_metric_is_declared(self):
         """[PL-05] SourceDecl is the contract; an undeclared metric is a
@@ -271,6 +294,7 @@ class TestStageTimingNamespace:
         first = set(self._metrics(stats))
         stats.counters["external_check_failures:timeout"] = 3
         stats.counters["external_check_failures:parse"] = 4
+        stats.sampling_seconds_by_source["runtime-plugin-name"] = 99.0
         assert set(self._metrics(stats)) == first
         assert not [name for name in first if ":" in name]
 

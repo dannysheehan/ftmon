@@ -1239,6 +1239,31 @@ def test_self_panel_shows_a_measured_zero_stage_timing_rb_02(tmp_path):
     assert "0.00%" in page, "a measured zero must be shown as measured"
 
 
+def test_self_panel_decomposes_sampling_without_double_counting_rb_02(tmp_path):
+    """[RB-02] Fixed source rows explain, rather than add to, sampling."""
+    client, paths = _client(tmp_path)
+    _seed_stage_counters(
+        paths,
+        first={
+            "sampling_seconds_total": 10.0,
+            "sampling_process_seconds_total": 4.0,
+            "sampling_disk_seconds_total": 3.0,
+            "sampling_self_seconds_total": 3.0,
+        },
+        second={
+            "sampling_seconds_total": 17.0,
+            "sampling_process_seconds_total": 8.0,
+            "sampling_disk_seconds_total": 6.0,
+            "sampling_self_seconds_total": 4.0,
+        },
+    )
+    page = client.get("/self", headers={"host": "localhost:8420"}).text
+    assert "sampling — process" in page
+    assert "sampling — disk" in page
+    assert "sampling — self" in page
+    assert "Child rows are explanations, not additional tick cost" in page
+
+
 def test_self_panel_links_to_six_and_twenty_four_hour_history_ui_12(tmp_path):
     """[UI-12][UI-02] Each budget links to its own history, not a generic page.
 

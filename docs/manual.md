@@ -415,9 +415,14 @@ describe entity lifecycle, while its totals answer which definition created
 the stored footprint. They do not reconstruct the per-monitor current write
 set: only the global persisted counts carry that meaning.
 
-Anything FTMON has not measured says so rather than showing zero. Per-stage
-tick timings are not collected yet, and the page says that instead of
-implying every stage takes no time.
+Anything FTMON has not measured says so rather than showing zero. The tick
+table derives one-core utilization from cumulative counter deltas. Sampling
+is decomposed into the fixed process, disk, system, network, unit, self, and
+external source rows; those rows partition sampling rather than adding new
+tick cost. The external row measures projection of the prepared result, while
+the separately deadline-bounded check execution remains outside this stage.
+Prune and reap similarly explain parts of retention. Until two samples exist,
+the page says the rate is unavailable instead of implying a measured zero.
 
 Each budget links to its own 6-hour and 24-hour history, which is usually the
 faster way to tell a spike from a trend. The dashboard's status strip carries

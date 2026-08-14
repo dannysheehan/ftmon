@@ -4,6 +4,7 @@ rings, and the sampling pipeline driven by a real loaded definition."""
 from __future__ import annotations
 
 import importlib.resources
+from dataclasses import replace
 
 import pytest
 
@@ -13,7 +14,7 @@ from ftmon.engine.pipeline import PROMOTION_LIMIT_PER_MONITOR, Pipeline
 from ftmon.engine.rings import RingStore
 from ftmon.engine.scheduler import DueTable, Scheduler
 from ftmon.model import EntitySample, Snapshot, TriBool
-from ftmon.sources.base import SOURCE_DECLS
+from ftmon.sources.base import SAMPLER_SOURCE_NAMES, SOURCE_DECLS
 
 # --- scheduler ---
 
@@ -702,6 +703,7 @@ class TestPipelineStageTiming:
         pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), {})
 
         assert pipe.sample_s == pytest.approx(2.0)
+        assert pipe.sample_seconds_by_source == {"process": pytest.approx(2.0)}
         assert pipe.evaluate_s == pytest.approx(0.0), "sampling must not double-count"
 
     def test_shared_snapshot_is_sampled_once_per_tick(self):
@@ -716,6 +718,7 @@ class TestPipelineStageTiming:
         pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), cache)
 
         assert pipe.sample_s == pytest.approx(1.0), "second call reuses the snapshot"
+        assert pipe.sample_seconds_by_source == {"process": pytest.approx(1.0)}
 
     def test_non_process_sources_are_counted_too(self):
         """[SA-06][RB-02] `sampling_s` covers every shared sample, not only
@@ -754,6 +757,7 @@ message = "{entity} full"
         pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), {})
 
         assert pipe.sample_s == pytest.approx(1.5)
+        assert pipe.sample_seconds_by_source == {"disk": pytest.approx(1.5)}
 
     def test_accumulates_across_monitors_within_a_tick(self):
         """[RB-02] one tick runs many monitors; the gauge is about the tick."""
@@ -766,6 +770,34 @@ message = "{entity} full"
         pipe.run_monitor(mdef, 1_700_000_060.0, 10**9, NullWriter(), {})
 
         assert pipe.sample_s == pytest.approx(1.0)
+        assert pipe.sample_seconds_by_source == {"process": pytest.approx(1.0)}
+
+    @pytest.mark.parametrize("source", SAMPLER_SOURCE_NAMES)
+    def test_every_registered_sampler_has_one_fixed_attribution_bucket(self, source):
+        """[RB-02][DM-16] Every sampler source maps to its compile-time bucket."""
+        clock = FakeClock()
+        sampler = self._SlowSampler(clock, 0.25)
+        sampler.push(grower(0))
+        base, _pipe = self._pipeline(sampler, clock)
+        mdef = replace(
+            base,
+            name=f"{source}-timing",
+            source=source,
+            rules=(),
+            derived=(),
+            exempt=(),
+        )
+        rings = RingStore()
+        rings.configure(mdef.name, mdef.interval_s, {})
+        pipe = Pipeline(
+            {source: sampler}, rings, lambda _name: None,
+            gone_grace_s=300.0, clock=clock,
+        )
+
+        pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), {})
+
+        assert pipe.sample_s == pytest.approx(0.25)
+        assert pipe.sample_seconds_by_source == {source: pytest.approx(0.25)}
 
 
 def test_locked_tick_reports_only_the_stages_it_ran_pm_10(tmp_path):
@@ -792,7 +824,13 @@ def test_locked_tick_reports_only_the_stages_it_ran_pm_10(tmp_path):
 
     clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
     core = DaemonCore(paths=paths, clock=clock, platform="linux")
-    core.samplers["process"] = ScriptedSampler()
+
+    class _CostlySampler(ScriptedSampler):
+        def sample(self, now, deadline_mono, options):
+            clock.advance(0.25)
+            return super().sample(now, deadline_mono, options)
+
+    core.samplers["process"] = _CostlySampler()
     core.samplers["process"].push(grower(0))
     core.conn.execute("PRAGMA busy_timeout = 50")
 
@@ -824,6 +862,7 @@ def test_locked_tick_reports_only_the_stages_it_ran_pm_10(tmp_path):
     # expensive commit there is -- it must still be counted.
     assert core.stats.commit_seconds_total >= 9.0
     assert core.stats.sampling_seconds_total >= 9.0
+    assert core.stats.sampling_seconds_by_source["process"] >= 0.25
 
 
 def test_self_sampler_publishes_the_last_completed_tick_rb_02(tmp_path):
@@ -867,6 +906,10 @@ def test_self_sampler_publishes_the_last_completed_tick_rb_02(tmp_path):
 
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
     assert core.stats.sampling_seconds_total > 0.0, "the tick counted its sampling"
+    assert core.stats.sampling_seconds_by_source["process"] > 0.0
+    assert sum(core.stats.sampling_seconds_by_source.values()) == pytest.approx(
+        core.stats.sampling_seconds_total
+    )
 
     # Second tick: the self monitor is sampled *inside* the loop, so what it
     # persists is what an operator actually reads. Asserting the stored value
@@ -882,6 +925,18 @@ def test_self_sampler_publishes_the_last_completed_tick_rb_02(tmp_path):
     ).fetchone()
     assert stored is not None, "the self monitor never persisted sampling_s"
     assert stored[0] > 0.0, "stage gauges reached the sampler as zero"
+    source_values = {}
+    for source in SAMPLER_SOURCE_NAMES:
+        row = core.conn.execute(
+            "SELECT s.value FROM series se JOIN samples s ON s.series_id = se.id "
+            "WHERE se.monitor = 'self' AND se.metric = ? "
+            "ORDER BY s.ts DESC LIMIT 1",
+            (f"sampling_{source}_seconds_total",),
+        ).fetchone()
+        assert row is not None, f"the self monitor omitted {source} sampling"
+        source_values[source] = row[0]
+    assert source_values["process"] > 0.0
+    assert sum(source_values.values()) == pytest.approx(stored[0])
 
 
 def test_stage_counters_accumulate_across_sparse_ticks_rb_02(tmp_path):
@@ -920,6 +975,7 @@ def test_stage_counters_accumulate_across_sparse_ticks_rb_02(tmp_path):
 
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
     after_first = core.stats.sampling_seconds_total
+    process_after_first = core.stats.sampling_seconds_by_source["process"]
     assert after_first >= 0.25
 
     # A tick with nothing due adds nothing, and must not reset the total --
@@ -927,9 +983,13 @@ def test_stage_counters_accumulate_across_sparse_ticks_rb_02(tmp_path):
     clock.advance(5)
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
     assert core.stats.sampling_seconds_total == pytest.approx(after_first)
+    assert core.stats.sampling_seconds_by_source["process"] == pytest.approx(
+        process_after_first
+    )
 
     # A later tick that does work advances it again.
     clock.advance(60)
     core.samplers["process"].push(grower(1))
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
     assert core.stats.sampling_seconds_total > after_first
+    assert core.stats.sampling_seconds_by_source["process"] > process_after_first

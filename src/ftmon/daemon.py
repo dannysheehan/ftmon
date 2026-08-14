@@ -41,7 +41,7 @@ from ftmon.notify import FileNotifier, NtfyNotifier, SmtpNotifier, WebhookNotifi
 from ftmon.notify.base import DeliveryError, Notifier
 from ftmon.paths import Paths, current_platform, get_paths, set_private_permissions
 from ftmon.selfmon import SelfSampler, SelfStats
-from ftmon.sources.base import EventSource
+from ftmon.sources.base import SAMPLER_SOURCE_NAMES, EventSource
 from ftmon.sources.disk import DiskSampler
 from ftmon.sources.net import NetSampler
 from ftmon.sources.process import ProcessSampler
@@ -677,6 +677,7 @@ class DaemonCore:
         # publication lag harmless, because every sample sees all work
         # completed up to that point.
         self.pipeline.sample_s = 0.0
+        self.pipeline.sample_seconds_by_source.clear()
         self.pipeline.evaluate_s = 0.0
         cache: dict = {}
         outcomes: list[EvalOutcome] = []
@@ -758,8 +759,7 @@ class DaemonCore:
             # the commit never ran on this path, so nothing is added for
             # them -- a counter records work done, and none was.
             self.stats.commit_seconds_total += self.clock.monotonic() - commit_started
-            self.stats.sampling_seconds_total += self.pipeline.sample_s
-            self.stats.pipeline_seconds_total += self.pipeline.evaluate_s
+            self._accumulate_pipeline_timings()
             self.stats.cycle_s = self.clock.monotonic() - started
             return
         # AC-02 actions are post-commit so their 30-second timeout cannot
@@ -789,11 +789,19 @@ class DaemonCore:
             # summing all seven counters would double-count it.
             self.stats.prune_seconds_total += self.retention.prune_s
             self.stats.reap_seconds_total += self.retention.reap_s
-        self.stats.sampling_seconds_total += self.pipeline.sample_s
-        self.stats.pipeline_seconds_total += self.pipeline.evaluate_s
+        self._accumulate_pipeline_timings()
         # cycle_s stays a last-completed-tick gauge: every tick has one, so
         # the reading is always meaningful (RB-02 "cycle duration").
         self.stats.cycle_s = self.clock.monotonic() - started
+
+    def _accumulate_pipeline_timings(self) -> None:
+        """Publish one tick's bounded sampling split and evaluation cost."""
+        self.stats.sampling_seconds_total += self.pipeline.sample_s
+        for source in SAMPLER_SOURCE_NAMES:
+            self.stats.sampling_seconds_by_source[source] += (
+                self.pipeline.sample_seconds_by_source.get(source, 0.0)
+            )
+        self.stats.pipeline_seconds_total += self.pipeline.evaluate_s
 
     def _run_retention(self, wall: float) -> None:
         """Rollups + pruning + baselines (DM-04/05, CA-05), its own bounded
