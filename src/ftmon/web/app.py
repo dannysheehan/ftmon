@@ -96,18 +96,38 @@ class IncidentEvidenceLink:
     label: str
 
 
+@dataclass(frozen=True)
+class _IncidentEvidenceTarget:
+    """Product-owned evidence semantics for one incident link."""
+
+    kind: str
+    target: str
+    label: str
+    statistic: str = "avg"
+
+
 # UI-12: these built-in groups have different evidence semantics, so matching
 # names or always choosing the first Trend would invent meaning. Keep the map
 # closed over the normative self monitor rather than exposing another authoring
 # surface merely to describe four product-owned groups.
 _SELF_INCIDENT_EVIDENCE = {
-    "cpu-budget": (("metric", "cpu_10m", "View 10-minute average CPU history"),),
-    "rss-growth": (("trend", "rss-growth", "View FTMON memory growth"),),
-    "rss-budget": (
-        ("metric", "rss_bytes", "View RSS metric history"),
-        ("trend", "rss-growth", "View FTMON memory growth"),
+    "cpu-budget": (
+        _IncidentEvidenceTarget(
+            "metric", "cpu_10m", "View 10-minute average CPU history"
+        ),
     ),
-    "db-budget": (("trend", "db-capacity", "View FTMON database capacity"),),
+    "rss-growth": (
+        _IncidentEvidenceTarget("trend", "rss-growth", "View FTMON memory growth"),
+    ),
+    "rss-budget": (
+        _IncidentEvidenceTarget(
+            "metric", "rss_bytes", "View peak RSS history", statistic="max"
+        ),
+        _IncidentEvidenceTarget("trend", "rss-growth", "View FTMON memory growth"),
+    ),
+    "db-budget": (
+        _IncidentEvidenceTarget("trend", "db-capacity", "View FTMON database capacity"),
+    ),
 }
 
 
@@ -510,7 +530,7 @@ async def incident_detail(request: Request):
 
 
 def _incident_evidence_links(row, catalog) -> tuple[IncidentEvidenceLink, ...]:
-    """Map a stored incident to explicit Metrics/Trends evidence (UI-12)."""
+    """Map a stored incident to explicit Metrics/Trends evidence (UI-12/UI-13)."""
     specs = _SELF_INCIDENT_EVIDENCE.get(row["grp"]) if row["monitor"] == "self" else None
     if specs is None:
         profile = next((
@@ -518,10 +538,23 @@ def _incident_evidence_links(row, catalog) -> tuple[IncidentEvidenceLink, ...]:
             if mdef.name == row["monitor"]
             and (candidate.incident_group is None or candidate.incident_group == row["grp"])
         ), None)
-        specs = () if profile is None else (
-            ("trend", profile.id, f"View {profile.title} around this incident"),
+        if profile is None:
+            return ()
+        return (
+            IncidentEvidenceLink(
+                href=f"/trends/{row['monitor']}/{profile.id}?" + urlencode({
+                    "entity": row["entity_id"],
+                    "range": "24h",
+                    "group": row["grp"],
+                }),
+                label=f"View {profile.title} around this incident",
+            ),
         )
 
+    # Trend profiles are definition-owned presentation contracts and disappear
+    # when a host-tuned definition predates one of these links. Metrics accepts
+    # an exact persisted-series bookmark even after observations expire, so its
+    # links intentionally remain available without catalog validation (UI-13).
     available_profiles = {
         (mdef.name, profile.id) for mdef, profile in catalog
     }
@@ -531,19 +564,19 @@ def _incident_evidence_links(row, catalog) -> tuple[IncidentEvidenceLink, ...]:
         "range": "24h",
         "group": row["grp"],
     }
-    for kind, target, label in specs:
-        if kind == "trend":
-            if (row["monitor"], target) not in available_profiles:
+    for spec in specs:
+        if spec.kind == "trend":
+            if (row["monitor"], spec.target) not in available_profiles:
                 continue
-            href = f"/trends/{row['monitor']}/{target}?" + urlencode(common)
+            href = f"/trends/{row['monitor']}/{spec.target}?" + urlencode(common)
         else:
             href = "/metrics?" + urlencode({
                 "monitor": row["monitor"],
                 **common,
-                "metric": target,
-                "statistic": "avg",
+                "metric": spec.target,
+                "statistic": spec.statistic,
             })
-        links.append(IncidentEvidenceLink(href=href, label=label))
+        links.append(IncidentEvidenceLink(href=href, label=spec.label))
     return tuple(links)
 
 
@@ -627,10 +660,14 @@ async def metrics(request: Request):
     selected = {"monitor": monitor, "entity": entity, "metric": metric,
                 "range": range_text, "statistic": statistic,
                 "group": incident_group}
+    clear_group_href = "/metrics?" + urlencode({
+        key: value for key, value in selected.items()
+        if key != "group" and value is not None
+    })
     return _render(
         "metrics.html", request, title="Metrics", choices=choices,
         monitors=monitors, entities=entities, metrics=metrics,
-        payload=payload, selected=selected,
+        payload=payload, selected=selected, clear_group_href=clear_group_href,
     )
 
 
@@ -1044,11 +1081,15 @@ async def trends(request: Request):
         )
     if trend:
         trend["range"]["label"] = range_text
+    clear_group_href = f"/trends/{mdef.name}/{profile.id}?" + urlencode({
+        key: value for key, value in {"entity": entity, "range": range_text}.items()
+        if value is not None
+    }) if mdef is not None and profile is not None else "/trends"
     return _render(
         "trends.html", request, title="Trends", catalog=catalog,
         selected_monitor=mdef, selected_profile=profile, entities=entities,
         entity=entity, range_text=range_text, incident_group=incident_group,
-        trend=trend,
+        trend=trend, clear_group_href=clear_group_href,
     )
 
 

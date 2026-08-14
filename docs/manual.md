@@ -364,10 +364,13 @@ moves to that curated view.
 An incident detail page has an **Evidence** section when FTMON knows the
 diagnostic history for that group. Self CPU incidents open the ten-minute
 average in Metrics; RSS-growth incidents open the memory-growth Trend; an RSS
-budget breach offers both raw RSS Metrics and that Trend; database-budget
+budget breach offers both peak RSS Metrics and that Trend; database-budget
 incidents open the used-capacity Trend. These links retain the incident entity,
 a 24-hour range, and the originating group. The group filters chart markers,
 which matters when RSS level and growth incidents share the same Trend panels.
+Both explorers show when a marker filter is active, say when it matches no
+incidents, and provide a clear-filter link. Choosing another monitor or Trend
+profile drops the old group because incident groups are monitor-specific.
 
 When the selected series has a learned baseline, Metrics also shows its current
 EWMA level and learning coverage. A visible **Baseline — learning** or

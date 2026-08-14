@@ -955,8 +955,8 @@ def test_generic_leak_trend_and_context_links_ui_12_ts_10(tmp_path):
     assert "/trends/leak/rss-growth?entity=firefox%3A7%3A1" in incident
 
 
-def test_self_incidents_link_to_their_explicit_history_ui_12(tmp_path):
-    """[UI-12] Each self budget opens the evidence that explains that group."""
+def test_self_incidents_link_to_their_explicit_history_ui_12_ui_13(tmp_path):
+    """[UI-12][UI-13] Each self budget opens the evidence that explains that group."""
     client, paths = _client(tmp_path)
     builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/self.toml"
     (paths.monitors_dir / "self.toml").write_text(builtin.read_text())
@@ -987,7 +987,7 @@ def test_self_incidents_link_to_their_explicit_history_ui_12(tmp_path):
     assert "group=rss-growth" in growth
 
     rss_budget = client.get("/incidents/22", headers=headers).text
-    assert "metric=rss_bytes" in rss_budget
+    assert "metric=rss_bytes" in rss_budget and "statistic=max" in rss_budget
     assert "/trends/self/rss-growth?" in rss_budget
     assert rss_budget.count("group=rss-budget") == 2
 
@@ -996,8 +996,8 @@ def test_self_incidents_link_to_their_explicit_history_ui_12(tmp_path):
     assert "group=db-budget" in database
 
 
-def test_incident_history_group_filters_metric_and_trend_markers_ui_12(tmp_path):
-    """[UI-12] A cross-group evidence link keeps only its incident markers."""
+def test_incident_history_group_filters_metric_and_trend_markers_ui_12_ui_13(tmp_path):
+    """[UI-12][UI-13] A cross-group evidence link keeps only its incident markers."""
     client, paths = _client(tmp_path)
     builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/self.toml"
     (paths.monitors_dir / "self.toml").write_text(builtin.read_text())
@@ -1052,7 +1052,30 @@ def test_incident_history_group_filters_metric_and_trend_markers_ui_12(tmp_path)
         headers=headers,
     ).text
     assert 'type="hidden" name="group" value="rss-budget"' in page
+    assert "Incident markers — filtered to rss-budget" in page
+    assert "Clear marker filter" in page
     assert "#31" in page and "#30" not in page
+
+    empty_metric_page = client.get(
+        "/metrics?monitor=self&entity=ftmon&metric=rss_bytes&"
+        "range=15m&group=cpu-budget",
+        headers=headers,
+    ).text
+    assert "Incident markers — filtered to cpu-budget" in empty_metric_page
+    assert "No incident markers match this filter" in empty_metric_page
+    assert "Clear marker filter" in empty_metric_page
+
+    empty_trend_page = client.get(
+        "/trends/self/rss-growth?entity=ftmon&range=15m&group=cpu-budget",
+        headers=headers,
+    ).text
+    assert "Incident markers — filtered to cpu-budget" in empty_trend_page
+    assert "No incident markers match this filter" in empty_trend_page
+    assert "Clear marker filter" in empty_trend_page
+
+    script = client.get("/static/ftmon.js", headers=headers).text
+    assert "params.delete('group')" in script
+    assert "params.set('group',current.get('group'))" not in script
 
 
 def test_trends_selector_hides_gone_entities_but_keeps_linked_history_ui_12(tmp_path):

@@ -2,10 +2,10 @@
 
 Status: **DRAFT v0.52** — v0.52 maps each built-in self-resource incident
 to its diagnostic history: CPU to its averaged metric, RSS growth to its trend,
-RSS budget to both RSS metric and trend, and database budget to its capacity
-trend. The incident group travels with each link and filters chart markers, so
-sharing a trend between groups cannot substitute one incident's evidence for
-another's (UI-12, issue #106). v0.51 bounds SA-05's previously unbounded promotion
+RSS budget to both peak RSS and its trend, and database budget to its capacity
+trend. The incident group travels with each link and visibly filters chart
+markers, so sharing a trend between groups cannot substitute one incident's
+evidence for another's (UI-12/UI-13, issue #106). v0.51 bounds SA-05's previously unbounded promotion
 path with a chosen ten-entity per-monitor concentration guardrail. The runtime
 guardrail refuses only new promotion admissions, never rule evaluation or
 top-N persistence, and reports both a bounded self signal and monitor-naming
@@ -1133,8 +1133,8 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 ---
 
-- **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Its entity selector MUST list recently seen active entities rather than every retained historical identity; an explicitly requested historical entity MUST remain selectable so incident links and bookmarks keep working. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. Incident evidence links MUST preserve the entity, range and incident group, and the selected group MUST filter chart markers even when it differs from the trend profile's default group. The built-in `self` mappings are explicit rather than inferred from names: `cpu-budget` → Metrics `cpu_10m` average; `rss-growth` → `rss-growth` Trend; `rss-budget` → Metrics `rss_bytes` plus the `rss-growth` Trend; `db-budget` → `db-capacity` Trend. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
-- **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. Its cascading selectors MUST include only series with observations in the selected range and resolution tier; an explicitly requested persisted series remains selected after its observations expire and renders a textual no-observations state rather than an empty graph or silent fallback. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. It additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric. When CA-05 has a stored row for the selected series, Metrics also reports the current learning level, update-count coverage/readiness and effective half-life, visibly labels the Baseline as `learning` or `ready`, includes every retained baseline value in the chart Y-domain, and overlays only the reconstructable native five-minute baseline points. Consecutive buckets may be joined as clearly distinguishable dashed segments, but gaps larger than five minutes, raw-sample timestamps and hourly interpolation MUST NOT be invented; ranges without retained baseline history show the labelled current state in text without a historical reference line.
+- **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Its entity selector MUST list recently seen active entities rather than every retained historical identity; an explicitly requested historical entity MUST remain selectable so incident links and bookmarks keep working. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. Incident evidence links into Trends MUST preserve the entity, range and incident group, and the selected group MUST filter chart markers even when it differs from the trend profile's default group. An active marker filter MUST be visible and clearable even when it matches no incidents, and changing the monitor/profile MUST discard the old monitor's group. The built-in `self` Trend mappings are explicit rather than inferred from names: `rss-growth` and `rss-budget` → `rss-growth`; `db-budget` → `db-capacity`; `cpu-budget` has no Trend link because CPU level evidence has no declared growth semantics. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
+- **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. Its cascading selectors MUST include only series with observations in the selected range and resolution tier; an explicitly requested persisted series remains selected after its observations expire and renders a textual no-observations state rather than an empty graph or silent fallback. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. Incident evidence links into Metrics MUST preserve the entity, range and incident group. Their built-in `self` mappings are explicit rather than inferred: `cpu-budget` → `cpu_10m` average and `rss-budget` → `rss_bytes` maximum, matching the average CPU rule and instantaneous RSS level rule respectively. The selected group MUST filter chart markers; an active marker filter MUST be visible and clearable even when it matches no incidents, and changing the monitor MUST discard the old monitor's group. Metrics additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric. When CA-05 has a stored row for the selected series, Metrics also reports the current learning level, update-count coverage/readiness and effective half-life, visibly labels the Baseline as `learning` or `ready`, includes every retained baseline value in the chart Y-domain, and overlays only the reconstructable native five-minute baseline points. Consecutive buckets may be joined as clearly distinguishable dashed segments, but gaps larger than five minutes, raw-sample timestamps and hourly interpolation MUST NOT be invented; ranges without retained baseline history show the labelled current state in text without a historical reference line.
 - **UI-14** Every dashboard monitor tile MUST show one accessible health state derived from current configuration, daemon freshness, and live open/acked incidents. Fixed precedence is `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`. States use color plus icon and visible text: grey `? unknown`/`● disabled`, red `✖ error`, yellow `▲ warning`, green `✓ clear`. Acknowledgment does not reduce severity or turn a tile green. Affected tiles show live incident count and link to incidents filtered by monitor; color never flashes or animates.
 - **UI-15** `ftmon web --demo` is a separate public-demonstration mode. It
   opens only a generated, deterministic synthetic database read-only; registers
@@ -1443,12 +1443,13 @@ Implementation lands in stages; each stage is independently usable, ships the §
 mapping. Self incident details now choose evidence by normative group semantics
 rather than metric-name inference or whichever Trend happens to come first:
 CPU opens its ten-minute-average Metrics view, RSS growth opens the memory
-Trend, an RSS level breach offers both raw RSS and that shared Trend, and a
+Trend, an RSS level breach offers both peak RSS and that shared Trend, and a
 database breach opens the used-capacity Trend. Every link carries its entity,
-24-hour range and originating group; Metrics and Trends retain the group in
-their forms and filter incident markers to it. This lets `rss-budget` reuse the
-RSS growth panels without relabelling `rss-growth` incidents as its evidence
-(UI-12, issue #106).
+24-hour range and originating group; Metrics and Trends visibly identify and
+filter markers to that group, including a clear empty-filter state, and discard
+the group when switching monitors. This lets `rss-budget` reuse the RSS growth
+panels without relabelling `rss-growth` incidents as its evidence
+(UI-12/UI-13, issue #106).
 
 **v0.51 (2026-08-14)** — closes issue #103's runtime guardrail and authoring
 trap. A promotion expression is valid static syntax but its match cardinality
