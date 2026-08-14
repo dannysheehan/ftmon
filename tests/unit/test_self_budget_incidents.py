@@ -396,6 +396,78 @@ class TestProjectedExhaustion:
             "5 false cycles must not clear a 30-cycle rule"
         )
 
+    def test_short_history_cannot_produce_a_verdict(self, tmp_path):
+        """[RB-02] the coverage gate, isolated.
+
+        Steep enough that slope, net growth and the horizon all pass easily,
+        but observed for far less than the 6 h window — the situation after a
+        restart. Without coverage a handful of samples would deliver a
+        six-hour verdict on the daemon's remaining life.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        # 6 MB/h for 40 min, ending ~4 MB below budget: every other gate open
+        _rss_ramp(sampler, start_mb=92, per_tick_mb=6.0 / 60, ticks=40)
+        _run(paths, sampler, ticks=40)
+
+        assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"], (
+            "40 minutes of history cannot support a six-hour projection"
+        )
+
+    def test_dip_and_recovery_near_the_budget_stays_quiet(self, tmp_path):
+        """[RB-02] the positive-net-growth gate, isolated.
+
+        Memory that dipped and climbed back to where it started is not
+        growing, but the fitted slope over the window is positive because
+        most of it rises. With little headroom the horizon test passes, so
+        `delta > 0` is the only thing rejecting it.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        # 97 -> 88 -> 96 inside one window: delta -1.00 MB (negative) while
+        # the long recovery leg leaves slope at +0.268 MB/h and headroom at
+        # 4 MB, so the horizon test passes. Shape checked numerically: a
+        # shallower dip gives a negative slope and would prove nothing,
+        # because the horizon test would reject it on its own.
+        sampler.push(_metrics(rss=97 * MB), times=40)
+        for i in range(40):
+            sampler.push(_metrics(rss=(97 - 9 * (i + 1) / 40) * MB))
+        for i in range(280):
+            sampler.push(_metrics(rss=(88 + 8 * (i + 1) / 280) * MB))
+        _run(paths, sampler, ticks=_WINDOW_TICKS)
+
+        assert not [s for s in _incidents(paths, "rss-growth") if s[0] == "open"], (
+            "recovering to a previous level is not growth toward exhaustion"
+        )
+
+    def test_clear_requires_the_full_thirty_cycles(self, tmp_path):
+        """[RB-02] the hysteresis magnitude, not merely its presence.
+
+        The companion test proves 5 false cycles do not clear. That passes
+        for any clear_cycles above 5, so it cannot distinguish 30 from 60.
+        This one runs 35 false cycles and requires the incident to have
+        cleared, which fails if the value is raised.
+
+        Together the two bound the setting to (5, 35] rather than pinning it.
+        That is intentional: 30 is provisional pending backtesting against
+        rollup5m history, and 10 is a plausible outcome. Asserting 30 exactly
+        would encode an unvalidated number as a requirement and would have to
+        be edited by whatever the backtest concludes. The pair still rejects
+        the values that would break the rule -- 1 removes hysteresis entirely
+        and 60 is slow enough to hold a stale incident for an hour.
+        """
+        paths = _core_with_shipped_self(tmp_path)
+        sampler = ScriptedSelfSampler()
+        _rss_ramp(sampler, start_mb=95, per_tick_mb=self.SOAK_RATE,
+                  ticks=_WINDOW_TICKS + 40)
+        sampler.push(_metrics(rss=40 * MB), times=35)
+        _run(paths, sampler, ticks=_WINDOW_TICKS + 75)
+
+        states = _incidents(paths, "rss-growth")
+        assert states and states[-1][0] == "cleared", (
+            "35 false cycles must clear a 30-cycle rule"
+        )
+
     def test_cpu_evidence_is_level_never_slope_rb_02(self, tmp_path):
         """[RB-02][MD-10] CPU rising steadily must not open a growth incident.
 

@@ -24,18 +24,22 @@ db_budget_mb = { value = 200, doc = "DM-05's normative enforcement target (used 
 # "retention is failing," not "retention is working."
 db_warn_mb = { value = 230, doc = "Alarm threshold for db-budget, deliberately above db_budget_mb (see comment above)" }
 stall_s = { value = 600, doc = "Warn when the event reader has been silent this long (s)" }
-# --- RSS growth (#106) -------------------------------------------------
+# --- RSS exhaustion horizons (#106) ------------------------------------
 # rss-budget above is a *level* backstop: it fires once RSS is already over
 # budget. These catch the approach, so an operator sees a trend rather than
-# an arrival. Sized against rss_budget_mb, not guessed: 1 MB/h is 24 MB/day,
-# roughly a quarter of the 100 MB budget per day, which no healthy daemon
-# should sustain. Deliberately NOT tuned to alarm on the ~0.6 MB/h a 24-hour
-# canary measured -- that rise is real but not yet shown to be pathological,
-# and a threshold set to make today's reading fire proves nothing tomorrow.
+# an arrival.
+#
+# Horizons, not rates. A 59-hour canary soak grew steadily at ~0.42 MB/h
+# from 55 MB to a 100 MB breach while a fixed 1 MB/h threshold never fired.
+# The same rate is unremarkable with 45 MB of headroom and terminal with 3,
+# so what matters is how long the trend takes to consume what is left.
+#
+# There is no clear_cycles parameter: the loader accepts only a literal int
+# there, so a parameter could be declared but never referenced. The value
+# lives on the rules, with its rationale above them.
 rss_exhaustion_warn_h = { value = 72, doc = "Warn when the 6h trend would consume all remaining RSS headroom within this many hours" }
 rss_exhaustion_crit_h = { value = 24, doc = "Error when the 6h trend would consume all remaining headroom within this many hours" }
 rss_growth_min_coverage = { value = 0.8, doc = "Fraction of the 6h slope window that must actually be observed - otherwise a restart or a gap can pass for a six-hour verdict" }
-rss_growth_clear_cycles = { value = 30, doc = "Consecutive quiet cycles before the incident clears; provisional pending backtesting (see comment above the rules)" }
 rss_growth_confidence = { value = 0.7, doc = "Fraction of rising samples used as the trend-profile confidence signal (not an alert gate)" }
 
 [[rule]]

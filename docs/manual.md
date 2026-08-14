@@ -629,7 +629,7 @@ incident groups — `cpu-budget`, `rss-budget`, `db-budget` — so a long
 incident is attributable to CPU, memory or storage rather than to all three
 at once.
 
-`self.toml` v4 adds a fourth group, `rss-growth`. The `rss-budget` rule is a
+`self.toml` v3 added a fourth group, `rss-growth`, and v4 changed how it decides. The `rss-budget` rule is a
 *level* backstop: it fires once memory is already over budget. The growth
 rules fire on the approach, so you see a trend instead of an arrival. It is a
 separate group for the same reason the others are: "FTMON is over its memory
