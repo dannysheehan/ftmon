@@ -71,6 +71,8 @@ class SelfStats:
     # restart would look like a measurement of nothing persisted.
     entities_persisted: int | None = None
     series_persisted: int | None = None
+    promotion_limited_monitors: int | None = None
+    promotion_rejections_total: int = 0
     counters: dict[str, int] = field(default_factory=dict)
 
     def count(self, name: str) -> None:
@@ -174,5 +176,8 @@ class SelfSampler:
             metrics["entities_persisted"] = float(s.entities_persisted)
         if s.series_persisted is not None:
             metrics["series_persisted"] = float(s.series_persisted)
+        if s.promotion_limited_monitors is not None:
+            metrics["promotion_limited_monitors"] = float(s.promotion_limited_monitors)
+        metrics["promotion_rejections_total"] = float(s.promotion_rejections_total)
         entity = EntitySample(entity_id="ftmon", attrs={}, metrics=metrics)
         return Snapshot(source=self.decl.name, ts=now, entities=(entity,))

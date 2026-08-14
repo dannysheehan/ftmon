@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.32**. Companion to `SPEC.md` v0.50 — every design element
+Status: **DRAFT v0.33**. Companion to `SPEC.md` v0.51 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -831,6 +831,18 @@ gone-detection: entities seen before but absent → CA-08 grace timer
 ### 10.3 Promotion (SA-05)
 
 The process source keeps its own all-process short window (15 samples) in `rings` under a non-persisted namespace. After each cycle, `promotion.expr` (from `leak.toml` et al.) is evaluated per process against that window; newly-true → promote (start persisting + full ring), false for 30 min → demote. Transitions → self-events.
+
+Promotion is a persistence decision, not an evaluation gate: every non-exempt
+sampled process reaches the rules before `_select_persisted` runs. Admission is
+bounded to `PROMOTION_LIMIT_PER_MONITOR = 10`, directly matching §9's promoted
+allowance. Existing true promotions are refreshed first; expired promotions
+demote; new matching entity IDs are sorted and admitted into remaining slots.
+Further matches are retained only in bounded rings and counted as distinct
+refusals while they remain denied. The first denied set emits one notice event
+with provider `ftmon.<monitor>` / event ID `promotion-limit`; returning below
+the limit emits one recovery event. Fixed self metrics publish current limited
+monitor count and cumulative admission refusals without creating a metric name
+per monitor. Rule evaluation and top-N selection are unchanged.
 
 ### 10.4 Incident engine (IN-01..08) — pure
 

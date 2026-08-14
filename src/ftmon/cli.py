@@ -864,6 +864,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         f"series={_budget(dm16['series_persisted'], dm16['max_series_persisted'])}"
         " (worksheet assumption)"
     )
+    print(
+        "Promotion guardrail: "
+        + (
+            "unknown (no daemon has published it)"
+            if dm16["promotion_limited_monitors"] is None
+            else (
+                f"limited_monitors={dm16['promotion_limited_monitors']} "
+                f"rejections={dm16['promotion_rejections_total']} "
+                f"limit={dm16['promotion_limit_per_monitor']}/monitor"
+            )
+        )
+    )
     # Presence and retention, deliberately without a budget comparison: these
     # count what is running and what is retained, neither of which is the
     # pressure DM-16 bounds (#104).

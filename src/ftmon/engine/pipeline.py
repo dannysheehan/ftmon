@@ -29,6 +29,7 @@ from ftmon.model import EventRecord, Snapshot, TriBool, severity_name
 from ftmon.sources.base import Sampler
 
 _DEMOTE_AFTER_S = 30 * 60  # SA-05: demote after 30m without the heuristic holding
+PROMOTION_LIMIT_PER_MONITOR = 10  # DM-16 worksheet's promoted-entity allowance
 _DURABLE_SOURCES = {"system", "disk", "self"}  # DM-04 retention split (DESIGN 9)
 
 
@@ -46,6 +47,8 @@ class EvalOutcome:
 class _MonitorState:
     seen: dict[str, float] = field(default_factory=dict)  # entity_id -> last seen wall ts
     promoted: dict[str, float] = field(default_factory=dict)  # entity_id -> last True ts
+    promotion_denied: set[str] = field(default_factory=set)
+    promotion_limited: bool = False
 
 
 class Pipeline:
@@ -87,6 +90,7 @@ class Pipeline:
         # budget: a count of series *written this tick*, not of series whose
         # owning entity happens to still be running.
         self._persisted_series: dict[str, int] = {}
+        self._promotion_rejections_total = 0
 
     def run_monitor(
         self,
@@ -202,6 +206,18 @@ class Pipeline:
         """
         return sum(self._persisted.get(name, 0) for name in monitors)
 
+    def promotion_limited_monitors(self, monitors: Iterable[str]) -> int:
+        """Loaded process monitors currently refusing promotion admissions."""
+        return sum(
+            self._state.get(name, _MonitorState()).promotion_limited
+            for name in monitors
+        )
+
+    @property
+    def promotion_rejections_total(self) -> int:
+        """Promotion admission refusals since this daemon started."""
+        return self._promotion_rejections_total
+
     def _ctx(self, mdef: MonitorDef, entity_id: str, attrs: Mapping, now: float) -> EntityCtx:
         ctx = EntityCtx(
             rings=self._rings,
@@ -225,7 +241,7 @@ class Pipeline:
         now: float,
         writer,
     ) -> None:
-        selected = self._select_persisted(mdef, snap, st, now)
+        selected = self._select_persisted(mdef, snap, st, now, exempt_entities)
         selected.difference_update(exempt_entities)
         # Overwrite rather than accumulate: this is a gauge of current pressure,
         # and a monitor that stops selecting an entity must stop counting it.
@@ -257,7 +273,12 @@ class Pipeline:
         self._persisted_series[mdef.name] = series_written
 
     def _select_persisted(
-        self, mdef: MonitorDef, snap: Snapshot, st: _MonitorState, now: float
+        self,
+        mdef: MonitorDef,
+        snap: Snapshot,
+        st: _MonitorState,
+        now: float,
+        exempt_entities: set[str],
     ) -> set[str]:
         if mdef.source != "process":
             return {e.entity_id for e in snap.entities}
@@ -274,17 +295,54 @@ class Pipeline:
             selected.update(e.entity_id for e in ranked[:top_n])
 
         # SA-05 (c): promotion heuristic over the in-ring short window.
+        promotion_matches: set[str] = set()
         if mdef.promotion is not None:
             for ent in snap.entities:
+                if ent.entity_id in exempt_entities:
+                    continue
                 ctx = self._ctx(mdef, ent.entity_id, ent.attrs, now)
                 if mdef.promotion.eval(ctx, counter=self._counter) is True:
-                    if ent.entity_id not in st.promoted:
-                        self._self_event(mdef, now, f"promoted {ent.entity_id}")
-                    st.promoted[ent.entity_id] = now
+                    promotion_matches.add(ent.entity_id)
+
+        # Existing admissions keep their slots while the heuristic remains
+        # true. New candidates are sorted so sampler enumeration order cannot
+        # decide which entities receive durable history at the runtime cap.
+        for entity_id in promotion_matches & st.promoted.keys():
+            st.promoted[entity_id] = now
         for entity_id, last_true in list(st.promoted.items()):
             if now - last_true > _DEMOTE_AFTER_S:
                 del st.promoted[entity_id]
                 self._self_event(mdef, now, f"demoted {entity_id}")
+
+        slots = max(0, PROMOTION_LIMIT_PER_MONITOR - len(st.promoted))
+        candidates = sorted(promotion_matches - st.promoted.keys())
+        for entity_id in candidates[:slots]:
+            st.promoted[entity_id] = now
+            self._self_event(mdef, now, f"promoted {entity_id}")
+
+        denied = set(candidates[slots:])
+        newly_denied = denied - st.promotion_denied
+        self._promotion_rejections_total += len(newly_denied)
+        limited = bool(denied)
+        if limited and not st.promotion_limited:
+            self._self_event(
+                mdef,
+                now,
+                f"promotion limit reached: {len(st.promoted)} admitted, "
+                f"{len(denied)} refused (limit {PROMOTION_LIMIT_PER_MONITOR})",
+                event_id="promotion-limit",
+                severity=1,
+            )
+        elif not limited and st.promotion_limited:
+            self._self_event(
+                mdef,
+                now,
+                "promotion limit recovered: no promotion matches are being refused",
+                event_id="promotion-limit",
+                severity=1,
+            )
+        st.promotion_denied = denied
+        st.promotion_limited = limited
         selected.update(st.promoted)
         return selected
 
@@ -297,20 +355,29 @@ class Pipeline:
                 continue
             del st.seen[entity_id]
             st.promoted.pop(entity_id, None)
+            st.promotion_denied.discard(entity_id)
             self._rings.forget_entity(mdef.name, entity_id)
             writer.upsert_entity(mdef.name, entity_id, last_seen, {}, gone_ts=now)
             self._gone.append((mdef.name, entity_id))  # incident engine input (IN-07)
             self._self_event(mdef, now, f"entity gone: {entity_id}")
 
-    def _self_event(self, mdef: MonitorDef, now: float, message: str) -> None:
+    def _self_event(
+        self,
+        mdef: MonitorDef,
+        now: float,
+        message: str,
+        *,
+        event_id: str | None = None,
+        severity: int = 0,
+    ) -> None:
         self._events.append(
             EventRecord(
                 ts=now,
                 ingest_ts=now,
                 source="self",
                 provider=f"ftmon.{mdef.name}",
-                event_id=None,
-                severity=0,
+                event_id=event_id,
+                severity=severity,
                 message=message,
             )
         )

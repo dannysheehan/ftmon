@@ -78,6 +78,9 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
         # doctor says so rather than substituting the counts DM-16 rejects.
         "entities_persisted": None,
         "series_persisted": None,
+        "promotion_limit_per_monitor": 10,
+        "promotion_limited_monitors": None,
+        "promotion_rejections_total": None,
         "entities_not_gone": 0,
         "series_not_gone": 0,
     }
@@ -96,6 +99,33 @@ def test_doctor_catalog_fields_empty_db_cl_05_dm_16(tmp_path):
         "monitors_truncated": False,
         "limits": {"max_monitors": 64},
     }
+    conn.close()
+
+
+def test_doctor_reports_promotion_runtime_guardrail_cl_05_dm_16(tmp_path):
+    """[CL-05][DM-16] Doctor surfaces runtime-only promotion pressure from
+    the bounded self namespace rather than attempting to infer it from the
+    retained catalog."""
+    conn = connect(tmp_path / "ftmon.db")
+    migrate(conn)
+    for series_id, metric, value in (
+        (7001, "promotion_limited_monitors", 2),
+        (7002, "promotion_rejections_total", 17),
+    ):
+        conn.execute(
+            "INSERT INTO series(id,monitor,entity_id,metric,durable) "
+            "VALUES (?,'self','ftmon',?,1)",
+            (series_id, metric),
+        )
+        conn.execute(
+            "INSERT INTO samples(series_id,ts,value) VALUES (?,1000,?)",
+            (series_id, value),
+        )
+    conn.commit()
+    report = inspect(conn, now=1000)
+    assert report["dm16"]["promotion_limit_per_monitor"] == 10
+    assert report["dm16"]["promotion_limited_monitors"] == 2
+    assert report["dm16"]["promotion_rejections_total"] == 17
     conn.close()
 
 

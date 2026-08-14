@@ -9,7 +9,7 @@ import pytest
 
 from ftmon.clock import FakeClock
 from ftmon.definitions import load_text
-from ftmon.engine.pipeline import Pipeline
+from ftmon.engine.pipeline import PROMOTION_LIMIT_PER_MONITOR, Pipeline
 from ftmon.engine.rings import RingStore
 from ftmon.engine.scheduler import DueTable, Scheduler
 from ftmon.model import EntitySample, Snapshot, TriBool
@@ -321,6 +321,57 @@ def test_pipeline_top_n_persistence_selection():
     assert {"big:1:1", "busy:2:1"} <= persisted
     assert "meek00:9:0" not in persisted
     assert len(persisted) <= 10  # union of two top-5 rankings
+
+
+def test_pipeline_caps_promotion_without_changing_evaluation_or_top_n():
+    """[SA-05][DM-16] broad promotion cannot create an unbounded durable set.
+
+    Rules still evaluate for every non-exempt process, and top-N remains an
+    independent persistence path even when its entity was refused promotion.
+    One transition event reports the monitor-level condition rather than one
+    event per refused entity or per tick.
+    """
+    text = LEAKDEF.replace("[parameters]", "[source_options]\ntop_n = 5\n[parameters]")
+    mdef = load_text(text)
+    sampler = ScriptedSampler()
+    entity_ids = [f"grow{i:02d}:1:{i}" for i in range(15)]
+    for tick in range(20):
+        sampler.push(*[
+            grower(tick, eid=entity_id, rss0=1_000_000 + i * 10_000)
+            for i, entity_id in enumerate(entity_ids)
+        ])
+
+    pipe, writer, outcomes, _ = _run_cycles(mdef, sampler, 20)
+
+    assert pipe.promoted("leak") == set(entity_ids[:PROMOTION_LIMIT_PER_MONITOR])
+    assert len(outcomes) == len(entity_ids), "persistence admission never gates rules"
+    assert pipe.promotion_limited_monitors(["leak"]) == 1
+    assert pipe.promotion_rejections_total == 5
+    # High-RSS entities sort into top-N even though the promotion cap refused
+    # them; alerting and the already-bounded top-N path keep working.
+    persisted = {entity for _monitor, entity, _metric, _value in writer.samples}
+    assert set(entity_ids[-5:]) <= persisted
+    events = pipe.drain_self_events()
+    limit_events = [event for event in events if event.event_id == "promotion-limit"]
+    assert len(limit_events) == 1
+    assert limit_events[0].provider == "ftmon.leak"
+    assert "5 refused (limit 10)" in limit_events[0].message
+
+    flat = [
+        grower(20, eid=entity_id, rss0=1_000_000 + i * 10_000)
+        for i, entity_id in enumerate(entity_ids)
+    ]
+    for _ in range(50):
+        sampler.push(*flat)
+    for tick in range(20, 70):
+        pipe.run_monitor(mdef, 1_700_000_000 + tick * 60, 10**9, writer, {})
+    recovery_events = [
+        event for event in pipe.drain_self_events()
+        if event.event_id == "promotion-limit"
+    ]
+    assert len(recovery_events) == 1
+    assert "no promotion matches are being refused" in recovery_events[0].message
+    assert pipe.promotion_limited_monitors(["leak"]) == 0
 
 
 # --- daemon core (composition), FakeClock-driven ---

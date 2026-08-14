@@ -185,6 +185,9 @@ def catalog_report(conn: sqlite3.Connection, *, now: float) -> dict:
             "entities_persisted": _latest_self("entities_persisted"),
             "max_series_persisted": 270,
             "series_persisted": _latest_self("series_persisted"),
+            "promotion_limit_per_monitor": 10,
+            "promotion_limited_monitors": _latest_self("promotion_limited_monitors"),
+            "promotion_rejections_total": _latest_self("promotion_rejections_total"),
             # Reported beside the budget figures, never as them (DM-16).
             "entities_not_gone": entities_not_gone,
             "series_not_gone": series_not_gone,

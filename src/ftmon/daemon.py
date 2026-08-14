@@ -883,6 +883,12 @@ class DaemonCore:
         if self.pipeline.has_persisted_data():
             self.stats.entities_persisted = self.pipeline.persisted_entities(self.monitors)
             self.stats.series_persisted = self.pipeline.persisted_series(self.monitors)
+            self.stats.promotion_limited_monitors = (
+                self.pipeline.promotion_limited_monitors(self.monitors)
+            )
+            self.stats.promotion_rejections_total = (
+                self.pipeline.promotion_rejections_total
+            )
 
     def _sample_outbox_backlog(self, wall: float) -> None:
         """Fold delivery debt into the self source (NO-10).
