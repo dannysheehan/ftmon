@@ -820,7 +820,7 @@ class Query:
         incident_sql = (
             "SELECT id,state,severity,opened_ts,last_change_ts,cleared_ts,grp "
             "FROM incidents WHERE monitor=? AND entity_id=? "
-            "AND last_change_ts>=? AND opened_ts<=?"
+            "AND (cleared_ts IS NULL OR cleared_ts>=?) AND opened_ts<=?"
         )
         incident_params: list[object] = [monitor, entity_id, round(start), round(end)]
         selected_incident_group = incident_group or profile.incident_group

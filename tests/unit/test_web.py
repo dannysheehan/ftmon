@@ -953,6 +953,7 @@ def test_generic_leak_trend_and_context_links_ui_12_ts_10(tmp_path):
     assert 'href="/trends/leak/rss-growth"' in dashboard
     incident = client.get("/incidents/2", headers=headers).text
     assert "/trends/leak/rss-growth?entity=firefox%3A7%3A1" in incident
+    assert "range=24h" in incident and "group=leak" in incident
 
 
 def test_self_incidents_link_to_their_explicit_history_ui_12_ui_13(tmp_path):
@@ -979,7 +980,7 @@ def test_self_incidents_link_to_their_explicit_history_ui_12_ui_13(tmp_path):
 
     cpu = client.get("/incidents/20", headers=headers).text
     assert "metric=cpu_10m" in cpu and "statistic=avg" in cpu
-    assert "range=24h" in cpu and "group=cpu-budget" in cpu
+    assert "entity=ftmon" in cpu and "range=24h" in cpu and "group=cpu-budget" in cpu
     assert "/trends/self/" not in cpu
 
     growth = client.get("/incidents/21", headers=headers).text
@@ -1062,6 +1063,7 @@ def test_incident_history_group_filters_metric_and_trend_markers_ui_12_ui_13(tmp
         headers=headers,
     ).text
     assert "Incident markers — filtered to cpu-budget" in empty_metric_page
+    assert 'type="hidden" name="group" value="cpu-budget"' in empty_metric_page
     assert "No incident markers match this filter" in empty_metric_page
     assert "Clear marker filter" in empty_metric_page
 

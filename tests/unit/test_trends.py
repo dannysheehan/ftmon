@@ -103,13 +103,21 @@ def test_generic_leak_trend_has_no_projection_and_filters_incidents_ca_10_ts_10(
             "INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)",
             [(sid, 100, values[0]), (sid, 200, values[1])],
         )
-    for iid, group in ((1, "leak"), (2, "unrelated")):
-        conn.execute(
-            "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
-            "opened_ts,last_change_ts,notify_count,occurrences) "
-            "VALUES(?,'leak',?,?,'open',2,'leak-warn',150,150,1,1)",
-            (iid, group, entity),
-        )
+    # Ack does not end an incident. An incident already open when the selected
+    # range begins must remain part of the overlay even if its last transition
+    # predates the range.
+    conn.execute(
+        "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+        "opened_ts,last_change_ts,ack_by,ack_ts,notify_count,occurrences) "
+        "VALUES(1,'leak','leak',?,'acked',2,'leak-warn',-100,-100,'operator',-50,1,1)",
+        (entity,),
+    )
+    conn.execute(
+        "INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
+        "opened_ts,last_change_ts,notify_count,occurrences) "
+        "VALUES(2,'leak','unrelated',?,'open',2,'leak-warn',150,150,1,1)",
+        (entity,),
+    )
     builtin = Path(__file__).parents[2] / "src/ftmon/definitions/builtins/leak.toml"
     mdef = load_file(builtin)
     trend = Query(conn).trend(
@@ -122,6 +130,13 @@ def test_generic_leak_trend_has_no_projection_and_filters_incidents_ca_10_ts_10(
     assert trend["summary"]["projection_reason"] is None
     assert [incident["id"] for incident in trend["incidents"]] == [1]
     assert [x["value"] for x in trend["panels"]["rate"]["thresholds"]] == [32, 128]
+
+    override = Query(conn).trend(
+        "leak", entity, mdef.trends[0], now=200, start=0, end=200,
+        parameters=mdef.parameters, incident_group="unrelated",
+    )
+    assert override["incident_group"] == "unrelated"
+    assert [incident["id"] for incident in override["incidents"]] == [2]
     conn.close()
 
 
