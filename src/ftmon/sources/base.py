@@ -12,7 +12,27 @@ from typing import ClassVar, Protocol
 
 from ftmon.model import AttrDecl, EventRecord, MetricDecl, Snapshot, SourceDecl
 
-__all__ = ["Sampler", "EventSource", "SOURCE_DECLS", "get_decl"]
+__all__ = [
+    "Sampler",
+    "EventSource",
+    "SAMPLER_SOURCE_NAMES",
+    "SOURCE_DECLS",
+    "get_decl",
+]
+
+
+# RB-02: the source vocabulary is a product contract, not runtime data. These
+# names therefore support fixed per-source self metrics without introducing a
+# label/dimension whose cardinality depends on installed monitor definitions.
+SAMPLER_SOURCE_NAMES = (
+    "process",
+    "disk",
+    "system",
+    "net",
+    "unit",
+    "self",
+    "external",
+)
 
 
 class Sampler(Protocol):
@@ -174,7 +194,7 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("entities_persisted", "count", "gauge",
                "Entities being written durable history now, against the DM-16 budget"),
             _m("series_persisted", "count", "gauge",
-               "Series written this tick, against DM-16's ~270 series worksheet"),
+               "Series written this tick, against DM-16's ~320 series worksheet"),
             _m("promotion_limited_monitors", "count", "gauge",
                "Process monitors currently refusing promotion admissions at the DM-16 cap"),
             _m("promotion_rejections_total", "count", "counter",
@@ -185,11 +205,20 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             # ticks run every 5 s, so a stage running on only some ticks reads
             # 0 almost always. Utilization is the derived quantity --
             # delta(counter) / elapsed wall, x100 for percent of one core.
-            # Fixed names: a per-source or per-monitor dimension would make
-            # the DM-16 catalog budget a function of how many monitors are
-            # installed.
+            # Fixed names: the seven source counters below are compile-time
+            # registry members, never a per-monitor/alias dimension that
+            # would grow with what an operator installs.
             _m("sampling_seconds_total", "s", "counter",
                "Cumulative time in SA-06 shared sampling"),
+            *(
+                _m(
+                    f"sampling_{source}_seconds_total",
+                    "s",
+                    "counter",
+                    f"Cumulative SA-06 shared sampling time for the {source} source",
+                )
+                for source in SAMPLER_SOURCE_NAMES
+            ),
             _m("pipeline_seconds_total", "s", "counter",
                "Cumulative time in projection and rule evaluation"),
             _m("commit_seconds_total", "s", "counter",

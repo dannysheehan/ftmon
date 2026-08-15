@@ -853,7 +853,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     def _budget(value, limit):
         return "unknown (no daemon has published it)" if value is None else f"{value}/{limit}"
 
-    # DM-16 states the entity figure as a budget but derives ~270 series from
+    # DM-16 states the entity figure as a budget but derives ~320 series from
     # a worksheet whose scope does not reconcile with 400 entities at >=1
     # metric each. Until #103 settles that, the series limit is reported as an
     # assumption rather than asserted as a bound the daemon is violating.

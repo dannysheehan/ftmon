@@ -415,9 +415,15 @@ describe entity lifecycle, while its totals answer which definition created
 the stored footprint. They do not reconstruct the per-monitor current write
 set: only the global persisted counts carry that meaning.
 
-Anything FTMON has not measured says so rather than showing zero. Per-stage
-tick timings are not collected yet, and the page says that instead of
-implying every stage takes no time.
+Anything FTMON has not measured says so rather than showing zero. The tick
+table derives one-core utilization from cumulative counter deltas. Sampling
+is decomposed into the fixed process, disk, system, network, unit, self, and
+external source rows; those rows partition sampling rather than adding new
+tick cost. The explicitly labelled external-projection row measures projection
+of the prepared result, while the separately deadline-bounded check execution
+remains outside this stage.
+Prune and reap similarly explain parts of retention. Until two samples exist,
+the page says the rate is unavailable instead of implying a measured zero.
 
 Each budget links to its own 6-hour and 24-hour history, which is usually the
 faster way to tell a spike from a trend. The dashboard's status strip carries
@@ -705,9 +711,9 @@ Rules of your own can use `db_allocated_bytes`, `db_used_bytes`,
 `db_freelist_bytes`, `db_headroom_bytes` (signed — negative means over the
 DM-05 target), and `entities_persisted` / `series_persisted`, which count what
 the daemon is currently writing durable history for. DM-16 budgets 400
-persisted entities; its ~270 series figure is a capacity-worksheet assumption
+persisted entities; its ~320 series figure is a capacity-worksheet assumption
 rather than a settled bound, so `doctor` labels the two differently and a
-series count above ~270 is worth understanding rather than treating as a
+series count above ~320 is worth understanding rather than treating as a
 breach. Those two count *selection*, not what happens
 to be running: a process FTMON samples but does not persist costs nothing
 against the catalog, so a much larger "running" count is normal and `doctor`

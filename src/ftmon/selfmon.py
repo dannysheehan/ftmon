@@ -17,7 +17,7 @@ from typing import ClassVar
 import psutil
 
 from ftmon.model import EntitySample, Snapshot, SourceDecl
-from ftmon.sources.base import SOURCE_DECLS
+from ftmon.sources.base import SAMPLER_SOURCE_NAMES, SOURCE_DECLS
 
 
 @dataclass
@@ -55,10 +55,13 @@ class SelfStats:
     #
     # Counters make utilization the derived quantity it actually is:
     # delta(counter) / elapsed_wall gives the fraction of one core, correctly
-    # even when a sample is missed. Fixed cardinality on purpose -- no monitor
-    # or source dimension -- for the same reason external_check_failures is a
-    # summed total: the self entity must stay bounded against DM-16.
+    # even when a sample is missed. Fixed cardinality on purpose: the source
+    # split uses seven compile-time names, never monitor/alias/runtime names,
+    # for the same reason external_check_failures is a summed total.
     sampling_seconds_total: float = 0.0
+    sampling_seconds_by_source: dict[str, float] = field(
+        default_factory=lambda: {source: 0.0 for source in SAMPLER_SOURCE_NAMES}
+    )
     pipeline_seconds_total: float = 0.0
     commit_seconds_total: float = 0.0
     actions_outbox_seconds_total: float = 0.0
@@ -126,6 +129,11 @@ class SelfSampler:
             # prune and reap are subcomponents of retention, never additive
             # peers: summing all seven would double-count the retention pass.
             "sampling_seconds_total": s.sampling_seconds_total,
+            **{
+                f"sampling_{source}_seconds_total":
+                    s.sampling_seconds_by_source.get(source, 0.0)
+                for source in SAMPLER_SOURCE_NAMES
+            },
             "pipeline_seconds_total": s.pipeline_seconds_total,
             "commit_seconds_total": s.commit_seconds_total,
             "actions_outbox_seconds_total": s.actions_outbox_seconds_total,

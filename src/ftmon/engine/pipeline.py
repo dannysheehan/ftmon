@@ -72,6 +72,7 @@ class Pipeline:
         # Accumulated over a tick and reset by the daemon, because one tick
         # runs many monitors and the operator's question is about the tick.
         self.sample_s = 0.0
+        self.sample_seconds_by_source: dict[str, float] = {}
         self.evaluate_s = 0.0
         self._state: dict[str, _MonitorState] = {}
         # Self-events buffer: the daemon drains this after each tick and hands
@@ -119,7 +120,11 @@ class Pipeline:
             # them apart (#106). Cache hits cost nothing and are not counted.
             sample_started = self._clock.monotonic()
             snap = self._samplers[mdef.source].sample(now, deadline_mono, mdef.source_options)
-            self.sample_s += self._clock.monotonic() - sample_started
+            elapsed = self._clock.monotonic() - sample_started
+            self.sample_s += elapsed
+            self.sample_seconds_by_source[mdef.source] = (
+                self.sample_seconds_by_source.get(mdef.source, 0.0) + elapsed
+            )
             snapshot_cache[cache_key] = snap
 
         st = self._state.setdefault(mdef.name, _MonitorState())
