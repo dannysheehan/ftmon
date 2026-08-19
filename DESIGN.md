@@ -768,7 +768,8 @@ The worksheet is deliberately honest about that pressure: the static
 retention maxima do not all fit simultaneously once the current self catalogue
 is counted. DM-05's used-page controller shortens lower-priority retention
 tiers until the database is back under budget, and `db_degrading` exposes that
-compromise.
+compromise. The 5-min window is the trim target: 124 MB at 30 d becomes ~16 d
+of 5-min data once the ~59 MB overshoot is shed.
 The calculation does not silently retain the historical `self 12` allowance
 after adding observability series.
 
