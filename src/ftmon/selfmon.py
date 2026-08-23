@@ -17,7 +17,7 @@ from typing import ClassVar
 import psutil
 
 from ftmon.model import EntitySample, Snapshot, SourceDecl
-from ftmon.sources.base import SAMPLER_SOURCE_NAMES, SOURCE_DECLS
+from ftmon.sources.base import PIPELINE_PHASES, SAMPLER_SOURCE_NAMES, SOURCE_DECLS
 
 
 @dataclass
@@ -63,6 +63,12 @@ class SelfStats:
         default_factory=lambda: {source: 0.0 for source in SAMPLER_SOURCE_NAMES}
     )
     pipeline_seconds_total: float = 0.0
+    # Five compile-time phases, never a per-monitor dimension (#143). The blob
+    # this splits includes persist, so "which phase grew" distinguishes an
+    # in-memory walk from catalog/SQLite pressure.
+    pipeline_seconds_by_phase: dict[str, float] = field(
+        default_factory=lambda: {phase: 0.0 for phase in PIPELINE_PHASES}
+    )
     commit_seconds_total: float = 0.0
     actions_outbox_seconds_total: float = 0.0
     retention_seconds_total: float = 0.0
@@ -135,6 +141,11 @@ class SelfSampler:
                 for source in SAMPLER_SOURCE_NAMES
             },
             "pipeline_seconds_total": s.pipeline_seconds_total,
+            **{
+                f"pipeline_{phase}_seconds_total":
+                    s.pipeline_seconds_by_phase.get(phase, 0.0)
+                for phase in PIPELINE_PHASES
+            },
             "commit_seconds_total": s.commit_seconds_total,
             "actions_outbox_seconds_total": s.actions_outbox_seconds_total,
             "retention_seconds_total": s.retention_seconds_total,

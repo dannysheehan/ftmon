@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.35**. Companion to `SPEC.md` v0.53 — every design element
+Status: **DRAFT v0.36**. Companion to `SPEC.md` v0.54 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -434,6 +434,28 @@ derives every visible rate from one pair of timestamps common to the available
 counters. The common span prevents older aggregate history from being compared
 with child metrics that began only after an upgrade.
 
+**v0.36 (issue #143): the post-sample half of the tick has a closed
+decomposition too.** `PIPELINE_PHASES` is the compile-time vocabulary:
+`ingest, derived, exempt, rules, persist`. `Pipeline` times each span within
+`run_monitor` and the five accumulate to exactly `evaluate_s` — the sample's own
+cost is subtracted from `ingest` rather than left straddling two buckets, and
+`evaluate_s` is derived from the same final reading the phases use, so the
+partition holds by construction rather than to a tolerance.
+
+`exempt` and `rules` share one pass over entities, so their boundary is the only
+one needing a per-entity reading. At a measured 101 ns per `monotonic()` call
+that is ~0.02% of one core worst case (520 entities x 5 process monitors x 12
+ticks/min) against the ~1.5% the instrument exists to explain; every other
+boundary costs two readings per monitor. Building `EntityCtx` is charged to
+`exempt` because that is what consumes it first, and per-entity loop overhead
+the two readings do not cover is charged to `rules` rather than an
+"other" bucket, which would break the exact partition.
+
+Keeping `persist` distinct is the point: `_persist` and `_track_gone` run inside
+`evaluate_s`, so growth there means catalog/SQLite pressure while growth in
+`rules`/`exempt` means an in-memory walk. `/self` renders the five beneath
+`pipeline` with the same explicit parent relationships as the sampling sources.
+
 **v0.32 (issue #106): stage costs are cumulative counters, not last-tick
 gauges.** v0.31's gauges were correct per tick and useless in practice. The
 self monitor samples every 60 s while ticks run every 5 s, and the self
@@ -738,9 +760,9 @@ exit.
 ## 9. Capacity worksheet (DM-16) — and the two SPEC amendments
 
 Planning assumptions: ≤ 400 persisted entities; active persisted series ≈
-**320** (the earlier ~270 scenario, recalculated for the built-in self
-monitor's 58 declared and derived series rather than its obsolete 12-series
-allowance); 60 s intervals;
+**325** (the earlier ~270 scenario, recalculated for the built-in self
+monitor's 63 declared and derived series rather than its obsolete 12-series
+allowance — 58 at v0.53 plus v0.54's five phase counters); 60 s intervals;
 WITHOUT ROWID sample row ≈ 35 B, rollup row ≈ 45 B effective (incl.
 b-tree overhead); stored events ≈ 2 000/day at ≈ 350 B. The ~10 promoted
 term is a **host-wide planning estimate** for one dominant promotion monitor,
@@ -762,7 +784,14 @@ runtime quantities are bounded and reported where they are admitted.
 | 1-h, process series × **90 d** | ≈ 0.39 M | ≈ 18 MB |
 | events 30 d (filtered) | 60 k | ≈ 21 MB |
 | incidents + history + misc | — | ≈ 5 MB |
-| **Total before pressure degradation** | | **≈ 259 MB → DM-05 degradation is required to land < 200 MB** |
+| **Total before pressure degradation** | | **≈ 261 MB → DM-05 degradation is required to land < 200 MB** |
+
+Shedding that ~61 MB comes off the lowest-priority tier still holding data: at
+124 MB per 30 d the 5-minute tier costs ~4.1 MB/day, so the worksheet's static
+maxima resolve to roughly **16 d of effective 5-minute history**, down from the
+~27 d the pre-v0.53 figures implied. Stating the resulting retention is the
+point of the exercise — "degradation handles it" is not a derivation, and DM-16
+requires this worksheet to derive feasibility rather than assert it.
 
 The worksheet is deliberately honest about that pressure: the static
 retention maxima do not all fit simultaneously once the current self catalogue
@@ -908,7 +937,8 @@ Metrics: `cpu_pct, rss_bytes, db_bytes, db_allocated_bytes, db_used_bytes,
 db_freelist_bytes, db_headroom_bytes, entities_persisted, series_persisted,
 cycle_s,
 sampling_seconds_total, sampling_{process,disk,system,net,unit,self,external}_seconds_total,
-pipeline_seconds_total, commit_seconds_total,
+pipeline_seconds_total, pipeline_{ingest,derived,exempt,rules,persist}_seconds_total,
+commit_seconds_total,
 actions_outbox_seconds_total, retention_seconds_total, prune_seconds_total,
 reap_seconds_total, tick_overruns, event_queue_depth, events_dropped,
 events_unstored, ring_mem_bytes, source_activity_age_s, eval_unknown_total,

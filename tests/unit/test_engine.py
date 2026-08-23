@@ -14,7 +14,7 @@ from ftmon.engine.pipeline import PROMOTION_LIMIT_PER_MONITOR, Pipeline
 from ftmon.engine.rings import RingStore
 from ftmon.engine.scheduler import DueTable, Scheduler
 from ftmon.model import EntitySample, Snapshot, TriBool
-from ftmon.sources.base import SAMPLER_SOURCE_NAMES, SOURCE_DECLS
+from ftmon.sources.base import PIPELINE_PHASES, SAMPLER_SOURCE_NAMES, SOURCE_DECLS
 
 # --- scheduler ---
 
@@ -993,3 +993,83 @@ def test_stage_counters_accumulate_across_sparse_ticks_rb_02(tmp_path):
     core.on_tick(clock.now(), clock.monotonic(), 0.0)
     assert core.stats.sampling_seconds_total > after_first
     assert core.stats.sampling_seconds_by_source["process"] > process_after_first
+
+
+class TestPipelinePhaseDecomposition:
+    """[RB-02][DM-16] `evaluate_s` splits into five compile-time phases (#143).
+
+    The blob includes `_persist`/`_track_gone`, not only rule evaluation, so a
+    partition is what distinguishes an in-memory walk that grows with the
+    entity set from catalog pressure that grows with the database.
+    """
+
+    def _pipeline(self, clock, rules=True):
+        from ftmon.definitions import loader
+        text = """
+schema = 1
+[monitor]
+name = "phases"
+description = "phase timing fixture"
+version = 1
+platforms = ["linux"]
+source = "process"
+interval = "60s"
+[[derived]]
+name = "rss_mb"
+expr = 'rss_bytes / MB'
+[[rule]]
+id = "big"
+group = "big"
+when = 'rss_mb > 0'
+severity = "warning"
+message = "{entity}"
+"""
+        mdef = loader.load_text(text, "phases.toml")
+        sampler = ScriptedSampler()
+        sampler.push(grower(0))
+        rings = RingStore()
+        rings.configure(mdef.name, mdef.interval_s, {})
+        pipe = Pipeline({"process": sampler}, rings, lambda _n: None, clock=clock)
+        return mdef, pipe
+
+    def test_phases_partition_evaluate_s_exactly(self):
+        """[RB-02] The five deltas sum to the parent, not approximately."""
+        clock = FakeClock()
+        mdef, pipe = self._pipeline(clock)
+        pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), {})
+
+        total = sum(pipe.evaluate_seconds_by_phase.values())
+        assert total == pytest.approx(pipe.evaluate_s, abs=1e-9)
+        assert set(pipe.evaluate_seconds_by_phase) == set(PIPELINE_PHASES)
+
+    def test_phase_namespace_is_fixed_not_per_monitor(self):
+        """[DM-16] Running many monitors must not widen the self namespace."""
+        clock = FakeClock()
+        mdef, pipe = self._pipeline(clock)
+        for i in range(5):
+            pipe.run_monitor(
+                replace(mdef, name=f"phases-{i}"), 1_700_000_000.0, 10**9,
+                NullWriter(), {},
+            )
+        assert set(pipe.evaluate_seconds_by_phase) == set(PIPELINE_PHASES)
+
+    def test_daemon_publishes_phase_counters_that_reconcile(self, tmp_path):
+        """[RB-02] Stored self metrics carry the split and reconcile."""
+        from ftmon.selfmon import SelfSampler, SelfStats
+        stats = SelfStats()
+        stats.pipeline_seconds_total = 10.0
+        for i, phase in enumerate(PIPELINE_PHASES, start=1):
+            stats.pipeline_seconds_by_phase[phase] = float(i)
+        metrics = SelfSampler(stats).sample(0.0, 0.0, {}).entities[0].metrics
+        assert [
+            metrics[f"pipeline_{phase}_seconds_total"] for phase in PIPELINE_PHASES
+        ] == [1.0, 2.0, 3.0, 4.0, 5.0]
+
+    def test_runtime_names_cannot_enter_the_namespace(self):
+        """[DM-16] Only declared phases are emitted."""
+        from ftmon.selfmon import SelfSampler, SelfStats
+        stats = SelfStats()
+        before = set(SelfSampler(stats).sample(0.0, 0.0, {}).entities[0].metrics)
+        stats.pipeline_seconds_by_phase["some-monitor-name"] = 99.0
+        after = set(SelfSampler(stats).sample(0.0, 0.0, {}).entities[0].metrics)
+        assert before == after

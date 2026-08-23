@@ -678,6 +678,8 @@ class DaemonCore:
         # completed up to that point.
         self.pipeline.sample_s = 0.0
         self.pipeline.sample_seconds_by_source.clear()
+        for phase in self.pipeline.evaluate_seconds_by_phase:
+            self.pipeline.evaluate_seconds_by_phase[phase] = 0.0
         self.pipeline.evaluate_s = 0.0
         cache: dict = {}
         outcomes: list[EvalOutcome] = []
@@ -802,6 +804,8 @@ class DaemonCore:
                 self.pipeline.sample_seconds_by_source.get(source, 0.0)
             )
         self.stats.pipeline_seconds_total += self.pipeline.evaluate_s
+        for phase, spent in self.pipeline.evaluate_seconds_by_phase.items():
+            self.stats.pipeline_seconds_by_phase[phase] += spent
 
     def _run_retention(self, wall: float) -> None:
         """Rollups + pruning + baselines (DM-04/05, CA-05), its own bounded

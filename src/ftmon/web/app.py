@@ -28,7 +28,7 @@ from ftmon.definitions import loader
 from ftmon.expr import ExprError, parse_duration
 from ftmon.model import severity_name
 from ftmon.paths import Paths, get_paths
-from ftmon.sources.base import SAMPLER_SOURCE_NAMES, SOURCE_DECLS
+from ftmon.sources.base import PIPELINE_PHASES, SAMPLER_SOURCE_NAMES, SOURCE_DECLS
 from ftmon.store.db import connect
 from ftmon.store.doctor import catalog_report, dispatch_health
 from ftmon.store.query import Query
@@ -1212,6 +1212,10 @@ _STAGE_COUNTERS = (
         for source in SAMPLER_SOURCE_NAMES
     ),
     ("pipeline_seconds_total", "pipeline", None),
+    *(
+        (f"pipeline_{phase}_seconds_total", phase, "pipeline")
+        for phase in PIPELINE_PHASES
+    ),
     ("commit_seconds_total", "commit", None),
     ("actions_outbox_seconds_total", "actions + outbox", None),
     ("retention_seconds_total", "retention", None),
