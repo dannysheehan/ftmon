@@ -61,8 +61,11 @@ def test_coverage_golden():
     sparse = ctx_with([1, 2, 3])
     assert abs(ev('coverage(m, "45m")', sparse) - 2 / 45) < 1e-12
     # < 2 points -> None (CA-02), including no samples at all
-    assert ev('coverage(m, "10m")', ctx_with([1])) is None
-    assert ev('coverage(m, "10m")', FakeCtx(wall=T0)) is None
+    # [#138] A cold window is 0.0, not UNKNOWN: "have I seen enough history"
+    # has a definite answer for one point (no) and for none (no). Only a
+    # malformed window is genuinely unanswerable.
+    assert ev('coverage(m, "10m")', ctx_with([1])) == 0.0
+    assert ev('coverage(m, "10m")', FakeCtx(wall=T0)) == 0.0
 
 
 def test_coverage_clamps_overspan_and_rejects_nonpositive_window():
@@ -160,3 +163,23 @@ def test_deadline_cooperative():
 
     assert e.eval(ctx, deadline_check=deadline, counter=ctx.count) is None
     assert ctx.counters.get("eval_deadline") == 1
+
+
+def test_coverage_guard_short_circuits_a_cold_window_to_false_138():
+    """[EX-06][CA-01] A coverage guard must yield FALSE, not UNKNOWN, when cold.
+
+    The built-ins are all written `coverage(m, w) >= min and <windowed terms>`.
+    Kleene `UNKNOWN and x` is UNKNOWN and AndOp does not short-circuit on it, so
+    returning None made the guard fail to guard: the terms it exists to prevent
+    ran anyway, and the rule reported "don't know" instead of "not yet".
+    """
+    cold = ctx_with([1])  # one point: strictly fewer than a window's worth
+    guarded = 'coverage(m, "45m") >= 0.8 and slope(m, "45m") * 3600 > 0'
+    assert ev(guarded, cold) is False
+
+    # The guard itself still discriminates: a full window passes it.
+    full = ctx_with([1] * 46)
+    assert ev('coverage(m, "45m") >= 0.8', full) is True
+
+    # A malformed window remains genuinely unknown rather than silently false.
+    assert fx.f_coverage([(0.0, 1.0), (60.0, 1.0)], 0.0) is None

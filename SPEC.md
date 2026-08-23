@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.54** — v0.54 splits the post-sample half of the tick into
+Status: **DRAFT v0.55** — v0.55 makes a coverage guard answer "not enough
+history" with FALSE rather than UNKNOWN, so the windowed terms it guards stop
+running on cold entities and a rule reports "not yet" instead of "don't know"
+(CA-01, EX-06, issue #138). v0.54 — v0.54 splits the post-sample half of the tick into
 five fixed phases, so "the tick is slow" can distinguish an in-memory walk over
 the entity set from catalog pressure that grows with the database — the
 existing `pipeline_seconds_total` covered persistence as well as evaluation and
@@ -813,7 +816,7 @@ Available in all expressions. `w` is a duration string (`"90s"`, `"10m"`, `"3h"`
 | `matches(s, regex)` / `contains(s, sub)` | string tests (events and attrs) |
 | `during("HH:MM-HH:MM")`, `dow()` | local-time window test; day-of-week string `"mon"…"sun"` |
 
-- **CA-01** This table is the complete v1 function surface. Adding a function is a spec change. Implementers MUST NOT add conveniences.
+- **CA-01** This table is the complete v1 function surface. Adding a function is a spec change. Implementers MUST NOT add conveniences. `coverage` MUST report a window it could not observe as **0.0**, not as unknown: for an entity with fewer than two samples the answer to "has enough history been seen" is a definite no, and a rule guarding windowed terms behind it MUST therefore evaluate FALSE rather than UNKNOWN. A non-positive window remains unknown, being a malformed question rather than an unobserved one. (v0.55 amendment, issue #138.)
 - **CA-02** Any function receiving insufficient data returns `None`. `None` propagates by the three-valued semantics defined normatively in EX-06. A rule whose `when` evaluates to anything other than `True` does not fire; `None` additionally does not reset confirmation counters (IN-01).
 - **CA-03** `rate` on counters MUST treat counter resets (negative delta) as 0 for that pair and increment a self-metric.
 
@@ -1444,6 +1447,18 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.55 (2026-08-23)** — a coverage guard now guards. `coverage` returned
+unknown for a window holding fewer than two samples, which is the exact case
+the guard exists to catch. Under Kleene semantics `UNKNOWN and x` is UNKNOWN
+and conjunction does not short-circuit on it, so every built-in written as
+`coverage(m, w) >= min and <windowed terms>` still evaluated the terms it meant
+to skip, and then reported "don't know" where "not yet" was the truth. Cold
+windows are 0.0; only a non-positive window stays unknown. Note the IN-01
+consequence: FALSE advances clearing where UNKNOWN froze it, so definitions
+guarding on coverage need `clear_cycles` above 1 for a ring reset not to
+contribute retirement of a live incident — every built-in does, and a test now
+enforces it (CA-01, EX-06, IN-01, issue #138).
 
 **v0.54 (2026-08-23)** — decomposes the other half of the tick. RB-02's
 `pipeline_seconds_total` measured everything `run_monitor` spends that is not

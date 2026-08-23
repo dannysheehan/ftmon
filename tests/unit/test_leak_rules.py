@@ -90,3 +90,43 @@ def test_stepwise_leak_still_fires_despite_low_monot():
     series = [400 + (i // 4) * 8 for i in range(60)]
     fired = _fired(series, 60)
     assert any(rule == "leak-warn" for _, rule in fired)
+
+
+def test_coverage_guarded_builtins_keep_a_cold_ring_clearing_margin_138():
+    """[IN-01][CA-01] A cold ring must not be able to clear an incident alone.
+
+    #138 makes a cold window FALSE rather than UNKNOWN, so the guard actually
+    guards. That has a consequence under IN-01: FALSE *advances clearing* while
+    UNKNOWN froze it, so a ring reset (restart, or CA-08 forget_entity) now
+    contributes clear cycles.
+
+    A ring holds two points after two intervals, so a cold stretch is at most
+    ~2 cycles. Every coverage-guarded rule must therefore carry
+    clear_cycles >= 2, or absence of data could retire a real incident alone.
+
+    `clear_cycles` defaults to `confirm_cycles`, which defaults to 1, so the
+    exposed shape is a coverage-guarded rule left at confirm_cycles = 1 -- a
+    one-cycle state machine either way. Every shipped definition is well above
+    that; this covers the profile trees too, so a profile cannot silently drop
+    to 1 without failing here.
+    """
+    from pathlib import Path
+
+    from ftmon.definitions import loader
+
+    root = Path(__file__).parents[2] / "src/ftmon/definitions"
+    checked = 0
+    for path in sorted(root.rglob("*.toml")):
+        mdef = loader.load_text(path.read_text(), path.name)
+        for rule in mdef.rules:
+            if "coverage(" not in rule.when.source:
+                continue
+            checked += 1
+            assert rule.clear_cycles >= 2, (
+                f"{mdef.name}/{rule.id} guards on coverage but clears in "
+                f"{rule.clear_cycles} cycle(s); a cold ring could clear it"
+            )
+    assert checked >= 11, (
+        f"only {checked} coverage-guarded rules found across builtins and "
+        "profiles; the glob has stopped seeing definitions it used to cover"
+    )

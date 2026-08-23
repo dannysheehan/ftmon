@@ -85,9 +85,21 @@ def f_coverage(pts: Points, window_s: float) -> float | None:
     history" cannot answer that from point count alone (a sparse sampler could
     hand back 3 points that span the whole window, or 300 that span a sliver).
     window_s <= 0 is rejected defensively, mirroring slope's zero-denominator guard.
+
+    Fewer than two points is **0.0, not UNKNOWN** (issue #138). A guard exists to
+    answer "have I seen enough history yet", and for a cold entity the answer is
+    "no" -- a definite fact, not an unknown one. Returning None made the guard
+    fail to guard: Kleene `UNKNOWN and x` is UNKNOWN and `AndOp` does not
+    short-circuit on it, so every rule written as
+    `coverage(m, w) >= min and <windowed terms>` still evaluated the terms the
+    guard was placed there to prevent, then reported UNKNOWN rather than FALSE.
+    One point spans zero of the window, which *is* a coverage of 0.0; only a
+    malformed window keeps the UNKNOWN.
     """
-    if len(pts) < 2 or window_s <= 0:
+    if window_s <= 0:
         return None
+    if not pts:
+        return 0.0
     span = pts[-1][0] - pts[0][0]
     return clean_number(min(max(span / window_s, 0.0), 1.0))
 
