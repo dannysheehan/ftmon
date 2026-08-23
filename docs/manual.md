@@ -422,7 +422,13 @@ external source rows; those rows partition sampling rather than adding new
 tick cost. The explicitly labelled external-projection row measures projection
 of the prepared result, while the separately deadline-bounded check execution
 remains outside this stage.
-Prune and reap similarly explain parts of retention. Until two samples exist,
+The pipeline row decomposes the same way, into ingest, derived, exempt, rules
+and persist. That split answers a specific question: persist covers writing
+catalog and history, so growth there points at the database rather than at rule
+evaluation over your monitors. The exempt phase also covers building each
+entity's evaluation context, so it is never zero even for a monitor that
+declares no exemptions. Prune and reap similarly explain parts of
+retention. Until two samples exist,
 the page says the rate is unavailable instead of implying a measured zero.
 
 Each budget links to its own 6-hour and 24-hour history, which is usually the

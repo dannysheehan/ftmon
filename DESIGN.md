@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.35**. Companion to `SPEC.md` v0.53 — every design element
+Status: **DRAFT v0.36**. Companion to `SPEC.md` v0.54 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -434,6 +434,28 @@ derives every visible rate from one pair of timestamps common to the available
 counters. The common span prevents older aggregate history from being compared
 with child metrics that began only after an upgrade.
 
+**v0.36 (issue #143): the post-sample half of the tick has a closed
+decomposition too.** `PIPELINE_PHASES` is the compile-time vocabulary:
+`ingest, derived, exempt, rules, persist`. `Pipeline` times each span within
+`run_monitor` and the five accumulate to exactly `evaluate_s` — the sample's own
+cost is subtracted from `ingest` rather than left straddling two buckets, and
+`evaluate_s` is derived from the same final reading the phases use, so the
+partition holds by construction rather than to a tolerance.
+
+`exempt` and `rules` share one pass over entities, so their boundary is the only
+one needing a per-entity reading. At a measured 101 ns per `monotonic()` call
+that is ~0.02% of one core worst case (520 entities x 5 process monitors x 12
+ticks/min) against the ~1.5% the instrument exists to explain; every other
+boundary costs two readings per monitor. Building `EntityCtx` is charged to
+`exempt` because that is what consumes it first, and per-entity loop overhead
+the two readings do not cover is charged to `rules` rather than an
+"other" bucket, which would break the exact partition.
+
+Keeping `persist` distinct is the point: `_persist` and `_track_gone` run inside
+`evaluate_s`, so growth there means catalog/SQLite pressure while growth in
+`rules`/`exempt` means an in-memory walk. `/self` renders the five beneath
+`pipeline` with the same explicit parent relationships as the sampling sources.
+
 **v0.32 (issue #106): stage costs are cumulative counters, not last-tick
 gauges.** v0.31's gauges were correct per tick and useless in practice. The
 self monitor samples every 60 s while ticks run every 5 s, and the self
@@ -738,15 +760,15 @@ exit.
 ## 9. Capacity worksheet (DM-16) — and the two SPEC amendments
 
 Planning assumptions: ≤ 400 persisted entities; active persisted series ≈
-**320** (the earlier ~270 scenario, recalculated for the built-in self
-monitor's 58 declared and derived series rather than its obsolete 12-series
-allowance); 60 s intervals;
+**325** (the earlier ~270 scenario, recalculated for the built-in self
+monitor's 63 declared and derived series rather than its obsolete 12-series
+allowance — 58 at v0.53 plus v0.54's five phase counters); 60 s intervals;
 WITHOUT ROWID sample row ≈ 35 B, rollup row ≈ 45 B effective (incl.
 b-tree overhead); stored events ≈ 2 000/day at ≈ 350 B. The ~10 promoted
 term is a **host-wide planning estimate** for one dominant promotion monitor,
 not a per-monitor allocation. The separately chosen runtime cap is ten per
 monitor, so *N* monitors with promotion expressions can admit up to 10*N*
-promotions. That can exceed the worksheet's ~320-series scenario; the binding
+promotions. That can exceed the worksheet's ~325-series scenario; the binding
 host-wide constraints remain the 400 persisted-entity budget and DM-05's used-
 page budget. On the reference canary at 2026-08-14, four of five enabled
 process monitors carry promotion expressions, so the per-monitor cap permits
@@ -756,20 +778,20 @@ runtime quantities are bounded and reported where they are admitted.
 
 | Store | Rows | Size |
 | --- | --- | --- |
-| raw 48 h | 320 × 2 880 ≈ 0.92 M | ≈ 32 MB |
-| 5-min 30 d | 320 × 288 × 30 ≈ 2.76 M | ≈ 124 MB |
-| 1-h, durable series (≈ 136) × 400 d | 1.31 M | ≈ 59 MB |
+| raw 48 h | 325 × 2 880 ≈ 0.94 M | ≈ 33 MB |
+| 5-min 30 d | 325 × 288 × 30 ≈ 2.81 M | ≈ 126 MB |
+| 1-h, durable series (≈ 141) × 400 d | 1.35 M | ≈ 61 MB |
 | 1-h, process series × **90 d** | ≈ 0.39 M | ≈ 18 MB |
 | events 30 d (filtered) | 60 k | ≈ 21 MB |
 | incidents + history + misc | — | ≈ 5 MB |
-| **Total before pressure degradation** | | **≈ 259 MB → DM-05 degradation is required to land < 200 MB** |
+| **Total before pressure degradation** | | **≈ 264 MB → DM-05 degradation is required to land < 200 MB** |
 
 The worksheet is deliberately honest about that pressure: the static
 retention maxima do not all fit simultaneously once the current self catalogue
 is counted. DM-05's used-page controller shortens lower-priority retention
 tiers until the database is back under budget, and `db_degrading` exposes that
-compromise. The 5-min window is the trim target: 124 MB at 30 d becomes ~16 d
-of 5-min data once the ~59 MB overshoot is shed.
+compromise. The 5-min window is the trim target: 126 MB at 30 d becomes ~15 d
+of 5-min data once the ~64 MB overshoot is shed.
 The calculation does not silently retain the historical `self 12` allowance
 after adding observability series.
 
@@ -780,7 +802,7 @@ Two findings forced SPEC amendments (recorded as v0.3):
 
 Ring-buffer RAM (CA-04): worst case all-processes window = 300 procs × 2 metrics × 15 samples × 32 B ≈ 0.3 MB; promoted/watchlist long windows: 40 series × 720 points × 32 B ≈ 0.9 MB; comfortably inside the 64 MB cap; cap exists for pathological definitions.
 
-**Active vs. total catalog (v0.43, issue #74).** The ≤400 entity / ~320
+**Active vs. total catalog (v0.43, issue #74).** The ≤400 entity / ~325
 series figures above describe *active* catalog — what's concurrently
 persisted in a steady tick. They are not a cap on the *total* rows retained
 in `entities`/`series`/`baselines` over time: under process churn (the
@@ -908,7 +930,8 @@ Metrics: `cpu_pct, rss_bytes, db_bytes, db_allocated_bytes, db_used_bytes,
 db_freelist_bytes, db_headroom_bytes, entities_persisted, series_persisted,
 cycle_s,
 sampling_seconds_total, sampling_{process,disk,system,net,unit,self,external}_seconds_total,
-pipeline_seconds_total, commit_seconds_total,
+pipeline_seconds_total, pipeline_{ingest,derived,exempt,rules,persist}_seconds_total,
+commit_seconds_total,
 actions_outbox_seconds_total, retention_seconds_total, prune_seconds_total,
 reap_seconds_total, tick_overruns, event_queue_depth, events_dropped,
 events_unstored, ring_mem_bytes, source_activity_age_s, eval_unknown_total,

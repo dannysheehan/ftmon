@@ -248,7 +248,7 @@ Run `ftmon monitors` / read the built-ins for live examples. Summary:
 | `unit` | watchlist targets | `present restarts` | `unit kind` |
 | `net` | `totals` + watchlist listeners | `conn_total conn_established conn_time_wait conn_listen present` | `proto port` |
 | `events` | episodes (see below) | `severity` | `provider event_id message source` |
-| `self` | the daemon | `cpu_pct rss_bytes db_bytes db_allocated_bytes db_used_bytes db_freelist_bytes db_headroom_bytes db_degrading db_degradations cycle_s sampling_seconds_total sampling_{process,disk,system,net,unit,self,external}_seconds_total pipeline_seconds_total commit_seconds_total actions_outbox_seconds_total retention_seconds_total prune_seconds_total reap_seconds_total tick_overruns event_* ring_mem_bytes entities_persisted series_persisted ...` | — |
+| `self` | the daemon | `cpu_pct rss_bytes db_bytes db_allocated_bytes db_used_bytes db_freelist_bytes db_headroom_bytes db_degrading db_degradations cycle_s sampling_seconds_total sampling_{process,disk,system,net,unit,self,external}_seconds_total pipeline_seconds_total pipeline_{ingest,derived,exempt,rules,persist}_seconds_total commit_seconds_total actions_outbox_seconds_total retention_seconds_total prune_seconds_total reap_seconds_total tick_overruns event_* ring_mem_bytes entities_persisted series_persisted ...` | — |
 
 `fd_limit_soft` is the process soft `RLIMIT_NOFILE`; it is omitted when denied,
 unsupported, zero, or infinite so expressions like `pct(num_fds, fd_limit_soft)`

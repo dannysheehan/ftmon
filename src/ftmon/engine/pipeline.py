@@ -26,11 +26,13 @@ from ftmon.engine.render import render_message
 from ftmon.engine.rings import RingStore
 from ftmon.expr.tribool import to_tribool
 from ftmon.model import EventRecord, Snapshot, TriBool, severity_name
-from ftmon.sources.base import Sampler
+from ftmon.sources.base import PIPELINE_PHASES, Sampler
 
 _DEMOTE_AFTER_S = 30 * 60  # SA-05: demote after 30m without the heuristic holding
 PROMOTION_LIMIT_PER_MONITOR = 10  # Chosen per-monitor concentration guardrail
 _DURABLE_SOURCES = {"system", "disk", "self"}  # DM-04 retention split (DESIGN 9)
+
+
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,7 @@ class Pipeline:
         self.sample_s = 0.0
         self.sample_seconds_by_source: dict[str, float] = {}
         self.evaluate_s = 0.0
+        self.evaluate_seconds_by_phase: dict[str, float] = dict.fromkeys(PIPELINE_PHASES, 0.0)
         self._state: dict[str, _MonitorState] = {}
         # Self-events buffer: the daemon drains this after each tick and hands
         # the records to the writer - the pipeline must not depend on
@@ -135,6 +138,14 @@ class Pipeline:
                 rings.append(mdef.name, ent.entity_id, metric, snap.ts, value)
             st.seen[ent.entity_id] = now
 
+        # Phase boundaries (RB-02, #143). `entered` predates the shared sample,
+        # so the sample's own cost is subtracted from `ingest` here rather than
+        # left to straddle two buckets; the five phases then partition
+        # `evaluate_s` exactly instead of approximately.
+        phase = self.evaluate_seconds_by_phase
+        mark = self._clock.monotonic()
+        phase["ingest"] += (mark - entered) - (self.sample_s - sample_before)
+
         # Derived metrics feed rings too so rules and later derived can window
         # over them; evaluation order is the loader's topological order (MD-08).
         derived_vals: dict[str, dict[str, float]] = {}
@@ -148,13 +159,26 @@ class Pipeline:
                     vals[name] = float(v)
             derived_vals[ent.entity_id] = vals
 
+        previous, mark = mark, self._clock.monotonic()
+        phase["derived"] += mark - previous
+
         exempt_entities: set[str] = set()
         outcomes: list[EvalOutcome] = []
+        # Exempt and rules share one pass, so their split is the only one that
+        # needs a per-entity reading. Measured at 101 ns/call: ~0.02% of one
+        # core worst case (520 entities x 5 process monitors x 12 ticks/min),
+        # against the ~1.5% this instrument exists to explain. Building `ctx`
+        # is charged to `exempt` because that is what consumes it first.
+        exempt_s = 0.0
         for ent in snap.entities:
+            entity_started = self._clock.monotonic()
             ctx = self._ctx(mdef, ent.entity_id, ent.attrs, now)
             # CA-07 needs this tick's transient context to decide exclusion,
             # but excluded entities must never enter persistent history.
-            if any(e.eval(ctx, counter=self._counter) is True for e in mdef.exempt):
+            excluded = any(e.eval(ctx, counter=self._counter) is True for e in mdef.exempt)
+            exempt_checked = self._clock.monotonic()
+            exempt_s += exempt_checked - entity_started
+            if excluded:
                 exempt_entities.add(ent.entity_id)
                 continue
             # Message values are this cycle's numbers; rendered only for TRUE
@@ -177,12 +201,22 @@ class Pipeline:
                     EvalOutcome(mdef.name, ent.entity_id, rule.id, rule.group, result, message)
                 )
 
+        previous, mark = mark, self._clock.monotonic()
+        phase["exempt"] += exempt_s
+        # Loop overhead the two readings above do not cover lands here rather
+        # than in an "other" bucket: it is per-entity rule preparation, and an
+        # unattributed remainder would break the exact partition.
+        phase["rules"] += (mark - previous) - exempt_s
+
         self._persist(mdef, snap, derived_vals, exempt_entities, st, now, writer)
         self._track_gone(mdef, st, now, writer)
+        previous, mark = mark, self._clock.monotonic()
+        phase["persist"] += mark - previous
         # Everything this call spent that was not the shared sample above.
-        self.evaluate_s += (
-            (self._clock.monotonic() - entered) - (self.sample_s - sample_before)
-        )
+        # Derived from the same `mark` the phases used, so the five deltas
+        # partition this total exactly rather than leaving the final reading's
+        # own cost unattributed (RB-02, #143).
+        self.evaluate_s += (mark - entered) - (self.sample_s - sample_before)
         return outcomes
 
     def promoted(self, monitor: str) -> set[str]:

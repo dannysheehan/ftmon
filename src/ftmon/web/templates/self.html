@@ -153,8 +153,12 @@
     Share of one core over the last
     {{ '%.1f'|format((panel.stages.elapsed_s or panel.stages.window_s) / 3600) }} h,
     from counter deltas. Sampling source rows partition <code>sampling</code>;
-    <code>prune</code> and <code>reap</code> are parts of <code>retention</code>.
+    the five phase rows partition <code>pipeline</code>; <code>prune</code> and
+    <code>reap</code> are parts of <code>retention</code>.
     Child rows are explanations, not additional tick cost.
+    <code>exempt</code> includes building each entity's evaluation context,
+    which it consumes first, so a monitor declaring no exemptions still shows a
+    non-zero <code>exempt</code> share.
   </caption>
   <thead>
     <tr><th scope="col">Stage</th><th scope="col">Relationship</th>

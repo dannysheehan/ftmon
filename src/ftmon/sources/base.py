@@ -15,6 +15,7 @@ from ftmon.model import AttrDecl, EventRecord, MetricDecl, Snapshot, SourceDecl
 __all__ = [
     "Sampler",
     "EventSource",
+    "PIPELINE_PHASES",
     "SAMPLER_SOURCE_NAMES",
     "SOURCE_DECLS",
     "get_decl",
@@ -24,6 +25,17 @@ __all__ = [
 # RB-02: the source vocabulary is a product contract, not runtime data. These
 # names therefore support fixed per-source self metrics without introducing a
 # label/dimension whose cardinality depends on installed monitor definitions.
+# RB-02 (#143): `Pipeline.evaluate_s` is everything `run_monitor` spends that is not the
+# SA-06 shared sample -- which includes `_persist`/`_track_gone`, not only rule
+# evaluation. One blob cannot distinguish an in-memory walk that grows with the
+# entity set from catalog/SQLite pressure that grows with the database, so the
+# five phases below partition it exactly. Compile-time names only: a
+# per-monitor dimension would make the DM-16 catalog budget a function of how
+# many monitors an operator installs, the same constraint that keeps the #137
+# source split closed.
+PIPELINE_PHASES = ("ingest", "derived", "exempt", "rules", "persist")
+
+
 SAMPLER_SOURCE_NAMES = (
     "process",
     "disk",
@@ -221,6 +233,15 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             ),
             _m("pipeline_seconds_total", "s", "counter",
                "Cumulative time in projection and rule evaluation"),
+            *(
+                _m(
+                    f"pipeline_{phase}_seconds_total",
+                    "s",
+                    "counter",
+                    f"Cumulative post-sample time in the {phase} phase",
+                )
+                for phase in PIPELINE_PHASES
+            ),
             _m("commit_seconds_total", "s", "counter",
                "Cumulative time in the store commit"),
             _m("actions_outbox_seconds_total", "s", "counter",
