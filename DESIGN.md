@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.36**. Companion to `SPEC.md` v0.54 — every design element
+Status: **DRAFT v0.37**. Companion to `SPEC.md` v0.55 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
