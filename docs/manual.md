@@ -425,7 +425,9 @@ remains outside this stage.
 The pipeline row decomposes the same way, into ingest, derived, exempt, rules
 and persist. That split answers a specific question: persist covers writing
 catalog and history, so growth there points at the database rather than at rule
-evaluation over your monitors. Prune and reap similarly explain parts of
+evaluation over your monitors. The exempt phase also covers building each
+entity's evaluation context, so it is never zero even for a monitor that
+declares no exemptions. Prune and reap similarly explain parts of
 retention. Until two samples exist,
 the page says the rate is unavailable instead of implying a measured zero.
 

@@ -768,7 +768,7 @@ b-tree overhead); stored events ≈ 2 000/day at ≈ 350 B. The ~10 promoted
 term is a **host-wide planning estimate** for one dominant promotion monitor,
 not a per-monitor allocation. The separately chosen runtime cap is ten per
 monitor, so *N* monitors with promotion expressions can admit up to 10*N*
-promotions. That can exceed the worksheet's ~320-series scenario; the binding
+promotions. That can exceed the worksheet's ~325-series scenario; the binding
 host-wide constraints remain the 400 persisted-entity budget and DM-05's used-
 page budget. On the reference canary at 2026-08-14, four of five enabled
 process monitors carry promotion expressions, so the per-monitor cap permits
@@ -778,27 +778,20 @@ runtime quantities are bounded and reported where they are admitted.
 
 | Store | Rows | Size |
 | --- | --- | --- |
-| raw 48 h | 320 × 2 880 ≈ 0.92 M | ≈ 32 MB |
-| 5-min 30 d | 320 × 288 × 30 ≈ 2.76 M | ≈ 124 MB |
-| 1-h, durable series (≈ 136) × 400 d | 1.31 M | ≈ 59 MB |
+| raw 48 h | 325 × 2 880 ≈ 0.94 M | ≈ 33 MB |
+| 5-min 30 d | 325 × 288 × 30 ≈ 2.81 M | ≈ 126 MB |
+| 1-h, durable series (≈ 141) × 400 d | 1.35 M | ≈ 61 MB |
 | 1-h, process series × **90 d** | ≈ 0.39 M | ≈ 18 MB |
 | events 30 d (filtered) | 60 k | ≈ 21 MB |
 | incidents + history + misc | — | ≈ 5 MB |
-| **Total before pressure degradation** | | **≈ 261 MB → DM-05 degradation is required to land < 200 MB** |
-
-Shedding that ~61 MB comes off the lowest-priority tier still holding data: at
-124 MB per 30 d the 5-minute tier costs ~4.1 MB/day, so the worksheet's static
-maxima resolve to roughly **16 d of effective 5-minute history**, down from the
-~27 d the pre-v0.53 figures implied. Stating the resulting retention is the
-point of the exercise — "degradation handles it" is not a derivation, and DM-16
-requires this worksheet to derive feasibility rather than assert it.
+| **Total before pressure degradation** | | **≈ 264 MB → DM-05 degradation is required to land < 200 MB** |
 
 The worksheet is deliberately honest about that pressure: the static
 retention maxima do not all fit simultaneously once the current self catalogue
 is counted. DM-05's used-page controller shortens lower-priority retention
 tiers until the database is back under budget, and `db_degrading` exposes that
-compromise. The 5-min window is the trim target: 124 MB at 30 d becomes ~16 d
-of 5-min data once the ~59 MB overshoot is shed.
+compromise. The 5-min window is the trim target: 126 MB at 30 d becomes ~15 d
+of 5-min data once the ~64 MB overshoot is shed.
 The calculation does not silently retain the historical `self 12` allowance
 after adding observability series.
 
@@ -809,7 +802,7 @@ Two findings forced SPEC amendments (recorded as v0.3):
 
 Ring-buffer RAM (CA-04): worst case all-processes window = 300 procs × 2 metrics × 15 samples × 32 B ≈ 0.3 MB; promoted/watchlist long windows: 40 series × 720 points × 32 B ≈ 0.9 MB; comfortably inside the 64 MB cap; cap exists for pathological definitions.
 
-**Active vs. total catalog (v0.43, issue #74).** The ≤400 entity / ~320
+**Active vs. total catalog (v0.43, issue #74).** The ≤400 entity / ~325
 series figures above describe *active* catalog — what's concurrently
 persisted in a steady tick. They are not a cap on the *total* rows retained
 in `entities`/`series`/`baselines` over time: under process churn (the

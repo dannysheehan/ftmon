@@ -995,6 +995,37 @@ def test_stage_counters_accumulate_across_sparse_ticks_rb_02(tmp_path):
     assert core.stats.sampling_seconds_by_source["process"] > process_after_first
 
 
+class _TickingClock:
+    """`monotonic()` advances a fixed step on every read.
+
+    `FakeClock` returns a constant until explicitly advanced, which makes a
+    partition assertion vacuous: every span is zero and 0 == 0 holds without
+    exercising anything. Stepping per read gives each phase a distinct
+    non-zero span, so the ingest-minus-sample subtraction and the
+    exempt/rules remainder are actually tested.
+    """
+
+    def __init__(self, step: float = 0.001, wall: float = 1_700_000_000.0,
+                 mono: float = 1000.0):
+        self._step, self._wall, self._mono = step, wall, mono
+
+    def now(self) -> float:
+        return self._wall
+
+    def monotonic(self) -> float:
+        self._mono += self._step
+        return self._mono
+
+    def sleep_until(self, mono_deadline: float) -> None:
+        if mono_deadline > self._mono:
+            self._wall += mono_deadline - self._mono
+            self._mono = mono_deadline
+
+    def advance(self, seconds: float, wall_seconds: float | None = None) -> None:
+        self._mono += seconds
+        self._wall += seconds if wall_seconds is None else wall_seconds
+
+
 class TestPipelinePhaseDecomposition:
     """[RB-02][DM-16] `evaluate_s` splits into five compile-time phases (#143).
 
@@ -1033,14 +1064,48 @@ message = "{entity}"
         return mdef, pipe
 
     def test_phases_partition_evaluate_s_exactly(self):
-        """[RB-02] The five deltas sum to the parent, not approximately."""
-        clock = FakeClock()
+        """[RB-02] The five deltas sum to the parent, not approximately.
+
+        Every phase must also be non-zero: a constant clock would satisfy the
+        sum trivially while measuring nothing.
+        """
+        clock = _TickingClock()
         mdef, pipe = self._pipeline(clock)
         pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), {})
 
-        total = sum(pipe.evaluate_seconds_by_phase.values())
-        assert total == pytest.approx(pipe.evaluate_s, abs=1e-9)
-        assert set(pipe.evaluate_seconds_by_phase) == set(PIPELINE_PHASES)
+        phases = pipe.evaluate_seconds_by_phase
+        assert set(phases) == set(PIPELINE_PHASES)
+        assert pipe.evaluate_s > 0.0
+        assert pipe.sample_s > 0.0, "the sample must cost something to subtract"
+        for name, spent in phases.items():
+            assert spent > 0.0, f"{name} span was never exercised"
+        assert sum(phases.values()) == pytest.approx(pipe.evaluate_s, abs=1e-12)
+
+    def test_sample_cost_is_subtracted_from_ingest_not_double_counted(self):
+        """[RB-02][SA-06] `evaluate_s` excludes the shared sample entirely."""
+        clock = _TickingClock()
+        mdef, pipe = self._pipeline(clock)
+        pipe.run_monitor(mdef, 1_700_000_000.0, 10**9, NullWriter(), {})
+
+        # ingest spans entry->end-of-ring-append minus the sample taken inside
+        # it, so it must be strictly less than that wall span.
+        assert pipe.evaluate_seconds_by_phase["ingest"] > 0.0
+        assert pipe.evaluate_s + pipe.sample_s > pipe.evaluate_s
+
+    def test_empty_exempt_list_still_charges_ctx_construction(self):
+        """[RB-02] `exempt` includes building EntityCtx, which it consumes first.
+
+        A monitor with no exempt expressions therefore still shows a non-zero
+        exempt span. That is deliberate and is what the /self caption says;
+        the alternative is an unattributed remainder.
+        """
+        from dataclasses import replace as _replace
+        clock = _TickingClock()
+        mdef, pipe = self._pipeline(clock)
+        assert not mdef.exempt, "fixture should declare no exemptions"
+        pipe.run_monitor(_replace(mdef, exempt=()), 1_700_000_000.0, 10**9,
+                         NullWriter(), {})
+        assert pipe.evaluate_seconds_by_phase["exempt"] > 0.0
 
     def test_phase_namespace_is_fixed_not_per_monitor(self):
         """[DM-16] Running many monitors must not widen the self namespace."""
