@@ -78,6 +78,7 @@ def test_restart_clears_incident_for_entity_gone_during_downtime_in_09(core_env)
         "SELECT state, clear_reason FROM incidents").fetchone()
     assert row["state"] == "cleared"
     assert row["clear_reason"] == "entity_gone"
+    assert core2._istates == {}
     last = _notifications(paths)[-1]
     assert last["kind"] == "recover" and "went away" in last["body"]
 
