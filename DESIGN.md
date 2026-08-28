@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.37**. Companion to `SPEC.md` v0.55 — every design element
+Status: **DRAFT v0.38**. Companion to `SPEC.md` v0.55 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -800,7 +800,28 @@ Two findings forced SPEC amendments (recorded as v0.3):
 1. **Hourly rollups for all series for 400 d** would cost ≈ 115 MB alone (process-entity churn). Amended DM-04: 400 d hourly retention applies to *durable* series (system, disk, self, watchlist-synthetic); process-sourced series keep 90 d hourly.
 2. **Storing all journal events** (50–200 k lines/day on a desktop) would blow the budget within days. Amended DM-09: the event store-filter keeps events with severity ≥ notice **or** matching any loaded event rule; info-level non-matching events are counted (self-metric) but not stored. Configurable `store_min_severity`.
 
-Ring-buffer RAM (CA-04): worst case all-processes window = 300 procs × 2 metrics × 15 samples × 32 B ≈ 0.3 MB; promoted/watchlist long windows: 40 series × 720 points × 32 B ≈ 0.9 MB; comfortably inside the 64 MB cap; cap exists for pathological definitions.
+Ring-buffer RAM (CA-04) is charged from the active interpreter's object sizes,
+not a payload-width fiction. On the 64-bit CPython builds used for validation,
+one retained `(timestamp, value)` tuple plus its two floats is 104 B. Every
+per-entity metric also owns a deque (760 B before additional blocks on the
+reference builds), and the charge tracks actual shallow allocation for those
+deques and the nested dictionaries as they grow. Shared monitor, entity and
+metric strings are excluded because other daemon state owns the same objects.
+
+Under the worksheet's 300-process assumption, a 60 s process monitor with two
+15-minute metrics holds 17 points for each (15 samples plus CA-04's two-slot
+slack); the other five declared process metrics retain their two-point default.
+That is about **2.9 MiB per process monitor**, including 2,100 short-series
+deques and entity dictionaries. Five enabled process monitors are about
+**14.8 MiB**. A separate worst-case set of 40 promoted/watchlist series at the
+six-hour limit and a 30 s interval holds 722 points each and adds about
+**3.1 MiB**, for a representative combined charge of **17.9 MiB**. The
+reference desktop's larger ~520-process population and definition mix measured
+roughly 26–28 MiB, consistent with this model rather than the former 1.2 MB
+worksheet claim. The 64 MiB cap therefore retains useful headroom but is now
+enforced against the same point-and-container charge published as
+`ring_mem_bytes`; it remains the guardrail for pathological definitions, not a
+claim that ordinary rings are sub-megabyte (issue #148).
 
 **Active vs. total catalog (v0.43, issue #74).** The ≤400 entity / ~325
 series figures above describe *active* catalog — what's concurrently
