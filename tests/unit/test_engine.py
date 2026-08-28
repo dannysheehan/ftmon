@@ -4,6 +4,7 @@ rings, and the sampling pipeline driven by a real loaded definition."""
 from __future__ import annotations
 
 import importlib.resources
+import sys
 from dataclasses import replace
 
 import pytest
@@ -89,15 +90,72 @@ def test_rings_capacity_from_windows_and_nan_guard():
     assert len(r.window("m", "e1", "other", 0)) == 2
 
 
+def _owned_ring_bytes(rings: RingStore) -> int:
+    """Independent shallow/deep walk of objects the ring charge owns."""
+    size = (
+        sys.getsizeof(rings)
+        + sys.getsizeof(rings.__dict__)
+        + sys.getsizeof(rings._max_bytes)
+        + sys.getsizeof(rings._entries)
+        + sys.getsizeof(rings._data_bytes)
+        + sys.getsizeof(rings._caps)
+        + sys.getsizeof(rings._intervals)
+        + sys.getsizeof(rings._data)
+        + sys.getsizeof(rings._touched)
+    )
+    size += sum(
+        sys.getsizeof(key) + sys.getsizeof(value)
+        for key, value in rings._caps.items()
+    )
+    size += sum(sys.getsizeof(value) for value in rings._intervals.values())
+    for key, series in rings._data.items():
+        size += sys.getsizeof(key) + sys.getsizeof(series)
+        for buf in series.values():
+            size += sys.getsizeof(buf)
+            for ts, value in buf:
+                size += sys.getsizeof((ts, value))
+                size += sys.getsizeof(ts) + sys.getsizeof(value)
+    return size
+
+
+def test_rings_memory_charge_covers_points_and_containers():
+    """[CA-04][RB-01] The reported/enforced charge covers the owned graph.
+
+    The independent walk includes nested dictionaries, deque headers/blocks,
+    point tuples and both floats. This fails if accounting regresses to a
+    point count while short per-process series dominate container cost.
+    """
+    rings = RingStore()
+    rings.configure("m", 1.0, {"long": 100.0})
+    for entity in range(4):
+        for i in range(80):
+            rings.append(
+                "m", f"e{entity}", "long", float(entity * 1000 + i) + 0.1,
+                float(entity * 1000 + i) + 0.2,
+            )
+        rings.append("m", f"e{entity}", "short", 10_000.0 + entity, float(entity))
+
+    measured = _owned_ring_bytes(rings)
+    assert rings.mem_bytes() >= measured
+    assert rings.mem_bytes() <= measured + 1024
+
+    rings.forget_entity("m", "e1")
+    assert rings.mem_bytes() == _owned_ring_bytes(rings)
+    rings.configure("m", 5.0, {"replacement": 10.0})
+    assert rings._data == {}
+    assert rings.mem_bytes() == _owned_ring_bytes(rings)
+
+
 def test_rings_eviction_lru_respects_protection():
-    """[CA-04] over budget: LRU unprotected entities evicted whole."""
-    r = RingStore(max_bytes=48 * 30)  # room for ~30 points
+    """[CA-04] A literal byte budget evicts LRU unprotected entities whole."""
+    r = RingStore(max_bytes=7_000)
     r.configure("m", 60.0, {"x": 6000.0})
     counts: list[str] = []
     for eid, base in (("old", 0.0), ("mid", 500.0), ("new", 1000.0)):
         for i in range(20):
             r.append("m", eid, "x", base + i, 1.0)
     r.evict_if_over(protected=lambda mon, e: e == "old", counter=counts.append)
+    assert r.mem_bytes() <= 7_000
     assert r.window("m", "old", "x", 0)  # protected survived despite being LRU
     assert not r.window("m", "mid", "x", 0)  # unprotected LRU evicted
     assert counts.count("ring_evictions") >= 1
