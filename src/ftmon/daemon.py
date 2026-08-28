@@ -964,11 +964,17 @@ class DaemonCore:
         for key in [k for k in self._istates if k[0] == monitor and k[1] == entity_id]:
             cfg = self._group_cfg(*key)
             if cfg is None:
+                self._istates.pop(key)
                 continue
             st, effects = inc.clear_for_entity_gone(cfg, self._istates[key], wall)
             if effects:
-                st = self.executor.apply(cfg, st, effects, wall)
-            self._istates[key] = st
+                self.executor.apply(cfg, st, effects, wall)
+            # CA-08 says a reused identity starts clean.  Keeping the cleared
+            # state here retained every process identity ever observed and
+            # made `_refresh_acks` walk that uptime-sized history forever.
+            # Persistence already received any entity-gone transition above;
+            # only the in-memory lifecycle owner is released here.
+            self._istates.pop(key)
 
     def request_reload(self) -> None:
         """PM-11: the SIGHUP handler may only record the request — the reload

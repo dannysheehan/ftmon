@@ -126,6 +126,35 @@ def test_ack_suppresses_renotify_and_restart_resumes_backoff(core_env):
     assert core2._istates  # incident state was rebuilt, not forgotten
 
 
+def test_gone_process_churn_drops_incident_engine_state(core_env):
+    """[CA-08][IN-07][RB-01] Gone identities leave no incident-engine state.
+
+    A daemon sees an unbounded sequence of process identities over its
+    lifetime even when the live process table stays small.  Advancing the
+    controlled clock past gone-grace for each one must therefore bound the
+    in-memory state by the live/grace population, not daemon uptime.
+    """
+    clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+    core = DaemonCore(paths=core_env, clock=clock, platform="linux")
+    sampler = ScriptedSampler()
+    for i in range(40):
+        sampler.push(
+            (
+                f"pid:{i}",
+                {"name": f"short-lived-{i}"},
+                {"rss_bytes": float(1_000_000 + i)},
+            )
+        )
+    for _ in range(8):
+        sampler.push()
+    core.samplers["process"] = sampler
+
+    tick_n(core, clock, 48)
+
+    assert core.pipeline._state["leak"].seen == {}
+    assert core._istates == {}
+
+
 # --- outbox unit behavior (NO-04) ---
 
 
