@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.38**. Companion to `SPEC.md` v0.55 — every design element
+Status: **DRAFT v0.39**. Companion to `SPEC.md` v0.56 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -913,6 +913,41 @@ for (group, e): step_group(...) → effects                # §10.4
 persist: non-exempt samples selected by SA-05; purge prior state for exemptions
 gone-detection: entities seen before but absent → CA-08 grace timer
 ```
+
+#### Persistent missing-metric UNKNOWN diagnostics (CL-05, EX-06, issue #139)
+
+`eval_unknown_total` remains one fixed self counter: turning monitor, rule,
+entity, or metric names into self-series labels would let installed definitions
+widen the RB-02/DM-16 catalog. Attribution instead follows a bounded side path.
+For each due sampler monitor, the pipeline counts rule evaluations that both
+return UNKNOWN and lack at least one metric input in the current entity sample.
+When a derived metric is absent, its compiled metric dependencies are expanded
+until the missing source/earlier-derived inputs are reached. An empty cause set
+means the UNKNOWN came from something else — a cold window, baseline,
+arithmetic result, deadline, or missing attribute — and is deliberately not
+called a missing-metric finding.
+
+State is one record per loaded `(monitor, rule)`, never per entity. Three
+consecutive affected due runs make a record publishable; an evaluated clean run
+removes it, while a run with no evaluations is no evidence either way and does
+not move the streak. Definition content hashes prevent MD-06 reloads from
+inheriting old streaks, and the current loaded set removes deleted rules before
+publication. Restart resets the in-memory streaks.
+
+At each tick the daemon replaces the single `eval_unknown_report` metadata
+value in the same transaction as `last_tick_ts`. It contains the current
+unknown/evaluated entity counts, missing metric names, streak and injected wall
+timestamp, sorted by affected entities then monitor/rule. Publication is capped
+at 64 rules, 16 metric names per rule and 32 KiB total with explicit truncation
+metadata. The report carries `daemon_pid`; while the PM-02 lock is held,
+doctor compares it with the PID already advertised in the lock file and treats
+a different generation as unavailable until the first successful tick. This
+avoids a startup database write: PM-12 requires startup to survive a temporarily
+locked store. `ftmon doctor` validates and renders the report as informational authoring
+evidence; malformed/oversized metadata is treated as unavailable, and a
+finding neither changes doctor health nor EX-06/IN-01 evaluation. Early entity
+or rule skipping was rejected because an expression with one missing input may
+still evaluate FALSE through short-circuiting, which is real clearing evidence.
 
 ### 10.3 Promotion (SA-05)
 

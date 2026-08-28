@@ -57,6 +57,7 @@ class _State:
 class CompiledExpr:
     node: ir.Node
     windows: tuple[tuple[str, float], ...]  # (metric, seconds) referenced (CA-04 sizing)
+    metric_names: tuple[str, ...]  # direct metric inputs, including series-function arguments
     source: str
 
     def eval(

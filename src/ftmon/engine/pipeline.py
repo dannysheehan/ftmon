@@ -15,6 +15,7 @@ process sources have few entities and persist everything.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -31,6 +32,10 @@ from ftmon.sources.base import PIPELINE_PHASES, Sampler
 _DEMOTE_AFTER_S = 30 * 60  # SA-05: demote after 30m without the heuristic holding
 PROMOTION_LIMIT_PER_MONITOR = 10  # Chosen per-monitor concentration guardrail
 _DURABLE_SOURCES = {"system", "disk", "self"}  # DM-04 retention split (DESIGN 9)
+_UNKNOWN_REPORT_AFTER_RUNS = 3
+_UNKNOWN_REPORT_MAX_RULES = 64
+_UNKNOWN_REPORT_MAX_METRICS = 16
+_UNKNOWN_REPORT_MAX_BYTES = 32 * 1024
 
 
 
@@ -51,6 +56,16 @@ class _MonitorState:
     promoted: dict[str, float] = field(default_factory=dict)  # entity_id -> last True ts
     promotion_denied: set[str] = field(default_factory=set)
     promotion_limited: bool = False
+
+
+@dataclass(frozen=True)
+class _UnknownRuleState:
+    content_hash: str
+    consecutive_runs: int
+    unknown_entities: int
+    evaluated_entities: int
+    missing_metrics: tuple[str, ...]
+    last_run_ts: float
 
 
 class Pipeline:
@@ -95,6 +110,10 @@ class Pipeline:
         # owning entity happens to still be running.
         self._persisted_series: dict[str, int] = {}
         self._promotion_rejections_total = 0
+        # Rule-level diagnostics stay outside the fixed self-metric namespace.
+        # Cardinality follows loaded rule definitions, never sampled entities;
+        # the persisted doctor report is capped again at the publication edge.
+        self._unknown_rules: dict[tuple[str, str], _UnknownRuleState] = {}
 
     def run_monitor(
         self,
@@ -149,21 +168,40 @@ class Pipeline:
         # Derived metrics feed rings too so rules and later derived can window
         # over them; evaluation order is the loader's topological order (MD-08).
         derived_vals: dict[str, dict[str, float]] = {}
+        derived_missing: dict[str, dict[str, frozenset[str]]] = {}
         for ent in snap.entities:
             ctx = self._ctx(mdef, ent.entity_id, ent.attrs, now)
             vals: dict[str, float] = {}
+            missing_causes: dict[str, frozenset[str]] = {}
+            available = set(ent.metrics)
             for name, expr in mdef.derived:
                 v = expr.eval(ctx, counter=self._counter)
                 if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
                     rings.append(mdef.name, ent.entity_id, name, snap.ts, float(v))
                     vals[name] = float(v)
+                    available.add(name)
+                else:
+                    causes: set[str] = set()
+                    for missing in frozenset(expr.metric_names) - available:
+                        causes.update(missing_causes.get(missing, frozenset({missing})))
+                    # Empty means the derived value is unknown for a reason
+                    # other than a missing current metric (cold window,
+                    # baseline, arithmetic, deadline, ...). Do not mislabel it.
+                    missing_causes[name] = frozenset(causes)
             derived_vals[ent.entity_id] = vals
+            derived_missing[ent.entity_id] = missing_causes
 
         previous, mark = mark, self._clock.monotonic()
         phase["derived"] += mark - previous
 
         exempt_entities: set[str] = set()
         outcomes: list[EvalOutcome] = []
+        evaluated_by_rule = dict.fromkeys((rule.id for rule in mdef.rules), 0)
+        missing_unknown_by_rule = dict.fromkeys((rule.id for rule in mdef.rules), 0)
+        missing_metrics_by_rule = {rule.id: set() for rule in mdef.rules}
+        rule_metric_names = {
+            rule.id: frozenset(rule.when.metric_names) for rule in mdef.rules
+        }
         # Exempt and rules share one pass, so their split is the only one that
         # needs a per-entity reading. Measured at 101 ns/call: ~0.02% of one
         # core worst case (520 entities x 5 process monitors x 12 ticks/min),
@@ -189,10 +227,22 @@ class Pipeline:
             values.update(derived_vals.get(ent.entity_id, {}))
             values["entity"] = ent.attrs.get("display") or ent.attrs.get("name", ent.entity_id)
             values["monitor"] = mdef.name
+            available_metrics = set(ent.metrics) | set(derived_vals.get(ent.entity_id, {}))
             for rule in mdef.rules:
+                evaluated_by_rule[rule.id] += 1
                 result = to_tribool(rule.when.eval(ctx, counter=self._counter))
                 if result is TriBool.UNKNOWN:
                     self._counter("eval_unknown_total")
+                    causes: set[str] = set()
+                    for missing in rule_metric_names[rule.id] - available_metrics:
+                        causes.update(
+                            derived_missing.get(ent.entity_id, {}).get(
+                                missing, frozenset({missing})
+                            )
+                        )
+                    if causes:
+                        missing_unknown_by_rule[rule.id] += 1
+                        missing_metrics_by_rule[rule.id].update(causes)
                 message = ""
                 if result is TriBool.TRUE:
                     values["severity"] = severity_name(rule.severity)
@@ -200,6 +250,14 @@ class Pipeline:
                 outcomes.append(
                     EvalOutcome(mdef.name, ent.entity_id, rule.id, rule.group, result, message)
                 )
+
+        self._update_unknown_rules(
+            mdef,
+            now,
+            evaluated_by_rule,
+            missing_unknown_by_rule,
+            missing_metrics_by_rule,
+        )
 
         previous, mark = mark, self._clock.monotonic()
         phase["exempt"] += exempt_s
@@ -251,6 +309,110 @@ class Pipeline:
             self._state.get(name, _MonitorState()).promotion_limited
             for name in monitors
         )
+
+    def unknown_report(
+        self,
+        monitors: Mapping[str, MonitorDef],
+        now: float,
+        *,
+        daemon_pid: int | None = None,
+    ) -> dict:
+        """Return the bounded current report persisted for `ftmon doctor`.
+
+        The report attributes only UNKNOWN outcomes that coincide with a
+        missing current metric input. Generic UNKNOWN causes remain represented
+        by the fixed `eval_unknown_total` counter and are not mislabeled.
+        """
+        loaded = {
+            (mdef.name, rule.id): mdef.content_hash
+            for mdef in monitors.values()
+            for rule in mdef.rules
+        }
+        for key, state in list(self._unknown_rules.items()):
+            if loaded.get(key) != state.content_hash:
+                del self._unknown_rules[key]
+
+        persistent = [
+            (key, state)
+            for key, state in self._unknown_rules.items()
+            if state.consecutive_runs >= _UNKNOWN_REPORT_AFTER_RUNS
+        ]
+        persistent.sort(key=lambda item: (-item[1].unknown_entities, *item[0]))
+        matched = len(persistent)
+        records = []
+        for (monitor, rule_id), state in persistent[:_UNKNOWN_REPORT_MAX_RULES]:
+            missing = list(state.missing_metrics)
+            records.append(
+                {
+                    "monitor": monitor,
+                    "rule": rule_id,
+                    "consecutive_runs": state.consecutive_runs,
+                    "unknown_entities": state.unknown_entities,
+                    "evaluated_entities": state.evaluated_entities,
+                    "missing_metrics": missing[:_UNKNOWN_REPORT_MAX_METRICS],
+                    "missing_metrics_matched": len(missing),
+                    "missing_metrics_truncated": len(missing) > _UNKNOWN_REPORT_MAX_METRICS,
+                    "last_run_ts": state.last_run_ts,
+                }
+            )
+
+        def payload() -> dict:
+            return {
+                "version": 1,
+                "daemon_pid": daemon_pid,
+                "generated_ts": now,
+                "min_consecutive_runs": _UNKNOWN_REPORT_AFTER_RUNS,
+                "rules": records,
+                "rules_returned": len(records),
+                "rules_matched": matched,
+                "rules_truncated": matched > len(records),
+                "limits": {
+                    "max_rules": _UNKNOWN_REPORT_MAX_RULES,
+                    "max_missing_metrics_per_rule": _UNKNOWN_REPORT_MAX_METRICS,
+                    "max_bytes": _UNKNOWN_REPORT_MAX_BYTES,
+                },
+            }
+
+        report = payload()
+        while records and len(
+            json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ) > _UNKNOWN_REPORT_MAX_BYTES:
+            records.pop()
+            report = payload()
+        return report
+
+    def _update_unknown_rules(
+        self,
+        mdef: MonitorDef,
+        now: float,
+        evaluated_by_rule: Mapping[str, int],
+        missing_unknown_by_rule: Mapping[str, int],
+        missing_metrics_by_rule: Mapping[str, set[str]],
+    ) -> None:
+        for rule in mdef.rules:
+            key = (mdef.name, rule.id)
+            if evaluated_by_rule[rule.id] <= 0:
+                # No evaluation is neither continued failure nor recovery.
+                # Preserve the last streak but do not advance it.
+                continue
+            unknown = missing_unknown_by_rule[rule.id]
+            if unknown <= 0:
+                self._unknown_rules.pop(key, None)
+                continue
+            previous = self._unknown_rules.get(key)
+            consecutive = (
+                previous.consecutive_runs + 1
+                if previous is not None and previous.content_hash == mdef.content_hash
+                else 1
+            )
+            self._unknown_rules[key] = _UnknownRuleState(
+                content_hash=mdef.content_hash,
+                consecutive_runs=consecutive,
+                unknown_entities=unknown,
+                evaluated_entities=evaluated_by_rule[rule.id],
+                missing_metrics=tuple(sorted(missing_metrics_by_rule[rule.id])),
+                last_run_ts=now,
+            )
 
     @property
     def promotion_rejections_total(self) -> int:

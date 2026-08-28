@@ -39,6 +39,9 @@ doesn't cry wolf every time a compile pegs your CPU for a minute.
 just started, PSI not available, baseline still learning), the result is
 *unknown* — the rule neither fires nor counts as recovered. New machines
 stay silent until there's enough data to say something true.
+If a rule stays unknown because current metric inputs are repeatedly absent,
+`ftmon doctor` attributes it after three affected due runs without changing
+the rule or treating the diagnostic as a health failure.
 
 **Incident.** When a rule confirms, an incident opens and you get one
 notification. While it persists you are re-notified on a backing-off
@@ -611,6 +614,7 @@ in `docs/install.md` when publishing or updating the site.
 | Monitor failed after an edit | Run `ftmon check`; inspect `ftmon status`. |
 | External check unavailable | Verify registry and executable with `doctor`. |
 | Plugin metric is absent | Compare the mapped label and UOM with plugin output. |
+| Rules stay unknown | Run `ftmon doctor`; its persistent-UNKNOWN section names rules and missing current metric inputs. Do not substitute zero unless unreadable truly means safe. |
 | Too many notifications | Raise `confirm_cycles`, add an `exempt`, or ack. |
 | Notifications not arriving | Run `ftmon doctor`; check dispatcher `state` and `due_claimable` (§8), not `pending`. |
 | FTMON over budget | Open the Self page or inspect the incident. |
@@ -629,6 +633,15 @@ new observations, so a healthy database may stay near 200 MB as it replaces
 dead catalog overhead with useful retained history. `ftmon doctor` only
 reports this state; it does not trigger retention, catalog reaping, or
 compaction.
+
+Doctor also prints a bounded **Persistent UNKNOWN rules** section. It appears
+when a sampler rule has returned UNKNOWN with missing current metric inputs on
+three consecutive due runs, and shows the affected/evaluated entity counts and
+metric names. The section is an authoring diagnostic, not an incident or a
+doctor failure. A clean evaluated run removes the entry; daemon restarts begin
+the three-run observation again. UNKNOWNs caused only by a cold window,
+learning baseline, arithmetic failure, deadline, or missing attribute are not
+mislabelled as missing metrics.
 
 **The budget is measured on used pages, not file size.** DM-05 bounds the
 database at 200 MB counted as `(page_count - freelist_count) * page_size`;

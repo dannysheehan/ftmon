@@ -13,7 +13,9 @@ milestone plan, not oversight.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import sqlite3
 import sys
 from dataclasses import dataclass, field
@@ -738,6 +740,14 @@ class DaemonCore:
         self._sample_outbox_backlog(wall)
         self.stats.ring_mem_bytes = self.rings.mem_bytes()
         self.rings.evict_if_over(self._is_protected, self.stats.count)
+        self.writer.set_meta(
+            "eval_unknown_report",
+            json.dumps(
+                self.pipeline.unknown_report(self.monitors, wall, daemon_pid=os.getpid()),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
         self.writer.set_meta("last_tick_ts", repr(wall))
         commit_started = self.clock.monotonic()
         try:
@@ -1007,8 +1017,6 @@ def run(args) -> int:
         return 1
     # CL-07: `ftmon monitor rescan` signals this pid. The flock, not the pid
     # text, remains the single-instance authority (PM-02).
-    import os
-
     lock_file.write(str(os.getpid()))
     lock_file.flush()
 

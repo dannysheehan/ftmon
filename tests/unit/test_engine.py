@@ -4,6 +4,7 @@ rings, and the sampling pipeline driven by a real loaded definition."""
 from __future__ import annotations
 
 import importlib.resources
+import json
 import sys
 from dataclasses import replace
 
@@ -186,6 +187,41 @@ confirm_cycles = 3
 message = "{entity} leaking"
 """
 
+MISSING_METRIC_DEF = """
+schema = 1
+[monitor]
+name = "fds"
+description = "missing metric diagnostic fixture"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "process"
+[parameters]
+warn = { value = 80, doc = "threshold" }
+[[derived]]
+name = "fd_pct"
+expr = "pct(num_fds, fd_limit_soft)"
+[[rule]]
+id = "absolute"
+when = "num_fds > warn"
+severity = "warning"
+confirm_cycles = 1
+message = "absolute"
+[[rule]]
+id = "percent"
+when = "fd_pct > warn"
+severity = "warning"
+confirm_cycles = 1
+message = "percent"
+[[rule]]
+id = "cold-window"
+when = 'slope(rss_bytes, "15m") > 0'
+severity = "warning"
+confirm_cycles = 1
+message = "cold"
+"""
+
 
 class ScriptedSampler:
     """Minimal fixture: returns the snapshot scripted for the current call."""
@@ -284,6 +320,120 @@ def test_pipeline_unknown_then_fires_and_promotes():
     assert calm.result is TriBool.FALSE
     assert "leaky:1:100" in pipe.promoted("leak")  # [SA-05c]
     assert counts.get("eval_unknown_total", 0) > 0  # early UNKNOWNs were counted
+
+
+def test_pipeline_reports_only_persistent_unknowns_with_missing_metrics_cl_05():
+    """[CL-05][EX-06][RB-02] Three due runs attribute missing inputs by rule,
+    while a cold window remains generic UNKNOWN and evaluation continues."""
+    mdef = load_text(MISSING_METRIC_DEF)
+    sampler = ScriptedSampler()
+    for _ in range(3):
+        sampler.push(
+            ("denied:1:1", {"name": "denied"}, {"fd_limit_soft": 1024.0, "rss_bytes": 1.0}),
+            ("readable:2:1", {"name": "readable"},
+             {"num_fds": 10.0, "fd_limit_soft": 1024.0, "rss_bytes": 1.0}),
+        )
+
+    rings = RingStore()
+    rings.configure(mdef.name, mdef.interval_s, dict(mdef.windows))
+    counts: dict[str, int] = {}
+    pipe = Pipeline(
+        {"process": sampler},
+        rings,
+        lambda name: counts.__setitem__(name, counts.get(name, 0) + 1),
+    )
+    writer = NullWriter()
+    for cycle in range(2):
+        outcomes = pipe.run_monitor(mdef, 1000.0 + cycle * 60, 10**9, writer, {})
+        assert pipe.unknown_report({mdef.name: mdef}, 1000.0 + cycle * 60)["rules"] == []
+        assert any(outcome.result is TriBool.UNKNOWN for outcome in outcomes)
+
+    outcomes = pipe.run_monitor(mdef, 1120.0, 10**9, writer, {})
+    report = pipe.unknown_report({mdef.name: mdef}, 1120.0)
+    assert [(item["rule"], item["missing_metrics"]) for item in report["rules"]] == [
+        ("absolute", ["num_fds"]),
+        ("percent", ["num_fds"]),
+    ]
+    assert all(item["unknown_entities"] == 1 for item in report["rules"])
+    assert all(item["evaluated_entities"] == 2 for item in report["rules"])
+    assert all(item["consecutive_runs"] == 3 for item in report["rules"])
+    assert not any(item["rule"] == "cold-window" for item in report["rules"])
+    assert len(outcomes) == 6  # diagnostics never skip rule evaluation
+    assert counts["eval_unknown_total"] >= 6
+
+
+def test_pipeline_unknown_report_recovers_and_definition_reload_drops_stale_state_cl_05():
+    """[CL-05][MD-06] A known cycle clears the finding, and changed definition
+    content cannot inherit an earlier rule streak before its first evaluation."""
+    mdef = load_text(MISSING_METRIC_DEF)
+    sampler = ScriptedSampler()
+    for _ in range(3):
+        sampler.push(
+            ("denied:1:1", {"name": "denied"}, {"fd_limit_soft": 1024.0, "rss_bytes": 1.0})
+        )
+    sampler.push(
+        ("denied:1:1", {"name": "denied"},
+         {"num_fds": 10.0, "fd_limit_soft": 1024.0, "rss_bytes": 1.0})
+    )
+    pipe, _, _, _ = _run_cycles(mdef, sampler, 3)
+    assert pipe.unknown_report({mdef.name: mdef}, 1120.0)["rules_returned"] == 2
+
+    pipe.run_monitor(mdef, 1180.0, 10**9, NullWriter(), {})
+    assert pipe.unknown_report({mdef.name: mdef}, 1180.0)["rules"] == []
+
+    # Rebuild a streak, then present a not-yet-run replacement definition.
+    sampler2 = ScriptedSampler()
+    for _ in range(3):
+        sampler2.push(
+            ("denied-new:3:1", {"name": "denied-new"},
+             {"fd_limit_soft": 1024.0, "rss_bytes": 1.0})
+        )
+    for cycle in range(3):
+        pipe._samplers["process"] = sampler2
+        pipe.run_monitor(mdef, 1240.0 + cycle * 60, 10**9, NullWriter(), {})
+    assert pipe.unknown_report({mdef.name: mdef}, 1360.0)["rules_returned"] == 2
+    replacement = replace(mdef, content_hash="replacement")
+    assert pipe.unknown_report({replacement.name: replacement}, 1360.0)["rules"] == []
+
+
+def test_pipeline_unknown_report_is_deterministically_bounded_cl_05_rb_02():
+    """[CL-05][RB-02] Installed rules cannot widen self metrics or an
+    unbounded meta value; doctor receives explicit truncation metadata."""
+    rules = "\n".join(
+        f'''[[rule]]
+id = "missing-{number:02d}"
+when = "num_fds > 0"
+severity = "warning"
+confirm_cycles = 1
+message = "missing"
+'''
+        for number in range(65)
+    )
+    mdef = load_text(
+        f'''schema = 1
+[monitor]
+name = "many_rules"
+description = "bounded diagnostic fixture"
+version = 1
+enabled = true
+platforms = ["linux"]
+interval = "60s"
+source = "process"
+{rules}
+'''
+    )
+    sampler = ScriptedSampler()
+    for _ in range(3):
+        sampler.push(("denied:1:1", {"name": "denied"}, {"rss_bytes": 1.0}))
+    pipe, _, _, _ = _run_cycles(mdef, sampler, 3)
+    report = pipe.unknown_report({mdef.name: mdef}, 1120.0)
+    assert report["rules_matched"] == 65
+    assert report["rules_returned"] == 64
+    assert report["rules_truncated"]
+    assert [item["rule"] for item in report["rules"]] == [
+        f"missing-{number:02d}" for number in range(64)
+    ]
+    assert len(json.dumps(report, separators=(",", ":")).encode()) <= 32 * 1024
 
 
 def test_pipeline_message_entity_prefers_display_sa_09():
@@ -476,6 +626,10 @@ def test_daemon_core_ticks_persist_and_hot_reload(tmp_path):
     assert info["last_tick_ts"] is not None
     rows = conn.execute("SELECT count(*) c FROM samples").fetchone()
     assert rows["c"] > 0
+    unknown_meta = conn.execute(
+        "SELECT value FROM meta WHERE key='eval_unknown_report'"
+    ).fetchone()
+    assert json.loads(unknown_meta["value"])["version"] == 1
     conn.close()
 
     # PM-04: bump the definition version on disk; next tick past the rescan
