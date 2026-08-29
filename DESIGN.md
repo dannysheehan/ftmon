@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.39**. Companion to `SPEC.md` v0.56 — every design element
+Status: **DRAFT v0.40**. Companion to `SPEC.md` v0.57 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -948,6 +948,15 @@ evidence; malformed/oversized metadata is treated as unavailable, and a
 finding neither changes doctor health nor EX-06/IN-01 evaluation. Early entity
 or rule skipping was rejected because an expression with one missing input may
 still evaluate FALSE through short-circuiting, which is real clearing evidence.
+
+The shipped definitions use that same ordered short-circuiting to encode known
+applicability rather than changing evaluator semantics. `net/listener-down`
+first rejects the source's `proto="all"` aggregate entity, which has no
+`present`; Linux inode rules first reject vfat, whose `statvfs` inode total is
+structurally zero. Missing `present` on a listener or missing inode data on an
+inode-capable filesystem therefore remains UNKNOWN and diagnosable. This is
+intentionally narrower than coalescing every absent value to a safe zero
+(EX-06, SA-04, MD-07, issue #153).
 
 ### 10.3 Promotion (SA-05)
 

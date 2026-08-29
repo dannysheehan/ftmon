@@ -7,7 +7,7 @@ exempt = [ 'matches(fstype, "^(tmpfs|iso9660|squashfs|overlay)$")' ]
 [monitor]
 name = "disk"
 description = "Disk space thresholds, inode thresholds, and filling-rate detection"
-version = 5
+version = 6
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -83,7 +83,7 @@ message = "Disk {entity} nearly full: {used_pct:.0f}% used, {free_mb:.0f} MB lef
 [[rule]]
 id = "inodes-notice"
 group = "inodes"
-when = 'inode_used_pct > inode_notice_pct'
+when = 'not matches(fstype, "^vfat$") and inode_used_pct > inode_notice_pct'
 severity = "notice"
 confirm_cycles = 3
 message = "Inodes on {entity} at {inode_used_pct:.0f}%"
@@ -91,7 +91,7 @@ message = "Inodes on {entity} at {inode_used_pct:.0f}%"
 [[rule]]
 id = "inodes-warn"
 group = "inodes"
-when = 'inode_used_pct > inode_warn_pct'
+when = 'not matches(fstype, "^vfat$") and inode_used_pct > inode_warn_pct'
 severity = "warning"
 confirm_cycles = 3
 message = "Inodes on {entity} at {inode_used_pct:.0f}%"
@@ -99,7 +99,7 @@ message = "Inodes on {entity} at {inode_used_pct:.0f}%"
 [[rule]]
 id = "inodes-crit"
 group = "inodes"
-when = 'inode_used_pct > inode_crit_pct'
+when = 'not matches(fstype, "^vfat$") and inode_used_pct > inode_crit_pct'
 severity = "error"
 confirm_cycles = 2
 message = "Inodes on {entity} nearly exhausted: {inode_used_pct:.0f}%"

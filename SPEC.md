@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.56** — v0.56 makes repeated rule UNKNOWNs caused by absent
+Status: **DRAFT v0.57** — v0.57 makes built-in rule applicability explicit
+for mixed-shape snapshots: listener rules short-circuit on the network totals
+entity, and Linux inode rules skip vfat while retaining UNKNOWN for unexpected
+inode-read failures (EX-06, SA-04, MD-07, issue #153). v0.56 makes repeated rule UNKNOWNs caused by absent
 current metric inputs attributable in `ftmon doctor`, without changing
 three-valued evaluation or growing the fixed self-metric namespace. The daemon
 publishes one bounded current report after three affected due runs; doctor
@@ -860,7 +863,7 @@ Metrics: `cpu_pct`. Rules (group `hog`): warning when `avg(cpu_pct, "5m") > 80` 
 Consumes the event stream; rules are **episode** rules (IN-08). Example shipped enabled: `severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")`; a specific-ID example (`event_id == "6008"`, styled for future Windows use) ships commented; a third rule targeting `provider == "kernel"` OOM messages also ships enabled on the generic/Linux tree. Episode identity: `(rule, provider, event_id if present else msg_hash)`. `msg_hash` is normatively defined: lowercase the message, collapse whitespace, replace digit runs and hex runs (≥ 8 chars) with `#`, then SHA-256, first 16 hex chars — collisions merely group unrelated events, which is harmless. Per-rule `cooldown` (default `"10m"`) limits renotification; `clear_after` (default `"30m"` without a matching event) closes the episode with `clear_reason = quiet_period` and **no recovery notification** by default (`notify_recovery = false` for event rules). A new matching event after clearing opens a new episode; the flap guard (IN-05) applies. The `windesktop`/`winserver` profile tree drops the `provider == "kernel"` OOM rule: `"kernel"` is a journald syslog-identifier convention no Windows Event Log provider is ever named, so the rule would sit in the file permanently dead rather than degrading gracefully; no replacement Windows low-memory event is wired up yet.
 
 #### 7.7.4 `disk` — space + filling
-Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`. The `windesktop`/`winserver` profile tree drops the `inodes` group entirely: NTFS has no POSIX inode concept, so `inode_used_pct` is always absent there and the ladder would never fire — dropped rather than left in the file to imply coverage that doesn't exist.
+Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`. Linux inode rules MUST first reject `fstype == "vfat"`, whose inode count is structurally unavailable, so the ordered conjunction returns FALSE before reading `inode_used_pct`; an unexpected missing inode reading on an inode-capable filesystem remains UNKNOWN rather than becoming false recovery evidence. The `windesktop`/`winserver` profile tree drops the `inodes` group entirely: NTFS has no POSIX inode concept, so `inode_used_pct` is always absent there and the ladder would never fire — dropped rather than left in the file to imply coverage that doesn't exist.
 
 #### 7.7.5 `load` — system pressure
 Metrics: `load1`, `cpu_pct`, `mem_available_bytes`, `mem_total_bytes`, `swap_used_pct`, PSI `psi_some_cpu`/`psi_some_mem`/`psi_some_io` (60 s avg) where present. Rules: group `pressure` — warning when `avg(psi_some_cpu, "5m") > 40` or `pct(mem_available_bytes, mem_total_bytes) < 5` for 5 cycles; error rung on `slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > 25`. Glance: five-minute CPU PSI with its warning parameter. On kernels without PSI the readout is absent rather than replaced by an inferred secondary metric.
@@ -869,7 +872,7 @@ Metrics: `load1`, `cpu_pct`, `mem_available_bytes`, `mem_total_bytes`, `swap_use
 Watchlist-driven (no auto-discovery): each target is a systemd unit or process-name regex, expected state, optional `during` schedule. Metrics: `present` (0/1), `restarts`. Rules: error when `present == 0` for `confirm_cycles = 2`; notice on flapping (`delta(restarts, "30m") >= 3`).
 
 #### 7.7.7 `net` — sockets
-Watchlist of expected listeners (`proto:port`) → `present` metric, error when absent (as `service`). System-wide `conn_total` and per-state counts with a warning on `conn_total > baseline(conn_total) * 4` sustained 5 cycles. Per-process attribution: NG-06 (deferred).
+Watchlist of expected listeners (`proto:port`) → `present` metric, error when absent (as `service`). The shared source also emits a `proto == "all"` totals entity with connection metrics and no `present`; the listener rule MUST test `proto != "all"` first so that aggregate entity short-circuits FALSE while watchlist entities retain exact 0/1 behavior. System-wide `conn_total` and per-state counts have a warning on `conn_total > baseline(conn_total) * 4` sustained 5 cycles. Per-process attribution: NG-06 (deferred).
 
 ---
 
@@ -1473,6 +1476,15 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.57 (2026-08-29)** — applies v0.56's first live diagnostic findings
+without weakening three-valued evaluation. The net source deliberately mixes a
+connection-totals entity with synthetic listener entities, but its listener
+rule previously read `present` on both; it now scopes on `proto` first. Linux
+vfat mounts deliberately have no inode count, so inode ladders now reject that
+known filesystem before reading `inode_used_pct`, while an unexpected miss on
+ext4 remains UNKNOWN. Source output and generic evaluation are unchanged
+(EX-06, SA-04, MD-07, issue #153).
 
 **v0.56 (2026-08-29)** — makes persistent missing-input silence attributable
 without redefining UNKNOWN. The fixed `eval_unknown_total` correctly avoids a

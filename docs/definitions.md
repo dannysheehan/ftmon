@@ -253,6 +253,14 @@ freezes them. Use `coalesce` only when “unreadable means zero/safe” is genui
 the policy. Otherwise restore the source or external mapping, add a precise
 `exempt` for entities outside the monitor's scope, or retain UNKNOWN knowingly.
 
+When one source emits several entity shapes, prefer an ordered applicability
+guard. The built-in network rule uses
+`proto != "all" and present == 0`: aggregate connection totals return FALSE
+before `present` is read, while listener entities still require that metric.
+Likewise, Linux inode rules reject `vfat` before reading `inode_used_pct` but
+leave an unexpected missing read on ext4 as UNKNOWN. This is narrower than
+coalescing every missing value to zero.
+
 ### Per-source names
 
 Run `ftmon monitors` / read the built-ins for live examples. Summary:
