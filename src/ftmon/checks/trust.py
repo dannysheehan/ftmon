@@ -5,7 +5,8 @@ none of them can quietly diverge).
 
 Registry validation and the external-check runner must apply one ownership and
 path contract; diverging copies would let a trusted load race an untrusted run.
-NoNewPrivileges also masks distro plugin ownership to overflow uids (nobody).
+A user-namespace sandbox can mask distro plugin ownership to overflow uids
+(`nobody`).
 
 Windows has no POSIX uid/mode bits (os.stat().st_uid is always 0 there, and
 st_mode's write bits are a fixed synthesized value, not real permissions --
@@ -13,7 +14,7 @@ confirmed empirically on feature/windows-support, see NOTES.md) -- SE-07's
 "owned by the service user ... or root" / "not writable by group or other"
 become owner-SID and DACL checks instead, behind the same os.name=="nt"
 seam style as paths.py::try_lock_exclusive. The masked_system_executable
-NoNewPrivileges escape hatch is POSIX-only by design (a narrow systemd
+user-namespace escape hatch is POSIX-only by design (a narrow systemd
 sandboxing workaround, not a general "system binaries are trusted" rule) and
 is not given a Windows equivalent.
 """
@@ -29,7 +30,7 @@ _SYSTEM_EXECUTABLE_PREFIXES = ("/bin/", "/lib/", "/sbin/", "/usr/")
 
 
 def masked_system_executable(path: Path, info: os.stat_result) -> bool:
-    """NoNewPrivileges can report distro executables with the overflow uid."""
+    """A user namespace can report distro executables with the overflow uid."""
     if info.st_uid not in _OVERFLOW_UIDS:
         return False
     return str(path.resolve()).startswith(_SYSTEM_EXECUTABLE_PREFIXES)

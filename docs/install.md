@@ -437,6 +437,15 @@ you installed elsewhere, copy the unit and change only `ExecStart`. FTMON is a
 user service because running as root would give monitor definitions and actions
 authority they neither need nor should have.
 
+The user daemon unit deliberately keeps `NoNewPrivileges=yes` but does not set
+`PrivateTmp=yes`. For an unprivileged user service, systemd implements
+`PrivateTmp` through a user namespace; processes owned by other host users then
+appear as the overflow identity (`nobody`). That corrupts the process sampler's
+`username` attribute and defeats username-based exemptions. The system-level
+server unit can retain `PrivateTmp` because the privileged system manager can
+create its mount namespace without UID remapping; non-sampling web/demo units
+do not depend on process identity.
+
 ### Dedicated single-server service
 
 On a headless server, use a dedicated system account rather than an

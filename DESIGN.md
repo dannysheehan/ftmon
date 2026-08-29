@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.40**. Companion to `SPEC.md` v0.57 — every design element
+Status: **DRAFT v0.41**. Companion to `SPEC.md` v0.58 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -210,6 +210,15 @@ threaded boundaries with synchronous fakes, preserving deterministic control.
 
 Confirm/clear counters (IN-01) are in-memory only; a daemon restart loses in-progress confirmation and re-accumulates (documented, acceptable — incidents and backoff state survive via DB per IN-02/DM-14).
 
+The packaged desktop `ftmon.service` retains `NoNewPrivileges=yes` but omits
+`PrivateTmp`. In a per-user systemd manager, `PrivateTmp` requires an
+unprivileged user namespace; host UIDs outside that namespace become the
+overflow uid, so psutil reports their `username` as `nobody`. That breaks
+SA-04's sampled identity and CA-07 username exemptions even though `/proc`
+remains visible. This constraint is specific to the user sampling daemon:
+system-level server units and non-sampling web/demo units retain their private
+temporary directories (PM-08, SA-04, issue #155).
+
 ### 2.1 Single-server deployment (PM-08/09)
 
 `ftmon init --profile server` and the packaged `ftmon-server.service` target a
@@ -354,8 +363,8 @@ owner/SYSTEM/Administrators set. An unreadable, absent, or NULL DACL fails
 closed; Windows grants everyone full access when no DACL restricts it. Secret
 credential checks obtain the same descriptor with `GetSecurityInfo` from the
 CRT fd's already-open OS handle, so the safe open is not undone by a second
-path lookup. The Linux-only `masked_system_executable` escape hatch (NoNewPrivileges masking
-distro plugin ownership to an overflow uid) has no Windows counterpart —
+path lookup. The Linux-only `masked_system_executable` escape hatch
+(user-namespace masking of distro plugin ownership to an overflow uid) has no Windows counterpart —
 it is a narrow systemd sandboxing workaround, not a general rule.
 
 There is deliberately no environment table. A generic secret-to-environment
