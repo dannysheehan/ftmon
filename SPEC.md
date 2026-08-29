@@ -1,6 +1,10 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.57** — v0.57 makes built-in rule applicability explicit
+Status: **DRAFT v0.58** — v0.58 removes `PrivateTmp` from the per-user Linux
+sampling daemon: systemd otherwise creates a user namespace that maps other
+host users to the overflow identity and defeats truthful process usernames and
+CA-07 exemptions. `NoNewPrivileges` and `PrivateTmp` on non-sampling/system
+units remain unchanged (PM-08, SA-04, issue #155). v0.57 makes built-in rule applicability explicit
 for mixed-shape snapshots: listener rules short-circuit on the network totals
 entity, and Linux inode rules skip vfat while retaining UNKNOWN for unexpected
 inode-read failures (EX-06, SA-04, MD-07, issue #153). v0.56 makes repeated rule UNKNOWNs caused by absent
@@ -317,6 +321,11 @@ support policy and packaging must be resolved before macOS is advertised.
   alerts require an explicit listener watchlist; service examples are
   process-based; and only the desktop variant enables best-effort Script
   Editor notifications.
+  The packaged per-user Linux daemon unit MUST preserve host UID visibility for
+  the process sampler: it keeps `NoNewPrivileges=yes` but MUST NOT enable
+  `PrivateTmp` or another user-namespace setting that maps other host users to
+  the overflow identity. System-level server and non-sampling web/demo units
+  MAY retain private temporary directories.
 - **PM-09** The supported server deployment runs the daemon as a dedicated
   unprivileged account or the administrator's ordinary account. It MUST NOT run
   as root. The normal web process remains on loopback; remote operational access
@@ -1476,6 +1485,16 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.58 (2026-08-30)** — restores truthful process identity in the packaged
+per-user Linux service. `PrivateTmp=yes` made the user manager create an
+unprivileged user namespace, mapping other host UIDs to `nobody`; a live FD
+monitor therefore evaluated about 420 entities instead of 185 because its
+root/service-account username exemptions could no longer match. Controlled
+user-service replays isolated the directive: plain and `NoNewPrivileges`-only
+runs reported 42/185 missing inputs, while `PrivateTmp` reported about 290/434.
+The user sampling daemon drops only that directive; system-level and
+non-sampling units retain it (PM-08, SA-04, CA-07, issue #155).
 
 **v0.57 (2026-08-29)** — applies v0.56's first live diagnostic findings
 without weakening three-valued evaluation. The net source deliberately mixes a

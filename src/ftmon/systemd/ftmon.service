@@ -12,10 +12,11 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 
-# FTMON is intentionally a per-user service. These settings reduce ambient
-# authority without blocking psutil, journald, or desktop notification access.
+# FTMON is intentionally a per-user service. NoNewPrivileges reduces ambient
+# authority without changing process identity. Do not add PrivateTmp here:
+# systemd implements it for user units through an unprivileged user namespace,
+# mapping other host users to the overflow uid and corrupting process.username.
 NoNewPrivileges=yes
-PrivateTmp=yes
 
 [Install]
 WantedBy=default.target

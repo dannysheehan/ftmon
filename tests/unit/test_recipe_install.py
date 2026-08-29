@@ -267,10 +267,10 @@ def test_cli_recipe_install_reports_missing_recipe(tmp_path, monkeypatch, capsys
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason="masked overflow UIDs are a POSIX NoNewPrivileges behavior",
+    reason="masked overflow UIDs are a POSIX user-namespace behavior",
 )
 def test_registry_accepts_masked_system_executable_owner(tmp_path, monkeypatch):
-    """[EC-01] NoNewPrivileges maps distro plugin ownership to the overflow uid."""
+    """[EC-01] User namespaces can map distro ownership to the overflow uid."""
     executable = tmp_path / "check_http"
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)

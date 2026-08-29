@@ -105,7 +105,7 @@ instead of running:
 | Path is absolute | No shell means no `PATH` search to fall back on; a relative path would also resolve differently depending on the daemon's working directory. |
 | Not a symlink, and the resolved path equals the given path | An admin approves one exact file. A symlink is an indirection that could be repointed later without touching `checks.toml`. |
 | A regular file | Rules out device nodes, FIFOs, and directories — nothing FTMON should ever `exec`. |
-| Trusted owner (POSIX) | Owned by `root` or the daemon's effective uid. Trust follows the identity actually executing the check (SE-07), not just the file's nominal owner. Distro packages under `/bin`, `/lib`, `/sbin`, `/usr` sometimes report the overflow uid (`nobody`/`nfsnobody`, 65533/65534) once a systemd unit sets `NoNewPrivileges=yes`, since the kernel masks real ownership from that vantage point — those specific system paths are still trusted, because distro packaging already protects them independently. |
+| Trusted owner (POSIX) | Owned by `root` or the daemon's effective uid. Trust follows the identity actually executing the check (SE-07), not just the file's nominal owner. A user-namespace sandbox can make distro packages under `/bin`, `/lib`, `/sbin`, `/usr` report the overflow uid (`nobody`/`nfsnobody`, 65533/65534) — those specific system paths are still trusted when they remain non-writable, because distro packaging already protects them independently. |
 | Trusted owner (Windows) | Owned by the current-user SID, LocalSystem (`SYSTEM`), or the built-in Administrators SID. These are the Windows equivalents of the executing uid and `root`; a familiar path is not a substitute for an accepted owner. |
 | No broad write access (POSIX) | The file is not group- or other-writable; otherwise another local account could rewrite what the administrator approved. |
 | No broad write access (Windows) | The DACL has no allowed write ACE for a trustee beyond the owner, `SYSTEM`, or Administrators. A NULL or unreadable DACL fails closed. Read-only access by another account does not by itself make a check executable writable. |
@@ -129,8 +129,8 @@ ftmon check trust C:\Windows\System32\cmd.exe
 The result is intentional, not an inverted trust boundary. Windows reports
 the real owner SID, and a `C:\Windows` prefix alone does not prove that the
 file satisfies FTMON's owner-based authority rule. The narrow POSIX exception
-for system paths exists only because a systemd `NoNewPrivileges=yes` sandbox
-can mask a genuinely root-owned distro executable as the overflow uid. Windows
+for system paths exists only because a Linux user-namespace sandbox can mask a
+genuinely root-owned distro executable as the overflow uid. Windows
 has no equivalent ownership-masking case, so it has no equivalent path-based
 escape hatch.
 

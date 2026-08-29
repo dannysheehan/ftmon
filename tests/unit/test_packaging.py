@@ -11,6 +11,27 @@ def test_systemd_user_unit_is_packaged_do_02():
     assert "ExecStart=%h/.local/bin/ftmon daemon" in unit
     assert "WantedBy=default.target" in unit
     assert "User=root" not in unit
+    assert "NoNewPrivileges=yes" in unit
+
+
+def test_systemd_user_unit_preserves_host_uid_visibility_155():
+    """[PM-08][SA-04] A user namespace maps other host users to `nobody`."""
+    unit = files("ftmon").joinpath("systemd/ftmon.service").read_text()
+    assert "PrivateTmp=" not in unit
+    assert "PrivateUsers=" not in unit
+
+
+def test_non_sampling_demo_units_retain_private_tmp_155():
+    """[SE-06] The user-daemon exception must not relax public-demo units."""
+    systemd = files("ftmon").joinpath("systemd")
+    for name in (
+        "ftmon-demo-build.service",
+        "ftmon-demo-refresh.service",
+        "ftmon-demo-web.service",
+    ):
+        unit = systemd.joinpath(name).read_text()
+        assert "NoNewPrivileges=yes" in unit, name
+        assert "PrivateTmp=yes" in unit, name
 
 
 def test_launchagent_is_packaged_and_preserves_sighup_pm_11():

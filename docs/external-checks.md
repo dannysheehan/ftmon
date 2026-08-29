@@ -84,7 +84,7 @@ must be root-owned mode 0755; the file must be root-owned, group `ftmon`, mode
 Every alias contains an explicit argument vector, not a shell command. The
 first argument must be an absolute, regular, executable path owned by root or
 the FTMON service user and not writable by group or other users. Under a user
-systemd unit with `NoNewPrivileges=yes`, distro plugins under `/usr/` may
+systemd unit that creates a user namespace, distro plugins under `/usr/` may
 report the overflow `nobody` uid instead of root; FTMON accepts those system
 paths when they remain non-writable. Symlinks and executables under FTMON's
 writable data, state or runtime directories are rejected. Timeouts range from
@@ -208,13 +208,12 @@ admin ioctl, not a file you can be granted permission to read.
 
 **`sudo` cannot work from a check under the shipped units.** Both shipped
 services set `NoNewPrivileges=yes`, which makes the kernel ignore setuid bits
-for every descendant — no sudoers rule can override that. The per-user desktop
-unit adds a second, more confusing barrier: its sandbox runs in a user
-namespace where root-owned files appear owned by the overflow uid
-(`nobody`/65534), so sudo refuses to even try, complaining that
-`/usr/bin/sudo` is not owned by uid 0. Do not "fix" this with a drop-in that
-weakens the unit: that trades a permanent daemon-wide protection for one
-check's convenience.
+for every descendant — no sudoers rule can override that. Do not "fix" this
+with a drop-in that weakens the unit: that trades a permanent daemon-wide
+protection for one check's convenience. A custom user-namespace sandbox can
+additionally map root-owned files to the overflow uid, but the shipped desktop
+unit deliberately avoids such UID remapping because it would also corrupt
+process-monitor usernames.
 
 Instead, keep the privilege in a separate root-owned timer and reduce the
 boundary to a file — the **privileged exporter pattern**:
