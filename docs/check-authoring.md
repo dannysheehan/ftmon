@@ -312,6 +312,13 @@ Once the executable is written, installed, and passes `ftmon check trust`:
    `ftmon monitor rescan` if you don't want to wait out the window while
    iterating.
 
+If a mapped metric label is absent from successful check output, rules that
+need that metric can remain UNKNOWN. After three affected due runs,
+`ftmon doctor` attributes the monitor/rule and missing metric name. Treat that
+as a mapping/output contract problem first; do not hide it with
+`coalesce(metric, 0)` unless missing output is explicitly equivalent to a safe
+zero for that check.
+
 If a run comes back `unknown`, work outward from the failure category
 in [External checks' troubleshooting table](external-checks.md#troubleshooting)
 rather than guessing — the daemon deliberately doesn't retain enough of a

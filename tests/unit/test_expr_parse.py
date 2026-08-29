@@ -90,6 +90,16 @@ def test_windows_collected_for_ring_sizing():
     assert ("cpu_pct", 300.0) in e.windows
 
 
+def test_metric_names_collected_for_bounded_unknown_diagnostics():
+    """[EX-02][CL-05] Compiled expressions expose metric inputs without
+    confusing attributes, parameters, or constants for missing metrics."""
+    e = compile_expr(
+        'slope(rss_bytes, "45m") > warn_pct and pct(cpu_pct, rss_bytes) > 1 and name != "x"',
+        ENV,
+    )
+    assert e.metric_names == ("cpu_pct", "rss_bytes")
+
+
 def test_coverage_windows_collected_for_ring_sizing():
     """[CA-01][CA-04] coverage(m, w) compiles and feeds ring sizing like other series fns."""
     e = compile_expr('coverage(rss_bytes, "45m") >= 0.8', ENV)

@@ -1,6 +1,12 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.55** — v0.55 makes a coverage guard answer "not enough
+Status: **DRAFT v0.56** — v0.56 makes repeated rule UNKNOWNs caused by absent
+current metric inputs attributable in `ftmon doctor`, without changing
+three-valued evaluation or growing the fixed self-metric namespace. The daemon
+publishes one bounded current report after three affected due runs; doctor
+names the monitor, rule, affected/evaluated entity counts and missing metrics
+as an informational authoring diagnostic (CL-05, EX-06, RB-02, issue #139).
+v0.55 makes a coverage guard answer "not enough
 history" with FALSE rather than UNKNOWN, so the windowed terms it guards stop
 running on cold entities and a rule reports "not yet" instead of "don't know"
 (CA-01, EX-06, issue #138). v0.54 — v0.54 splits the post-sample half of the tick into
@@ -1229,6 +1235,26 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 - **CL-03** Every list-producing subcommand supports `--json` (stable, documented shape shared with MCP responses) — the CLI is also scripting surface.
 - **CL-04** `ftmon status` is the legacy `-z` successor: one screen, exit code 0/1/2 mapping to (all-clear / warnings / errors+) for scripting.
 - **CL-05** `ftmon doctor`: runs `PRAGMA quick_check` (full `integrity_check` with `--deep`), WAL checkpoint, reports DB/table sizes, orphaned rows, cursor ages, and config errors; `ftmon doctor --backup <path>` produces a consistent snapshot via the SQLite backup API. Naive file-copy of the live WAL database is documented as unsupported (VC-03). Exit non-zero on any problem found. (v0.43 amendment, issue #74) Also reports catalog pressure against the DM-16 worksheet — **(v0.46 amendment, issue #104: the figures compared against ≤400/~320 are the persisted entity and series counts the daemon publishes, not `gone_ts IS NULL` presence counts, which DM-16 forbids using as pressure; presence counts remain reported under names that say what they count and without a budget comparison)** — separately from total retained catalog rows (which legitimately exceed those assumptions under process churn even when reap is healthy; DM-16 §9), plus MD-09 reap recency (last pass timestamp and row count). (v0.44 amendment, issue #74) (v0.50 amendment, issue #103.) Retained catalog rows MUST also be attributed per monitor as total/present/gone entity counts and total series counts, using only the `entities` and `series` catalogs. The result MUST include monitors present in either catalog, be ordered by series total descending, entity total descending, then monitor name ascending, and be bounded to 64 rows with explicit matched/returned/truncated metadata. Presence (`gone_ts IS NULL`) MUST be labelled as presence, never as current persisted-selection pressure; no per-monitor pressure figure is inferred from retained rows. Database capacity is split into file allocation, used bytes, and reusable freelist pages/bytes/percentage, with last DM-05 degradation recency. Doctor MUST NOT collapse catalog assumptions or fragmentation into a single pass/fail flag: active counts, used-page budget, and physical packing are distinct signals, and only integrity/orphan/config failures affect doctor health. (v0.46 amendment, issue #104.) The same capacity split doctor already makes MUST hold across `ftmon status`, MCP, and the dashboard, so an operator cannot reach a different conclusion about capacity depending on which surface they consult. Doctor MUST distinguish the physical database file from SQLite's logical page allocation: in WAL mode the two differ until a checkpoint, so only the logical allocation participates in the used/freelist identity.
+  Doctor MUST also report a sampler rule that returns UNKNOWN while at least
+  one current metric input is absent on three consecutive due runs. The
+  diagnostic names the monitor and rule, the current unknown/evaluated entity
+  counts, consecutive affected runs, and the sorted missing metric inputs.
+  Derived metrics MUST be attributed to their absent metric dependencies;
+  UNKNOWN caused only by cold windows, baselines, arithmetic, deadlines, or
+  missing attributes MUST NOT be labelled as a missing-metric finding. A due
+  run with no rule evaluations neither advances nor clears the streak; a run
+  with evaluations but no qualifying UNKNOWN clears it. Definition changes
+  and removals discard stale streaks. The daemon publishes the current report
+  atomically with its tick in one metadata value, bounded to 64 rules, 16
+  missing metrics per rule and 32 KiB total, with explicit truncation metadata.
+  Streaks restart with the daemon. Each report carries the daemon PID advertised
+  by the single-instance lock; while a daemon is live, doctor MUST treat a
+  report from a different PID as unavailable until the first successful tick
+  publishes current state. This generation check MUST NOT add a startup
+  database write that can violate PM-12 lock recovery. This is informational
+  authoring evidence: it MUST NOT change
+  EX-06/IN-01 evaluation, skip entities or rules, widen RB-02 self metrics, or
+  by itself make doctor exit non-zero. (v0.56 amendment, issue #139.)
 - **CL-06** `ftmon paths` prints the resolved filesystem layout an author or operator needs — config dir, monitors dir, drafts dir, actions dir, check registry file, data dir, database file, state dir, log and notifications files, runtime dir and lock file — honoring the `FTMON_*` overrides, with `--json` (CL-03). Works with the daemon down (PM-01); prints paths only, never file contents.
 - **CL-07** `ftmon monitor rescan` requests an immediate PM-11 reload from the running daemon instead of waiting out the PM-04 window, using the daemon pid recorded in the PM-02 lock file. When no daemon is running (lock not held), it exits non-zero with a clear message rather than signalling a stale pid.
 - **CL-08** `ftmon check trust <path>` evaluates the shared executable trust policy (EC-01/SE-07 — the same predicate the registry and runner enforce) and reports **every** failed condition by name (absolute path, symlink-free, regular file, trusted owner, no group/other write, executable), exiting 0 when trusted and 1 otherwise. It never executes the candidate.
@@ -1447,6 +1473,20 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.56 (2026-08-29)** — makes persistent missing-input silence attributable
+without redefining UNKNOWN. The fixed `eval_unknown_total` correctly avoids a
+runtime monitor/rule dimension, but that also left an operator unable to find
+which rule was repeatedly unevaluable: on the reference host, 44 processes
+denied `num_fds` generated 220 UNKNOWN outcomes every minute indefinitely.
+The pipeline now classifies only UNKNOWN results coinciding with absent current
+metric inputs, expands failed derived metrics to those inputs, and requires
+three affected due runs. One 64-rule/32 KiB current report is committed through
+the existing metadata table and rendered by doctor; it is informational and
+never changes evaluation, confirmation/clearing, or the fixed self namespace.
+Cold windows, baselines, arithmetic failures, deadlines and missing attributes
+remain generic UNKNOWN rather than being misdiagnosed (CL-05, EX-06, RB-02,
+issue #139).
 
 **v0.55 (2026-08-23)** — a coverage guard now guards. `coverage` returned
 unknown for a window holding fewer than two samples, which is the exact case

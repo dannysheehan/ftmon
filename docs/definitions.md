@@ -27,6 +27,7 @@ Read this list first when writing or reviewing a definition via MCP.
 | **Unmapped labels vanish** | Only `[[source_options.perfdata]]` mappings persist (EC-04). |
 | **`coverage()` with windows** | Pair `slope`/`avg`/`monot` with `coverage(...) >= …` when the window must be represented. |
 | **Unknown ≠ false** | Unknown freezes confirm/clear; do not `coalesce` away gaps unless intentional (EX-06). There is no `is not None`. |
+| **Absent metric = repeated unknown** | After three affected due runs, `ftmon doctor` names the rule, affected entities, and missing current metrics. Fix the source/mapping, exempt entities truly out of scope, or knowingly retain unknown. |
 | **Drafts never run** | `define_monitor` writes drafts only; approve with CLI/web. Use `diagnose_monitor` / `monitor_paths`. |
 | **Event vs sampler rule keys** | Events use cooldown/`clear_after`; no glance/trend on event monitors. |
 | **TOML `exempt` placement** | Top-level arrays before the first `[table]`, or they attach silently. |
@@ -235,6 +236,22 @@ when it evaluates to exactly True**; unknown neither fires nor counts
 toward clearing — it freezes the rule's counters. This is why a freshly
 booted machine is silent instead of wrong. Use `coalesce()` when you
 really want a default.
+
+An optional metric can also be absent for the same entities indefinitely: for
+example, an unprivileged daemon may be unable to read `num_fds` for another
+service account. After three consecutive due runs where a rule is UNKNOWN and
+a current metric input is absent, `ftmon doctor` reports the monitor/rule,
+unknown and evaluated entity counts, and missing metric names. It does not
+turn the condition into an incident or fail doctor; it tells you which
+definition is consuming the global `eval_unknown_total`. Cold windows,
+baselines, arithmetic failures and missing attributes are not labelled as
+missing metrics.
+
+Do not automatically rewrite such rules with `coalesce(metric, 0)`: FALSE is
+evidence of recovery and advances clear counters, while UNKNOWN deliberately
+freezes them. Use `coalesce` only when “unreadable means zero/safe” is genuinely
+the policy. Otherwise restore the source or external mapping, add a precise
+`exempt` for entities outside the monitor's scope, or retain UNKNOWN knowingly.
 
 ### Per-source names
 

@@ -1,5 +1,6 @@
 """M6 database diagnostics tests [CL-05][VC-03]."""
 
+import json
 import sqlite3
 
 from ftmon.cli import main
@@ -12,6 +13,7 @@ from ftmon.store.doctor import (
     backup,
     catalog_report,
     inspect,
+    persistent_unknown_report,
 )
 from tests.platform_permissions import assert_private
 
@@ -24,6 +26,64 @@ def test_doctor_clean_database_cl_05(tmp_path):
     assert report["integrity"] == ["ok"]
     assert "samples" in report["tables"]
     assert not any(report["orphans"].values())
+    conn.close()
+
+
+def test_doctor_reads_bounded_persistent_unknown_report_without_failing_cl_05(tmp_path):
+    """[CL-05][EX-06] Missing-metric attribution is informational, bounded,
+    and uses the daemon timestamp domain without changing doctor health."""
+    conn = connect(tmp_path / "ftmon.db")
+    migrate(conn)
+    payload = {
+        "version": 1,
+        "daemon_pid": 111,
+        "generated_ts": 900.0,
+        "min_consecutive_runs": 3,
+        "rules": [{
+            "monitor": "fds",
+            "rule": "absolute",
+            "consecutive_runs": 7,
+            "unknown_entities": 44,
+            "evaluated_entities": 192,
+            "missing_metrics": ["num_fds"],
+            "missing_metrics_matched": 1,
+            "missing_metrics_truncated": False,
+            "last_run_ts": 890.0,
+        }],
+        "rules_returned": 1,
+        "rules_matched": 1,
+        "rules_truncated": False,
+        "limits": {"max_rules": 64, "max_missing_metrics_per_rule": 16,
+                   "max_bytes": 32768},
+    }
+    conn.execute(
+        "INSERT INTO meta(key,value) VALUES ('eval_unknown_report',?)",
+        (json.dumps(payload),),
+    )
+    conn.commit()
+
+    unknown = persistent_unknown_report(conn, now=1000.0)
+    report = inspect(conn, now=1000.0)
+    assert unknown["available"]
+    assert unknown["generated_age_s"] == 100.0
+    assert unknown["rules"][0]["missing_metrics"] == ["num_fds"]
+    assert report["persistent_unknown_rules"] == unknown
+    assert report["ok"]
+    assert not persistent_unknown_report(conn, now=1000.0, daemon_pid=222)["available"]
+
+    conn.execute(
+        "UPDATE meta SET value='not json' WHERE key='eval_unknown_report'"
+    )
+    conn.commit()
+    assert not persistent_unknown_report(conn, now=1000.0)["available"]
+
+    payload["generated_ts"] = float("nan")
+    conn.execute(
+        "UPDATE meta SET value=? WHERE key='eval_unknown_report'",
+        (json.dumps(payload),),
+    )
+    conn.commit()
+    assert not persistent_unknown_report(conn, now=1000.0)["available"]
     conn.close()
 
 

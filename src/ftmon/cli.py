@@ -781,6 +781,16 @@ def _daemon_holds_lock(paths) -> bool:
         return False
 
 
+def _daemon_lock_pid(paths) -> int | None:
+    """Return the live lock owner's advertised pid when it is well formed."""
+    if not _daemon_holds_lock(paths):
+        return None
+    try:
+        return int(paths.lock_file.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Inspect database/config health and optionally create a live backup (CL-05)."""
     from ftmon.clock import SystemClock
@@ -821,9 +831,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     stale_metrics = loader.stale_metric_warnings(loaded_defs)
     conn = connect(paths.db_file)
     try:
+        daemon_live = _daemon_holds_lock(paths)
         report = inspect(
             conn, now=SystemClock().now(), deep=args.deep, quiet=config.quiet,
-            daemon_live=_daemon_holds_lock(paths),
+            daemon_live=daemon_live,
+            daemon_pid=_daemon_lock_pid(paths) if daemon_live else None,
         )
         if args.backup:
             backup(conn, Path(args.backup))
@@ -876,6 +888,30 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
         )
     )
+    unknown_rules = report["persistent_unknown_rules"]
+    if not unknown_rules["available"]:
+        print("Persistent UNKNOWN rules: unavailable (daemon has not published diagnostics)")
+    elif not unknown_rules["rules"]:
+        print("Persistent UNKNOWN rules: none")
+    else:
+        print(
+            "Persistent UNKNOWN rules "
+            f"(at least {unknown_rules['min_consecutive_runs']} consecutive due runs):"
+        )
+        for item in unknown_rules["rules"]:
+            missing = ",".join(item["missing_metrics"])
+            if item["missing_metrics_truncated"]:
+                missing += ",..."
+            print(
+                f"  {item['monitor']}/{item['rule']}: "
+                f"unknown={item['unknown_entities']}/{item['evaluated_entities']} "
+                f"runs={item['consecutive_runs']} missing_metrics={missing}"
+            )
+        if unknown_rules["rules_truncated"]:
+            print(
+                f"  showing {unknown_rules['rules_returned']} of "
+                f"{unknown_rules['rules_matched']} rules"
+            )
     # Presence and retention, deliberately without a budget comparison: these
     # count what is running and what is retained, neither of which is the
     # pressure DM-16 bounds (#104).

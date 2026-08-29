@@ -623,6 +623,46 @@ class TestDoctor:
         assert "showing 64 of 66 monitors" in output
         assert "active persisted" not in output
 
+    def test_doctor_prints_persistent_unknown_rules_without_failing_cl_05(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """[CL-05][EX-06] Doctor attributes repeated missing-metric UNKNOWNs,
+        but an informational authoring diagnostic does not make it unhealthy."""
+        setup_env(tmp_path, monkeypatch)
+        assert main(["init", "--profile", "server"]) == 0
+        capsys.readouterr()
+
+        from ftmon.paths import get_paths
+        from ftmon.store.db import connect, migrate
+
+        conn = connect(get_paths().db_file)
+        migrate(conn)
+        payload = {
+            "version": 1,
+            "generated_ts": 1000.0,
+            "min_consecutive_runs": 3,
+            "rules": [{
+                "monitor": "fds", "rule": "absolute", "consecutive_runs": 7,
+                "unknown_entities": 44, "evaluated_entities": 192,
+                "missing_metrics": ["num_fds"], "missing_metrics_matched": 1,
+                "missing_metrics_truncated": False, "last_run_ts": 1000.0,
+            }],
+            "rules_returned": 1, "rules_matched": 1, "rules_truncated": False,
+            "limits": {"max_rules": 64, "max_missing_metrics_per_rule": 16,
+                       "max_bytes": 32768},
+        }
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES ('eval_unknown_report',?)",
+            (json.dumps(payload),),
+        )
+        conn.commit()
+        conn.close()
+
+        assert main(["doctor"]) == 0
+        output = capsys.readouterr().out
+        assert "Persistent UNKNOWN rules (at least 3 consecutive due runs):" in output
+        assert "fds/absolute: unknown=44/192 runs=7 missing_metrics=num_fds" in output
+
 
 class TestMonitors:
     """[CL-01][CL-03] ftmon monitors subcommand."""

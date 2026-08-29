@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +12,9 @@ from ftmon.store.db import db_size_report
 
 _DISPATCH_OVERDUE_S = 60.0
 _MAX_MONITOR_ATTRIBUTION = 64
+_MAX_UNKNOWN_RULES = 64
+_MAX_UNKNOWN_METRICS = 16
+_MAX_UNKNOWN_REPORT_BYTES = 32 * 1024
 _MONITOR_ATTRIBUTION_SQL = """
 WITH monitor_names AS (
     SELECT monitor FROM entities
@@ -48,6 +53,97 @@ def _meta_float(meta: dict, key: str) -> float | None:
         return float(meta[key])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def persistent_unknown_report(
+    conn: sqlite3.Connection, *, now: float, daemon_pid: int | None = None
+) -> dict:
+    """Read the daemon-owned, bounded rule diagnostic without trusting meta JSON."""
+    empty = {
+        "available": False,
+        "generated_ts": None,
+        "generated_age_s": None,
+        "min_consecutive_runs": 3,
+        "rules": [],
+        "rules_returned": 0,
+        "rules_matched": 0,
+        "rules_truncated": False,
+        "limits": {
+            "max_rules": _MAX_UNKNOWN_RULES,
+            "max_missing_metrics_per_rule": _MAX_UNKNOWN_METRICS,
+            "max_bytes": _MAX_UNKNOWN_REPORT_BYTES,
+        },
+    }
+    row = conn.execute(
+        "SELECT substr(value, 1, ?), length(CAST(value AS BLOB)) FROM meta "
+        "WHERE key='eval_unknown_report'",
+        (_MAX_UNKNOWN_REPORT_BYTES + 1,),
+    ).fetchone()
+    if row is None or int(row[1]) > _MAX_UNKNOWN_REPORT_BYTES:
+        return empty
+    try:
+        raw = json.loads(row[0])
+        generated_ts = float(raw["generated_ts"])
+        raw_rules = raw["rules"]
+        if (
+            raw.get("version") != 1
+            or not isinstance(raw_rules, list)
+            or not math.isfinite(generated_ts)
+            or (daemon_pid is not None and raw.get("daemon_pid") != daemon_pid)
+        ):
+            return empty
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return empty
+
+    rules = []
+    for item in raw_rules[:_MAX_UNKNOWN_RULES]:
+        try:
+            monitor = item["monitor"]
+            rule = item["rule"]
+            missing = item["missing_metrics"]
+            if not isinstance(monitor, str) or not isinstance(rule, str):
+                continue
+            if not isinstance(missing, list) or not all(isinstance(name, str) for name in missing):
+                continue
+            last_run_ts = float(item["last_run_ts"])
+            if not math.isfinite(last_run_ts):
+                continue
+            rules.append(
+                {
+                    "monitor": monitor,
+                    "rule": rule,
+                    "consecutive_runs": max(0, int(item["consecutive_runs"])),
+                    "unknown_entities": max(0, int(item["unknown_entities"])),
+                    "evaluated_entities": max(0, int(item["evaluated_entities"])),
+                    "missing_metrics": missing[:_MAX_UNKNOWN_METRICS],
+                    "missing_metrics_matched": max(
+                        len(missing), int(item.get("missing_metrics_matched", len(missing)))
+                    ),
+                    "missing_metrics_truncated": bool(
+                        item.get("missing_metrics_truncated", False)
+                        or len(missing) > _MAX_UNKNOWN_METRICS
+                    ),
+                    "last_run_ts": last_run_ts,
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    try:
+        matched = max(len(rules), int(raw.get("rules_matched", len(rules))))
+        minimum = max(1, int(raw.get("min_consecutive_runs", 3)))
+    except (TypeError, ValueError):
+        return empty
+    return {
+        **empty,
+        "available": True,
+        "generated_ts": generated_ts,
+        "generated_age_s": max(0.0, now - generated_ts),
+        "min_consecutive_runs": minimum,
+        "rules": rules,
+        "rules_returned": len(rules),
+        "rules_matched": matched,
+        "rules_truncated": bool(raw.get("rules_truncated", False) or matched > len(rules)),
+    }
 
 
 def dispatch_health(
@@ -208,6 +304,7 @@ def catalog_report(conn: sqlite3.Connection, *, now: float) -> dict:
 def inspect(
     conn: sqlite3.Connection, *, now: float, deep: bool = False,
     quiet: object | None = None, daemon_live: bool = False,
+    daemon_pid: int | None = None,
 ) -> dict:
     """Run bounded health checks and return a stable, JSON-able report."""
     check = "integrity_check" if deep else "quick_check"
@@ -256,6 +353,7 @@ def inspect(
     last_degradation_age_s = catalog["last_degradation_age_s"]
     monitor_attribution = catalog["monitor_attribution"]
     dispatch = dispatch_health(conn, quiet=quiet, daemon_live=daemon_live)
+    unknown_rules = persistent_unknown_report(conn, now=now, daemon_pid=daemon_pid)
     return {"dispatch": dispatch,
             "check": check, "integrity": integrity, "checkpoint": checkpoint,
             # db_bytes is the file on disk; allocated is SQLite's logical
@@ -279,6 +377,7 @@ def inspect(
             "last_degradation_ts": last_degradation_ts,
             "last_degradation_age_s": last_degradation_age_s,
             "monitor_attribution": monitor_attribution,
+            "persistent_unknown_rules": unknown_rules,
             "ok": (integrity == ["ok"] and not any(orphans.values())
                    and not dispatch["problems"])}
 

@@ -129,6 +129,7 @@ class _Builder:
     src: str
     names: NameEnv
     windows: list[tuple[str, float]] = field(default_factory=list)
+    metric_names: set[str] = field(default_factory=set)
 
     def frag(self, node: ast.AST) -> str:
         return ast.get_source_segment(self.src, node) or type(node).__name__
@@ -176,6 +177,7 @@ class _Builder:
     def _name(self, node: ast.Name) -> ir.Node:
         n = node.id
         if n in self.names.metrics:
+            self.metric_names.add(n)
             return ir.Ref("metric", n)
         if n in self.names.attrs:
             return ir.Ref("attr", n)
@@ -239,6 +241,8 @@ class _Builder:
                 args.append(self.build(a))
         if fn in _SERIES and metric is not None and window_s is not None:
             self.windows.append((metric, window_s))
+        if metric is not None:
+            self.metric_names.add(metric)
         return ir.Call(fn, tuple(args), metric=metric, window_s=window_s, regex=regex,
                        literal=literal)
 
@@ -253,4 +257,9 @@ def compile_expr(text: str, names: NameEnv) -> CompiledExpr:
         raise ExprSyntaxError(f"syntax error: {e.msg}", text) from e
     b = _Builder(src=text, names=names)
     node = b.build(tree.body)
-    return CompiledExpr(node=node, windows=tuple(sorted(set(b.windows))), source=text)
+    return CompiledExpr(
+        node=node,
+        windows=tuple(sorted(set(b.windows))),
+        metric_names=tuple(sorted(b.metric_names)),
+        source=text,
+    )
