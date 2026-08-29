@@ -6,7 +6,7 @@ schema = 1
 [monitor]
 name = "net"
 description = "Expected listener availability"
-version = 2
+version = 3
 enabled = true
 platforms = ["darwin"]
 interval = "60s"
@@ -20,7 +20,9 @@ watchlist = [
 
 [[rule]]
 id = "listener-down"
-when = 'present == 0'
+# The shared net source also emits proto="all" totals without a `present`
+# metric. Scope this rule to synthetic listener entities before reading it.
+when = 'proto != "all" and present == 0'
 severity = "error"
 confirm_cycles = 2
 message = "Expected listener {entity} is not listening"

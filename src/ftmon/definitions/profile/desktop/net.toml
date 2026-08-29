@@ -6,7 +6,7 @@ schema = 1
 [monitor]
 name = "net"
 description = "Expected listeners and abnormal connection counts"
-version = 1
+version = 2
 enabled = true
 platforms = ["linux"]
 interval = "60s"
@@ -23,7 +23,9 @@ conn_spike_factor = { value = 4, doc = "Warn when total connections exceed basel
 
 [[rule]]
 id = "listener-down"
-when = 'present == 0'
+# The shared net source also emits proto="all" totals without a `present`
+# metric. Scope this rule to synthetic listener entities before reading it.
+when = 'proto != "all" and present == 0'
 severity = "error"
 confirm_cycles = 2
 message = "Expected listener {entity} is not listening"

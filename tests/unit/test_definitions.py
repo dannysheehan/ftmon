@@ -16,6 +16,7 @@ import pytest
 
 from ftmon.definitions import ValidationError, load_dir, load_file, load_text
 from ftmon.definitions.loader import declared_metric_names
+from tests.conftest import FakeCtx
 from tests.platform_permissions import symlink_or_skip
 
 BUILTINS_DIR = Path(__file__).resolve().parents[2] / "src" / "ftmon" / "definitions" / "builtins"
@@ -135,6 +136,58 @@ def test_disk_builtin_has_three_ladder_groups():
     md = load_file(BUILTINS_DIR / "disk.toml")
     groups = {r.group for r in md.rules}
     assert groups == {"space", "inodes", "filling"}
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        BUILTINS_DIR / "net.toml",
+        PACKAGE_DESKTOP_DIR / "net.toml",
+        DEFINITIONS_SRC / "profile" / "macos" / "net.toml",
+        DEFINITIONS_SRC / "profile" / "windows" / "net.toml",
+    ],
+)
+def test_listener_rule_applies_only_to_watchlist_entities_153(definition):
+    """[EX-06][SA-04] Aggregate socket totals are not listener entities."""
+    monitor = load_file(definition)
+    rule = next(item for item in monitor.rules if item.id == "listener-down")
+
+    totals = FakeCtx(attrs={"proto": "all", "port": ""}, params=monitor.parameters)
+    assert rule.when.eval(totals) is False
+
+    absent = FakeCtx(
+        series={"present": [(1_700_000_000.0, 0.0)]},
+        attrs={"proto": "tcp", "port": "22"},
+        params=monitor.parameters,
+    )
+    listening = FakeCtx(
+        series={"present": [(1_700_000_000.0, 1.0)]},
+        attrs={"proto": "tcp", "port": "22"},
+        params=monitor.parameters,
+    )
+    assert rule.when.eval(absent) is True
+    assert rule.when.eval(listening) is False
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [BUILTINS_DIR / "disk.toml", PACKAGE_DESKTOP_DIR / "disk.toml"],
+)
+def test_inode_rules_skip_vfat_but_preserve_unexpected_unknown_153(definition):
+    """[EX-06][SA-04] vfat has no inodes; an unexpected ext4 miss stays UNKNOWN."""
+    monitor = load_file(definition)
+    vfat = FakeCtx(attrs={"fstype": "vfat"}, params=monitor.parameters)
+    ext4_missing = FakeCtx(attrs={"fstype": "ext4"}, params=monitor.parameters)
+    ext4_full = FakeCtx(
+        series={"inode_used_pct": [(1_700_000_000.0, 95.0)]},
+        attrs={"fstype": "ext4"},
+        params=monitor.parameters,
+    )
+    for rule_id in ("inodes-notice", "inodes-warn", "inodes-crit"):
+        rule = next(item for item in monitor.rules if item.id == rule_id)
+        assert rule.when.eval(vfat) is False
+        assert rule.when.eval(ext4_missing) is None
+        assert rule.when.eval(ext4_full) is True
 
 
 def test_leak_builtin_has_promotion():
