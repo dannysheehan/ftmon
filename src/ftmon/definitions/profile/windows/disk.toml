@@ -9,12 +9,18 @@ schema = 1
 
 # NOTE: exempt is a top-level key, so it must appear BEFORE the first [table]
 # header - TOML binds bare keys to the most recently opened table otherwise.
-exempt = [ 'matches(fstype, "^(tmpfs|iso9660|squashfs|overlay)$")' ]
+exempt = [
+  # Windows optical media commonly reports UDF rather than iso9660. Use the
+  # sampler's semantic flag so every non-writable volume stays out of the
+  # capacity ladder without growing a filesystem-name denylist.
+  'readonly == "true"',
+  'matches(fstype, "^(tmpfs|iso9660|squashfs|overlay)$")',
+]
 
 [monitor]
 name = "disk"
 description = "Disk space thresholds and filling-rate detection"
-version = 5
+version = 6
 enabled = true
 platforms = ["windows"]
 interval = "60s"

@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.58** — v0.58 removes `PrivateTmp` from the per-user Linux
+Status: **DRAFT v0.59** — v0.59 exempts read-only volumes from the Windows disk
+capacity monitor using the sampler's semantic mount attribute, so UDF optical
+media cannot masquerade as a full writable disk (CA-07, PM-08, issue #158).
+v0.58 removes `PrivateTmp` from the per-user Linux
 sampling daemon: systemd otherwise creates a user namespace that maps other
 host users to the overflow identity and defeats truthful process usernames and
 CA-07 exemptions. `NoNewPrivileges` and `PrivateTmp` on non-sampling/system
@@ -308,7 +311,8 @@ support policy and packaging must be resolved before macOS is advertised.
   one Windows monitor tree — not host-tuning data, but OS-semantic fixes: an
   inode-based rule ladder and a journald-provider-gated event rule are
   dropped because they are dead on Windows by construction (NTFS has no
-  POSIX inodes; no Windows Event Log provider is ever named `"kernel"`),
+  POSIX inodes; no Windows Event Log provider is ever named `"kernel"`), and
+  read-only volumes are exempt from writable-capacity rules,
   not because of any threshold tuning. `windesktop` enables the file and
   desktop (toast) channels like `desktop`; `winserver` enables the file
   channel only, like `server`. Existing configuration is never rewritten;
@@ -872,7 +876,7 @@ Metrics: `cpu_pct`. Rules (group `hog`): warning when `avg(cpu_pct, "5m") > 80` 
 Consumes the event stream; rules are **episode** rules (IN-08). Example shipped enabled: `severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")`; a specific-ID example (`event_id == "6008"`, styled for future Windows use) ships commented; a third rule targeting `provider == "kernel"` OOM messages also ships enabled on the generic/Linux tree. Episode identity: `(rule, provider, event_id if present else msg_hash)`. `msg_hash` is normatively defined: lowercase the message, collapse whitespace, replace digit runs and hex runs (≥ 8 chars) with `#`, then SHA-256, first 16 hex chars — collisions merely group unrelated events, which is harmless. Per-rule `cooldown` (default `"10m"`) limits renotification; `clear_after` (default `"30m"` without a matching event) closes the episode with `clear_reason = quiet_period` and **no recovery notification** by default (`notify_recovery = false` for event rules). A new matching event after clearing opens a new episode; the flap guard (IN-05) applies. The `windesktop`/`winserver` profile tree drops the `provider == "kernel"` OOM rule: `"kernel"` is a journald syslog-identifier convention no Windows Event Log provider is ever named, so the rule would sit in the file permanently dead rather than degrading gracefully; no replacement Windows low-memory event is wired up yet.
 
 #### 7.7.4 `disk` — space + filling
-Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`. Linux inode rules MUST first reject `fstype == "vfat"`, whose inode count is structurally unavailable, so the ordered conjunction returns FALSE before reading `inode_used_pct`; an unexpected missing inode reading on an inode-capable filesystem remains UNKNOWN rather than becoming false recovery evidence. The `windesktop`/`winserver` profile tree drops the `inodes` group entirely: NTFS has no POSIX inode concept, so `inode_used_pct` is always absent there and the ladder would never fire — dropped rather than left in the file to imply coverage that doesn't exist.
+Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`. Linux inode rules MUST first reject `fstype == "vfat"`, whose inode count is structurally unavailable, so the ordered conjunction returns FALSE before reading `inode_used_pct`; an unexpected missing inode reading on an inode-capable filesystem remains UNKNOWN rather than becoming false recovery evidence. The `windesktop`/`winserver` profile tree drops the `inodes` group entirely: NTFS has no POSIX inode concept, so `inode_used_pct` is always absent there and the ladder would never fire — dropped rather than left in the file to imply coverage that doesn't exist. It also exempts entities whose sampler attribute is `readonly == "true"`; UDF/ISO optical media and other non-writable volumes are not actionable capacity and MUST NOT enter rules or persistence (CA-07).
 
 #### 7.7.5 `load` — system pressure
 Metrics: `load1`, `cpu_pct`, `mem_available_bytes`, `mem_total_bytes`, `swap_used_pct`, PSI `psi_some_cpu`/`psi_some_mem`/`psi_some_io` (60 s avg) where present. Rules: group `pressure` — warning when `avg(psi_some_cpu, "5m") > 40` or `pct(mem_available_bytes, mem_total_bytes) < 5` for 5 cycles; error rung on `slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > 25`. Glance: five-minute CPU PSI with its warning parameter. On kernels without PSI the readout is absent rather than replaced by an inferred secondary metric.
@@ -1485,6 +1489,15 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.59 (2026-08-31)** — excludes read-only Windows volumes from disk-capacity
+monitoring. A native Server 2022 canary mounted its installation media as a
+UDF `D:\\` volume with `ro,readonly,cdrom` options and correctly reported zero
+free bytes; the Windows profile treated that structurally full optical medium
+as a writable disk and opened an error incident. `DiskSampler` already exposes
+the semantic `readonly` attribute, so the profile now exempts that attribute
+instead of accumulating filesystem-name exceptions. Writable NTFS volumes
+retain the existing ladder (CA-07, PM-08, issue #158).
 
 **v0.58 (2026-08-30)** — restores truthful process identity in the packaged
 per-user Linux service. `PrivateTmp=yes` made the user manager create an
