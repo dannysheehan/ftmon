@@ -87,7 +87,7 @@ def _disk_entity(used_pct: float) -> tuple[str, dict, dict]:
     used = total * used_pct / 100.0
     return (
         "C:\\",
-        {"fstype": "NTFS", "device": "C:"},
+        {"fstype": "NTFS", "device": "C:", "readonly": "false"},
         {
             "total_bytes": total,
             "used_bytes": used,
@@ -106,6 +106,74 @@ class TestDiskWindowsProfile:
         rule_ids = {r["id"] for r in parsed["rule"]}
         assert rule_ids == {"space-notice", "space-warn", "space-crit", "filling"}
         assert not any(name.startswith("inode_") for name in parsed["parameters"])
+
+    def test_readonly_volume_is_exempt_before_rules_and_persistence(self, tmp_path):
+        """[CA-07][PM-08] UDF optical media is full by construction, not
+        actionable capacity; the sampler's semantic read-only flag excludes
+        it without depending on the filesystem label Windows chooses."""
+        paths = _windows_core_env(tmp_path, "disk")
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
+        sampler = ScriptedDiskSampler()
+        optical = (
+            "D:\\",
+            {"fstype": "UDF", "device": "D:", "readonly": "true"},
+            {
+                "total_bytes": 5_000_000_000.0,
+                "used_bytes": 5_000_000_000.0,
+                "free_bytes": 0.0,
+                "used_pct": 100.0,
+            },
+        )
+        for _ in range(5):
+            sampler.push(optical)
+        core.samplers["disk"] = sampler
+        _tick_n(core, clock, 5)
+
+        conn = connect(paths.db_file, readonly=True)
+        incident = conn.execute(
+            "SELECT state FROM incidents WHERE state='open'"
+        ).fetchone()
+        entity = conn.execute(
+            "SELECT 1 FROM entities WHERE monitor='disk' AND entity_id='D:\\'"
+        ).fetchone()
+        conn.close()
+        assert incident is None
+        assert entity is None
+
+    def test_writable_udf_volume_still_opens_space_incident(self, tmp_path):
+        """[CA-07][PM-08] Writability, not the UDF label, is the exemption
+        boundary; a writable full UDF volume remains actionable."""
+        paths = _windows_core_env(tmp_path, "disk")
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
+        sampler = ScriptedDiskSampler()
+        writable_udf = (
+            "E:\\",
+            {"fstype": "UDF", "device": "E:", "readonly": "false"},
+            {
+                "total_bytes": 5_000_000_000.0,
+                "used_bytes": 5_000_000_000.0,
+                "free_bytes": 0.0,
+                "used_pct": 100.0,
+            },
+        )
+        for _ in range(3):
+            sampler.push(writable_udf)
+        core.samplers["disk"] = sampler
+        _tick_n(core, clock, 3)
+
+        conn = connect(paths.db_file, readonly=True)
+        incident = conn.execute(
+            "SELECT state, severity FROM incidents WHERE state='open'"
+        ).fetchone()
+        entity = conn.execute(
+            "SELECT 1 FROM entities WHERE monitor='disk' AND entity_id='E:\\'"
+        ).fetchone()
+        conn.close()
+        assert incident is not None
+        assert incident["severity"] == 3
+        assert entity is not None
 
     def test_used_pct_below_threshold_opens_no_incident(self, tmp_path):
         """[SA-04] The retained space-warn rule stays quiet below its
