@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.43**. Companion to `SPEC.md` v0.60 — every design element
+Status: **DRAFT v0.44**. Companion to `SPEC.md` v0.61 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -156,6 +156,13 @@ installs under `%LOCALAPPDATA%\Programs\FTMON` (per-user, no elevation) and
 adds only that directory to the user PATH; state remains in platformdirs.
 WiX Toolset v7 build tooling is used under OSMF v1.1 terms recorded in
 `packaging/windows/README.md`.
+
+Windows implements PM-11 with a PID-qualified named Event in the `Global\\`
+kernel-object namespace. Task Scheduler, interactive logon and SSH processes
+for one user can occupy different Terminal Services sessions, making `Local\\`
+objects mutually invisible. `CreateEvent` uses the daemon token's default DACL,
+so namespace selection changes cross-session visibility without changing the
+access control inherited from that token (CL-07, issue #162).
 
 The original GPLv2 Perl tree remains at
 <https://sourceforge.net/projects/ftmon/>. Reused Nagios/Monitoring plugins are

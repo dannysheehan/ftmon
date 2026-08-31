@@ -184,7 +184,9 @@ does. Change the value, run `ftmon check`, done — the daemon picks up
 edits within 30 seconds, no restart. To apply a change immediately, run
 `ftmon monitor rescan` (or send `SIGHUP` — `systemctl reload ftmon` with the
 packaged units) — the same rescan runs at the next tick instead of waiting
-out the interval. Three knobs cover most needs:
+out the interval. On Windows this also works when the daemon Scheduled Task and
+the same user's terminal or SSH client are in different sessions. Three knobs
+cover most needs:
 
 - **Thresholds** (`warn_pct`, `crit_mb_per_h`, ...) — the numbers ship as
   sensible defaults but *your* machine's normal is the real reference;
