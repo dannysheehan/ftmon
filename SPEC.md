@@ -2,8 +2,8 @@
 
 Status: **DRAFT v0.62** — v0.62 removes PSI-dependent rule branches from the
 Windows load profile while retaining native memory-availability coverage;
-structurally absent Linux metrics no longer accumulate permanent UNKNOWNs
-(EX-06, SA-04, issue #161). v0.61 makes the Windows CL-07 reload event visible
+structurally absent Linux PSI metrics no longer accumulate permanent UNKNOWNs
+on Windows (EX-06, SA-04, issue #161). v0.61 makes the Windows CL-07 reload event visible
 across Terminal Services sessions, so a Scheduled Task daemon can be rescanned
 from the same user's interactive or SSH session (PM-11, issue #162). v0.60 makes
 MD-06 restart-safe: before initial load,
