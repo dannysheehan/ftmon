@@ -104,6 +104,46 @@ def test_restart_does_not_clear_incident_when_entity_still_alive_in_09(core_env)
     assert row["clear_reason"] is None
 
 
+@pytest.mark.parametrize("incident_state", ["open", "acked"])
+def test_restart_supersedes_incident_when_definition_changed_offline_md_06(
+    core_env, incident_state
+):
+    """[MD-06] A definition edited while the daemon is down must not lend
+    its open incident to the new rule set merely because monitor/group names
+    still match. The clear is policy-driven and therefore sends no recovery."""
+    paths = core_env
+    clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+    _open_leak_incident(paths, clock)
+    if incident_state == "acked":
+        conn = connect(paths.db_file)
+        conn.execute(
+            "UPDATE incidents SET state='acked', ack_by='operator', ack_ts=?",
+            (clock.now(),),
+        )
+        conn.commit()
+        conn.close()
+    notifications_before = len(_notifications(paths))
+
+    definition = paths.monitors_dir / "leak.toml"
+    definition.write_text(
+        definition.read_text(encoding="utf-8").replace("version = 1", "version = 2"),
+        encoding="utf-8",
+    )
+    core2 = DaemonCore(paths=paths, clock=clock, platform="linux")
+    empty = ScriptedSampler()
+    empty.push()
+    core2.samplers["process"] = empty
+    _tick_n(core2, clock, 1)
+
+    row = connect(paths.db_file, readonly=True).execute(
+        "SELECT state, clear_reason FROM incidents"
+    ).fetchone()
+    assert row["state"] == "cleared"
+    assert row["clear_reason"] == "superseded"
+    assert len(_notifications(paths)) == notifications_before
+    assert core2._istates == {}
+
+
 def test_restart_within_grace_defers_clear_until_grace_elapses_in_09(core_env):
     """[IN-09][CA-08] downtime shorter than gone_grace: the seeded last_seen
     keeps the original grace clock, so the clear lands only after the full

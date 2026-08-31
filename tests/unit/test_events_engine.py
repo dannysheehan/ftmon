@@ -11,7 +11,7 @@ import pytest
 from ftmon.clock import FakeClock
 from ftmon.daemon import DaemonCore
 from ftmon.model import EventRecord
-from ftmon.sources.fixtures import FixtureEventSource, scenario
+from ftmon.sources.fixtures import FixtureEventSource, Scenario, scenario
 from ftmon.sources.journald import (
     PRIORITY_TO_SEVERITY,
     JournaldEventSource,
@@ -238,6 +238,38 @@ class TestEpisodeEndToEnd:
         tick_n(core2, clock2, 3)
         opens = [n for n in notifications(events_env) if n["kind"] == "open"]
         assert len(opens) == 1  # rebuilt, not re-fired
+
+    def test_restart_supersedes_episode_when_definition_changed_offline_md_06(
+        self, events_env
+    ):
+        """[MD-06] Event episodes obey the same persisted-hash boundary as
+        metric incidents when their definition changes during downtime."""
+        core, clock = make_core(
+            events_env, FixtureEventSource(scenario("oom-event-burst"))
+        )
+        tick_n(core, clock, 4)
+        before = len(notifications(events_env))
+        definition = events_env.monitors_dir / "events.toml"
+        definition.write_text(
+            definition.read_text(encoding="utf-8").replace(
+                "version = 1", "version = 2"
+            ),
+            encoding="utf-8",
+        )
+
+        empty_scenario = Scenario(samples={}, events=())
+        core2, clock2 = make_core(
+            events_env, FixtureEventSource(empty_scenario)
+        )
+        core2.on_tick(clock2.now(), clock2.monotonic(), 0.0)
+
+        row = connect(events_env.db_file, readonly=True).execute(
+            "SELECT state, clear_reason FROM incidents"
+        ).fetchone()
+        assert row["state"] == "cleared"
+        assert row["clear_reason"] == "superseded"
+        assert len(notifications(events_env)) == before
+        assert core2.events_engine._states == {}
 
     def test_store_filter_and_forced_storage(self, events_env):
         """[DM-09] info-level non-matching events are counted, not stored;
