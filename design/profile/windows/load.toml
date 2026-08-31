@@ -1,62 +1,38 @@
 # FTMON built-in: system-wide pressure (SPEC 7.7.5)
 # "Why is the whole desktop sluggish" — as opposed to blaming one process.
-# PSI metrics are None on kernels without CONFIG_PSI; those rules stay silent
-# (EX-06 three-valued logic) rather than firing wrongly. Windows has no PSI
-# equivalent at all, so this file is unchanged from the generic copy rather
-# than substituted with a different metric: SPEC 7.7.5 normatively says the
-# readout stays absent, not replaced by an inferred secondary metric, for
-# exactly this case. pressure-warn's mem_available half still fires
-# correctly on Windows; the PSI half (and all of pressure-crit) stays
-# silent by design, the same as any Linux kernel without CONFIG_PSI.
+# Windows has no PSI equivalent, so its profile retains only the native
+# available-memory rule. Structurally absent PSI branches are removed rather
+# than left permanently UNKNOWN, and raw CPU utilization is not substituted
+# for scheduler stall pressure (EX-06/SA-04).
 schema = 1
 
 [monitor]
 name = "load"
-description = "System-wide CPU/memory/IO pressure and swap growth"
-version = 3
+description = "System-wide memory pressure"
+version = 4
 enabled = true
 platforms = ["windows"]
 interval = "60s"
 source = "system"
 
 [parameters]
-psi_cpu_warn = { value = 40, doc = "Warn when avg CPU pressure (PSI some, 5m) exceeds this" }
 mem_avail_pct_warn = { value = 5, doc = "Warn when available memory drops below this percent of total" }
-psi_mem_crit = { value = 25, doc = "With swap growing, error when memory pressure exceeds this" }
 
-# CPU PSI is the primary load signal: it reports time runnable work was stalled,
-# unlike load average whose meaning varies with CPU count.
 [glance]
-metric = "psi_cpu_5m"
+metric = "mem_avail_pct"
 unit = "percent"
-aggregate = "max"
+aggregate = "min"
 thresholds = [
-  { label = "warn", parameter = "psi_cpu_warn" },
+  { label = "warn", parameter = "mem_avail_pct_warn" },
 ]
 
 [[rule]]
 id = "pressure-warn"
 group = "pressure"
-when = 'avg(psi_some_cpu, "5m") > psi_cpu_warn or pct(mem_available_bytes, mem_total_bytes) < mem_avail_pct_warn'
+when = 'pct(mem_available_bytes, mem_total_bytes) < mem_avail_pct_warn'
 severity = "warning"
 confirm_cycles = 5
-message = "System under pressure: CPU PSI {psi_cpu_5m:.0f}, {mem_avail_pct:.0f}% memory available"
-
-[[rule]]
-id = "pressure-crit"
-group = "pressure"
-when = 'slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > psi_mem_crit'
-severity = "error"
-confirm_cycles = 5
-message = "Memory exhaustion in progress: swap growing, memory PSI {psi_mem_5m:.0f}"
-
-[[derived]]
-name = "psi_cpu_5m"
-expr = 'avg(psi_some_cpu, "5m")'
-
-[[derived]]
-name = "psi_mem_5m"
-expr = 'avg(psi_some_mem, "5m")'
+message = "System under pressure: {mem_avail_pct:.0f}% memory available"
 
 [[derived]]
 name = "mem_avail_pct"
