@@ -161,8 +161,8 @@ Windows implements PM-11 with a PID-qualified named Event in the `Global\\`
 kernel-object namespace. Task Scheduler, interactive logon and SSH processes
 for one user can occupy different Terminal Services sessions, making `Local\\`
 objects mutually invisible. `CreateEvent` uses the daemon token's default DACL,
-so moving namespaces changes visibility across sessions without granting
-untrusted users permission to signal the daemon (CL-07, issue #162).
+so namespace selection changes cross-session visibility without changing the
+access control inherited from that token (CL-07, issue #162).
 
 The original GPLv2 Perl tree remains at
 <https://sourceforge.net/projects/ftmon/>. Reused Nagios/Monitoring plugins are

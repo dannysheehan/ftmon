@@ -24,7 +24,7 @@ if sys.platform == "win32":
 
 
 def test_reload_event_uses_cross_session_namespace_cl_07_pm_11():
-    """[CL-07][PM-11] Task and interactive clients rendezvous across sessions."""
+    """[CL-07][PM-11] Windows reload targets the cross-session namespace."""
     assert _reload_event_name(1234) == "Global\\ftmon-reload-signal-1234"
 
 

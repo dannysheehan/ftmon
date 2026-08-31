@@ -31,8 +31,8 @@ _APP = "ftmon"
 # cli.py rendezvous through this well-known named Event instead. Scheduled
 # Tasks and interactive/SSH clients can occupy different Terminal Services
 # sessions, so the event must use the cross-session Global namespace. Its
-# default DACL still limits signalling to identities allowed by the daemon's
-# token; the system-wide PID suffix prevents concurrent-user name collisions.
+# access remains governed by the daemon token's default DACL; the system-wide
+# PID suffix prevents concurrent-user name collisions.
 _RELOAD_EVENT_PREFIX = "Global\\ftmon-reload-signal-"
 
 
@@ -439,6 +439,7 @@ def signal_reload(pid: int) -> None:
     handling of their own."""
     if os.name == "nt":
         import pywintypes
+        import win32api
         import win32event
 
         try:
@@ -447,7 +448,10 @@ def signal_reload(pid: int) -> None:
             )
         except pywintypes.error as exc:
             raise ProcessLookupError(str(exc)) from exc
-        win32event.SetEvent(handle)
+        try:
+            win32event.SetEvent(handle)
+        finally:
+            win32api.CloseHandle(handle)
         return
     import signal
 
