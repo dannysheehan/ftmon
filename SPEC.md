@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.62** — v0.62 removes PSI-dependent rule branches from the
+Status: **DRAFT v0.63** — v0.63 makes known macOS per-process CPU permission
+denials explicit applicability data, so the stock hog rules short-circuit
+FALSE for those entities while unexpected missing CPU remains UNKNOWN
+(PL-03, PL-05, EX-06, issue #157). v0.62 removes PSI-dependent rule branches from the
 Windows load profile while retaining native memory-availability coverage;
 structurally absent Linux PSI metrics no longer accumulate permanent UNKNOWNs
 on Windows (EX-06, SA-04, issue #161). v0.61 makes the Windows CL-07 reload event visible
@@ -547,7 +550,7 @@ sources due? → each needed source runs ONCE → immutable snapshot (single ts)
   channel is reported once per daemon lifetime as a self-event — not a
   spam-guarded renotify, since nothing about a permanently invalid
   channel/query self-heals the way SA-03's death/restart does.
-- **SA-04** Built-in samplers v1: `process` (per-process cpu%, rss, and — where available without elevated rights — open fds, soft `RLIMIT_NOFILE` (`fd_limit_soft`; omitted when denied, unsupported, zero, or infinite), threads, io counters), `disk` (per-mount total/used/free bytes, inodes where supported), `system` (load1/5/15, cpu% total, mem available/used, swap, PSI where present), `net` (per-listen-socket presence, per-proto/state connection counts; **no per-process attribution in v1**, NG-06), `unit` (systemd unit active-state + NRestarts via `systemctl show`).
+- **SA-04** Built-in samplers v1: `process` (per-process cpu%, rss, and — where available without elevated rights — open fds, soft `RLIMIT_NOFILE` (`fd_limit_soft`; omitted when denied, unsupported, zero, or infinite), threads, io counters), `disk` (per-mount total/used/free bytes, inodes where supported), `system` (load1/5/15, cpu% total, mem available/used, swap, PSI where present), `net` (per-listen-socket presence, per-proto/state connection counts; **no per-process attribution in v1**, NG-06), `unit` (systemd unit active-state + NRestarts via `systemctl show`). The process source declares string attr `cpu_pct_readable`: `"true"` only after a successful per-process CPU read and `"false"` only for explicit `AccessDenied`; transient, vanished-process, OS and unclassified failures leave both the attr and metric absent so unexpected missing CPU remains UNKNOWN (PL-03/PL-05).
 - **SA-05** The `process` source implements **track-all + promote**: every process is sampled into a bounded in-memory window (last 15 of its samples) each tick it's due; long-term persistence happens only for entities that are (a) on a monitor's watchlist, (b) in the top-N (default 15) by cpu or rss that cycle, or (c) **promoted** by a trend heuristic (§7.6.1). Rules evaluate for every non-exempt sampled entity before this persistence selection; promotion buys durable history, not alert coverage. Each monitor may hold at most **10 promoted entities**, a chosen per-monitor concentration guardrail rather than the worksheet's host-wide ~10 planning estimate. Across *N* monitors with promotion expressions it permits up to 10*N* admissions; DM-16's 400 persisted-entity budget remains the binding host-wide constraint. Existing promotions retain their slots while the heuristic holds; further matches are refused in stable entity-ID order until a slot opens, while top-N/watchlist persistence and all rule evaluation continue. This order is deterministic, not a severity ranking: promotion expressions expose a boolean match but no ranking value. Entering and recovering from the limit produce one monitor-naming self-event per transition, and fixed self metrics expose the number of currently limited monitors plus admission refusals since daemon start. Promotion/demotion transitions are recorded as self-events. This keeps DM-05/DM-16 achievable with hundreds of processes.
 
 ### 6.4 Administrator-registered external checks
@@ -881,7 +884,7 @@ v1 ships seven user-facing monitors plus the always-installed **`self`** monitor
 Metrics: `rss_bytes` (+ derived `rss_slope_bph` = slope in bytes/hour). Promotion heuristic (SA-05): `monot(rss_bytes, "15m") >= 0.8 and delta(rss_bytes, "15m") > 16*MB`. Rules (one group `leak`, v0.19 shape): both rungs MUST require, alongside their slope threshold, `coverage(rss_bytes, "45m") >= min_coverage` (default 0.8 — a 45-minute verdict needs the window represented, not three samples) and `delta(rss_bytes, "45m") > min_net_mb * MB` (default 16 — an earlier rise followed by a fall is not an active leak): warning when `slope(rss_bytes, "45m") * 3600 > 32*MB` with `confirm_cycles = 3`; error rung when `slope(rss_bytes, "45m") * 3600 > 128*MB`. Growth confidence (`monot`) is deliberately **not** an alert gate: a genuine stepwise leak (grow, plateau, grow) scores low on consecutive-delta confidence, and with the window covered, full-window slope plus net delta already reject oscillation; `monot` remains the promotion/trend signal. Messages say "sustained RSS growth", not "leaking" — slope is evidence of growth, not proof of a leak. Exempt-by-default: none (browsers are the *point*); the file shows a commented example targeting executable identity (`exe_base`, SA-09) rather than the generic runtime process name. Glance: maximum `rss_slope_mbph`, labelled with the matching warning and error rate parameters.
 
 #### 7.7.2 `hog` — CPU hog detector
-Metrics: `cpu_pct`. Rules (group `hog`): warning when `avg(cpu_pct, "5m") > 80` for `confirm_cycles = 5`; error rung at `avg(cpu_pct, "15m") > 90`. Default exempt examples (commented): `matches(name, "^(cc1|rustc|ld|clang|make|cargo|ffmpeg)")`. Glance: maximum five-minute CPU average with only its matching warning parameter; the fifteen-minute error threshold MUST NOT be presented as though it applied to that value.
+Metrics: `cpu_pct`. Rules (group `hog`): warning when `avg(cpu_pct, "5m") > 80` for `confirm_cycles = 5`; error rung at `avg(cpu_pct, "15m") > 90`. Default exempt examples (commented): `matches(name, "^(cc1|rustc|ld|clang|make|cargo|ffmpeg)")`. Glance: maximum five-minute CPU average with only its matching warning parameter; the fifteen-minute error threshold MUST NOT be presented as though it applied to that value. The macOS profile MUST guard both rungs with `cpu_pct_readable == "true"` before reading the metric: known OS permission denial is outside that rule's applicability, while an absent or inconsistent marker still evaluates UNKNOWN and remains diagnosable.
 
 #### 7.7.3 `events` — journal/event-log entries of interest
 Consumes the event stream; rules are **episode** rules (IN-08). Example shipped enabled: `severity >= error and not matches(provider, "^(tracker-|gnome-shell$)")`; a specific-ID example (`event_id == "6008"`, styled for future Windows use) ships commented; a third rule targeting `provider == "kernel"` OOM messages also ships enabled on the generic/Linux tree. Episode identity: `(rule, provider, event_id if present else msg_hash)`. `msg_hash` is normatively defined: lowercase the message, collapse whitespace, replace digit runs and hex runs (≥ 8 chars) with `#`, then SHA-256, first 16 hex chars — collisions merely group unrelated events, which is harmless. Per-rule `cooldown` (default `"10m"`) limits renotification; `clear_after` (default `"30m"` without a matching event) closes the episode with `clear_reason = quiet_period` and **no recovery notification** by default (`notify_recovery = false` for event rules). A new matching event after clearing opens a new episode; the flap guard (IN-05) applies. The `windesktop`/`winserver` profile tree drops the `provider == "kernel"` OOM rule: `"kernel"` is a journald syslog-identifier convention no Windows Event Log provider is ever named, so the rule would sit in the file permanently dead rather than degrading gracefully; no replacement Windows low-memory event is wired up yet.
@@ -1503,6 +1506,16 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.63 (2026-09-01)** — distinguishes known macOS CPU permission denial from
+unexpected missing process data. A live Darwin canary exposed hundreds of
+protected processes whose `cpu_percent` read was denied; both stock hog rungs
+therefore accumulated permanent UNKNOWN findings. The sampler now publishes a
+declared true/false readability attr only for successful reads or explicit
+`AccessDenied`, and the macOS profile short-circuits on it before retaining the
+unchanged 5-minute/15-minute CPU rules. Transient, vanished-process, OS and
+unclassified failures remain unmarked and therefore UNKNOWN (PL-03, PL-05,
+EX-06, SA-04, issue #157).
 
 **v0.62 (2026-09-01)** — makes the Windows load profile honest about its
 native metric shape. Windows cannot produce Linux PSI, so retaining the generic

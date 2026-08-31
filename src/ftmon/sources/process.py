@@ -123,9 +123,19 @@ class ProcessSampler:
 
         metrics: dict[str, float] = {}
         # cpu_percent must go through the cached object (module docstring).
-        cpu = _opt(lambda: cached.cpu_percent(None))
-        if cpu is not None:
-            metrics["cpu_pct"] = float(cpu)  # type: ignore[arg-type]
+        # An explicit AccessDenied is stable applicability information for
+        # platform profiles. Other failures remain unmarked so an absent
+        # metric still evaluates UNKNOWN rather than becoming false evidence.
+        try:
+            cpu = cached.cpu_percent(None)
+        except psutil.AccessDenied:
+            attrs["cpu_pct_readable"] = "false"
+        except (psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+            pass
+        else:
+            if cpu is not None:
+                attrs["cpu_pct_readable"] = "true"
+                metrics["cpu_pct"] = float(cpu)
         rss = _opt(lambda: proc.memory_info().rss)
         if rss is not None:
             metrics["rss_bytes"] = float(rss)  # type: ignore[arg-type]

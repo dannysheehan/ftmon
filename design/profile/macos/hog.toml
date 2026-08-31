@@ -4,7 +4,7 @@ schema = 1
 [monitor]
 name = "hog"
 description = "Detects processes with sustained high CPU use"
-version = 2
+version = 3
 enabled = true
 platforms = ["darwin"]
 interval = "60s"
@@ -30,7 +30,7 @@ thresholds = [
 [[rule]]
 id = "hog-warn"
 group = "hog"
-when = 'avg(cpu_pct, "5m") > warn_pct'
+when = 'cpu_pct_readable == "true" and avg(cpu_pct, "5m") > warn_pct'
 severity = "warning"
 confirm_cycles = 5
 message = "{entity} hogging CPU: {cpu_5m:.0f}% avg over 5m"
@@ -38,7 +38,7 @@ message = "{entity} hogging CPU: {cpu_5m:.0f}% avg over 5m"
 [[rule]]
 id = "hog-crit"
 group = "hog"
-when = 'avg(cpu_pct, "15m") > crit_pct'
+when = 'cpu_pct_readable == "true" and avg(cpu_pct, "15m") > crit_pct'
 severity = "error"
 confirm_cycles = 5
 message = "{entity} pegging CPU: {cpu_15m:.0f}% avg over 15m"

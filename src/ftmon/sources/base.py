@@ -110,6 +110,8 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
                           "absent (SA-09); what {entity} resolves to"),
             _a("cmd_hint", "exe_base plus basename of the first path-like arg, "
                            "derived basenames only, never raw argv (SA-09/SE-04)"),
+            _a("cpu_pct_readable", "true after a successful CPU read; false only when "
+                                   "the OS explicitly denies it (PL-03)"),
         ),
     ),
     "disk": SourceDecl(

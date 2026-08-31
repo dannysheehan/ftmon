@@ -281,6 +281,29 @@ def test_process_access_denied_omits_metric_not_entity(monkeypatch):
     assert "num_threads" in entity.metrics
 
 
+def test_process_cpu_readability_distinguishes_denied_from_unexpected_failure(monkeypatch):
+    """[PL-03][PL-05] Only explicit CPU AccessDenied is applicability evidence."""
+    import psutil as _psutil
+
+    clock = FakeClock()
+    sampler = ProcessSampler(clock)
+    readable = _fake_proc(20, "readable")
+    denied = _fake_proc(21, "denied")
+    unexpected = _fake_proc(22, "unexpected")
+    denied.cpu_percent = lambda interval: (_ for _ in ()).throw(_psutil.AccessDenied())
+    unexpected.cpu_percent = lambda interval: (_ for _ in ()).throw(OSError("transient"))
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [readable, denied, unexpected])
+
+    entities = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={}).entities
+    by_name = {entity.attrs["name"]: entity for entity in entities}
+    assert by_name["readable"].attrs["cpu_pct_readable"] == "true"
+    assert "cpu_pct" in by_name["readable"].metrics
+    assert by_name["denied"].attrs["cpu_pct_readable"] == "false"
+    assert "cpu_pct" not in by_name["denied"].metrics
+    assert "cpu_pct_readable" not in by_name["unexpected"].attrs
+    assert "cpu_pct" not in by_name["unexpected"].metrics
+
+
 def test_process_fd_limit_soft_emits_soft_rlimit(monkeypatch):
     """[SA-04][PL-05] Finite soft RLIMIT_NOFILE is emitted as fd_limit_soft."""
     _ensure_rlimit_nofile(monkeypatch)

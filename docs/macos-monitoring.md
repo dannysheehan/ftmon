@@ -41,6 +41,9 @@ one of Activity Monitor's primary troubleshooting signals. FTMON keeps the
 five- and fifteen-minute windows so short user-initiated bursts do not alert.
 The values are percentages of one logical CPU, matching psutil's process
 contract; a multithreaded process can therefore exceed 100%.
+Some protected processes explicitly deny per-process CPU reads. The shipped
+profile treats those known denials as outside the hog rules, while an
+unexpected missing CPU value remains UNKNOWN and visible in `ftmon doctor`.
 
 ### Process RSS growth (`leak`)
 
