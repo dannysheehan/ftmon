@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.60** — v0.60 makes MD-06 restart-safe: before initial load,
+Status: **DRAFT v0.61** — v0.61 makes the Windows CL-07 reload event visible
+across Terminal Services sessions, so a Scheduled Task daemon can be rescanned
+from the same user's interactive or SSH session (PM-11, issue #162). v0.60 makes
+MD-06 restart-safe: before initial load,
 the daemon compares current definitions with the latest PM-07 hashes and
 silently supersedes metric incidents and event episodes owned by definitions
 that changed during downtime (issue #160). v0.59 exempts read-only volumes from the Windows disk
@@ -1276,6 +1279,9 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
   by itself make doctor exit non-zero. (v0.56 amendment, issue #139.)
 - **CL-06** `ftmon paths` prints the resolved filesystem layout an author or operator needs — config dir, monitors dir, drafts dir, actions dir, check registry file, data dir, database file, state dir, log and notifications files, runtime dir and lock file — honoring the `FTMON_*` overrides, with `--json` (CL-03). Works with the daemon down (PM-01); prints paths only, never file contents.
 - **CL-07** `ftmon monitor rescan` requests an immediate PM-11 reload from the running daemon instead of waiting out the PM-04 window, using the daemon pid recorded in the PM-02 lock file. When no daemon is running (lock not held), it exits non-zero with a clear message rather than signalling a stale pid.
+  On Windows, the reload rendezvous MUST work when the owning user's daemon and
+  CLI occupy different Terminal Services sessions, including a Task Scheduler
+  daemon signalled from an interactive or SSH session.
 - **CL-08** `ftmon check trust <path>` evaluates the shared executable trust policy (EC-01/SE-07 — the same predicate the registry and runner enforce) and reports **every** failed condition by name (absolute path, symlink-free, regular file, trusted owner, no group/other write, executable), exiting 0 when trusted and 1 otherwise. It never executes the candidate.
 
 ---
@@ -1492,6 +1498,14 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.61 (2026-08-31)** — repairs explicit Windows reload across Terminal
+Services sessions. The named Event used `Local\\`, so the supported Scheduled
+Task daemon in one session was invisible to the same user's SSH or interactive
+CLI in another; the 30-second PM-04 fallback still worked, masking the broken
+CL-07 path. The PID-qualified event now uses the cross-session `Global\\`
+namespace while retaining the creator token's default DACL (CL-07, PM-11,
+issue #162).
 
 **v0.60 (2026-08-31)** — closes the offline half of MD-06. Startup previously
 loaded current files into an empty in-memory monitor map, then rebuilt every

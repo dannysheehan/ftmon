@@ -19,11 +19,11 @@ import subprocess
 import sys
 import time
 
-import win32event
-import win32api
 import pywintypes
+import win32api
+import win32event
 
-EVENT_NAME = "Local\\ftmon-spike-reload-event"
+EVENT_NAME = "Global\\ftmon-spike-reload-event"
 
 
 def daemon_role(seconds: float = 10.0) -> None:

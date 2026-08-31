@@ -137,7 +137,7 @@ Script: [`task_scheduler_spike.py`](task_scheduler_spike.py), [`reload_signal_sp
   exits immediately, doesn't signal the existing one). So the reload path
   (`ftmon monitor rescan` / CL-07) needs a Windows-native cross-process
   primitive independent of the service wrapper. Spiked a **named Win32 Event
-  object** (`Local\ftmon-...`) as the candidate: the daemon creates it once
+  object** (`Global\ftmon-...`) as the candidate: the daemon creates it once
   at startup and polls it with `WaitForSingleObject(handle, 0)` every tick
   (zero-timeout, no blocking, no I/O -- matches PM-11's "handler only
   records a flag" constraint); a second process opens the same name and
@@ -147,6 +147,9 @@ Script: [`task_scheduler_spike.py`](task_scheduler_spike.py), [`reload_signal_sp
   This looks like a solid, low-risk substitute for `SIGHUP` -- no admin
   rights, no filesystem coordination, auto non-signaled reset
   (`bManualReset=False` in `CreateEvent`) so it can't double-fire.
+  The final implementation uses the `Global\` namespace because Task Scheduler
+  and an interactive or SSH client can run the same user in different Terminal
+  Services sessions; `Local\` only passed the original same-session spike.
 
 ## 4. Running the actual package on Windows (not spike code -- the real `src/ftmon`)
 

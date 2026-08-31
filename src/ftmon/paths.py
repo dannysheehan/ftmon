@@ -28,10 +28,12 @@ import platformdirs
 _APP = "ftmon"
 
 # PM-11 reload-equivalent on Windows: no SIGHUP there, so daemon.py and
-# cli.py rendezvous through this well-known named Event instead. Session-
-# local ("Local\") since ftmon is single-user; spiked and confirmed on
-# feature/windows-support (spikes/windows-support/reload_signal_spike.py).
-_RELOAD_EVENT_PREFIX = "Local\\ftmon-reload-signal-"
+# cli.py rendezvous through this well-known named Event instead. Scheduled
+# Tasks and interactive/SSH clients can occupy different Terminal Services
+# sessions, so the event must use the cross-session Global namespace. Its
+# default DACL still limits signalling to identities allowed by the daemon's
+# token; the system-wide PID suffix prevents concurrent-user name collisions.
+_RELOAD_EVENT_PREFIX = "Global\\ftmon-reload-signal-"
 
 
 def _reload_event_name(pid: int) -> str:
@@ -406,10 +408,10 @@ def start_reload_watcher(on_reload: Callable[[], None]) -> None:
     """PM-11 reload-equivalent, platform seam: POSIX gets this for free from
     `signal.SIGHUP` (registered in daemon.py::run()), so this is a no-op
     there. Windows has no per-process signal delivery, so a background
-    thread polls the named Event instead, calling `on_reload` exactly the
-    way the SIGHUP handler calls `core.request_reload` — same "handler only
-    records the request, no I/O" contract PM-11 requires, just via a poll
-    loop instead of async delivery."""
+    thread polls the cross-session named Event instead, calling `on_reload`
+    exactly the way the SIGHUP handler calls `core.request_reload` — same
+    "handler only records the request, no I/O" contract PM-11 requires, just
+    via a poll loop instead of async delivery."""
     if os.name != "nt":
         return
     import threading
@@ -428,13 +430,13 @@ def start_reload_watcher(on_reload: Callable[[], None]) -> None:
 
 def signal_reload(pid: int) -> None:
     """CL-07 cross-process reload signal, platform seam. POSIX: SIGHUP the
-    pid (unchanged behavior). Windows: `pid` is unused -- there is no
-    per-process signal delivery there -- instead the well-known named Event
-    from `start_reload_watcher` is set. Raises `ProcessLookupError` if that
-    event doesn't exist (no daemon running with the watcher, or it predates
-    this feature) so callers built around POSIX's `os.kill` exceptions (e.g.
-    cli.py::_monitor_rescan's existing `except (ProcessLookupError,
-    PermissionError)`) need no platform-specific handling of their own."""
+    pid (unchanged behavior). Windows has no per-process signal delivery, so
+    the pid selects the global named Event from `start_reload_watcher` instead.
+    Raises `ProcessLookupError` if that event doesn't exist (no daemon running
+    with the watcher, or it predates this feature) so callers built around
+    POSIX's `os.kill` exceptions (e.g. cli.py::_monitor_rescan's existing
+    `except (ProcessLookupError, PermissionError)`) need no platform-specific
+    handling of their own."""
     if os.name == "nt":
         import pywintypes
         import win32event

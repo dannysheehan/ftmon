@@ -15,7 +15,17 @@ if sys.platform == "win32":
     import win32security
 
     from ftmon.config import SecretRef
-    from ftmon.paths import atomic_write, get_paths, set_private_permissions
+    from ftmon.paths import (
+        _reload_event_name,
+        atomic_write,
+        get_paths,
+        set_private_permissions,
+    )
+
+
+def test_reload_event_uses_cross_session_namespace_cl_07_pm_11():
+    """[CL-07][PM-11] Task and interactive clients rendezvous across sessions."""
+    assert _reload_event_name(1234) == "Global\\ftmon-reload-signal-1234"
 
 
 def _make_junction(link: Path, target: Path) -> None:
