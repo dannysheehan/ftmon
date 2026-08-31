@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.61** — v0.61 makes the Windows CL-07 reload event visible
+Status: **DRAFT v0.62** — v0.62 removes PSI-dependent rule branches from the
+Windows load profile while retaining native memory-availability coverage;
+structurally absent Linux PSI metrics no longer accumulate permanent UNKNOWNs
+on Windows (EX-06, SA-04, issue #161). v0.61 makes the Windows CL-07 reload event visible
 across Terminal Services sessions, so a Scheduled Task daemon can be rescanned
 from the same user's interactive or SSH session (PM-11, issue #162). v0.60 makes
 MD-06 restart-safe: before initial load,
@@ -318,7 +321,9 @@ support policy and packaging must be resolved before macOS is advertised.
   inode-based rule ladder and a journald-provider-gated event rule are
   dropped because they are dead on Windows by construction (NTFS has no
   POSIX inodes; no Windows Event Log provider is ever named `"kernel"`), and
-  read-only volumes are exempt from writable-capacity rules,
+  PSI-dependent load branches and rungs are dropped while the native
+  available-memory warning remains, and read-only volumes are exempt from
+  writable-capacity rules,
   not because of any threshold tuning. `windesktop` enables the file and
   desktop (toast) channels like `desktop`; `winserver` enables the file
   channel only, like `server`. Existing configuration is never rewritten;
@@ -885,7 +890,7 @@ Consumes the event stream; rules are **episode** rules (IN-08). Example shipped 
 Metrics per mount: `used_pct`, `free_bytes`, `used_bytes`, `inode_used_pct`; derived `filling = monot(used_bytes, "70m")`. Rules: ladder group `space` — notice/warning/error rungs at `used_pct >` 85/92/97 (plus commented baseline-relative alternative `free_bytes < baseline(free_bytes) * 0.3`); separate group `inodes` (rungs at 75/80/90); separate single-rule group `filling` — warning on `filling >= 0.85` with projected-full time in the message. Exempt: `matches(fstype, "^(tmpfs|iso9660|squashfs)$")`. Linux inode rules MUST first reject `fstype == "vfat"`, whose inode count is structurally unavailable, so the ordered conjunction returns FALSE before reading `inode_used_pct`; an unexpected missing inode reading on an inode-capable filesystem remains UNKNOWN rather than becoming false recovery evidence. The `windesktop`/`winserver` profile tree drops the `inodes` group entirely: NTFS has no POSIX inode concept, so `inode_used_pct` is always absent there and the ladder would never fire — dropped rather than left in the file to imply coverage that doesn't exist. It also exempts entities whose sampler attribute is `readonly == "true"`; UDF/ISO optical media and other non-writable volumes are not actionable capacity and MUST NOT enter rules or persistence (CA-07).
 
 #### 7.7.5 `load` — system pressure
-Metrics: `load1`, `cpu_pct`, `mem_available_bytes`, `mem_total_bytes`, `swap_used_pct`, PSI `psi_some_cpu`/`psi_some_mem`/`psi_some_io` (60 s avg) where present. Rules: group `pressure` — warning when `avg(psi_some_cpu, "5m") > 40` or `pct(mem_available_bytes, mem_total_bytes) < 5` for 5 cycles; error rung on `slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > 25`. Glance: five-minute CPU PSI with its warning parameter. On kernels without PSI the readout is absent rather than replaced by an inferred secondary metric.
+Metrics: `load1`, `cpu_pct`, `mem_available_bytes`, `mem_total_bytes`, `swap_used_pct`, PSI `psi_some_cpu`/`psi_some_mem`/`psi_some_io` (60 s avg) where present. Rules: group `pressure` — warning when `avg(psi_some_cpu, "5m") > 40` or `pct(mem_available_bytes, mem_total_bytes) < 5` for 5 cycles; error rung on `slope(swap_used_pct, "10m") > 0 and avg(psi_some_mem, "5m") > 25`. Glance: five-minute CPU PSI with its warning parameter. On kernels without PSI the readout is absent rather than replaced by an inferred secondary metric. A platform profile for an OS where PSI is structurally unavailable MUST remove PSI-dependent branches and rungs instead of leaving rules permanently UNKNOWN; the Windows profile retains the native available-memory warning and its glance, and MUST NOT substitute raw CPU utilization for PSI stall pressure without separately specified and calibrated semantics.
 
 #### 7.7.6 `service` — process/unit presence
 Watchlist-driven (no auto-discovery): each target is a systemd unit or process-name regex, expected state, optional `during` schedule. Metrics: `present` (0/1), `restarts`. Rules: error when `present == 0` for `confirm_cycles = 2`; notice on flapping (`delta(restarts, "30m") >= 3`).
@@ -1499,6 +1504,14 @@ Implementation lands in stages; each stage is independently usable, ships the §
 
 ## 21. Changelog & review disposition
 
+**v0.62 (2026-09-01)** — makes the Windows load profile honest about its
+native metric shape. Windows cannot produce Linux PSI, so retaining the generic
+CPU-PSI warning branch and memory-PSI error rung made healthy hosts accumulate
+persistent UNKNOWN diagnostics and implied alert coverage that could never
+exist. The profile now retains only the deterministic available-memory warning
+and glance; raw CPU utilization is deliberately not substituted for scheduler
+stall pressure (EX-06, SA-04, MD-07, issue #161).
+
 **v0.61 (2026-08-31)** — repairs explicit Windows reload across Terminal
 Services sessions. The named Event used `Local\\`, so the supported Scheduled
 Task daemon in one session was invisible to the same user's SSH or interactive
@@ -1936,6 +1949,9 @@ signal (PSI's stall-time measurement is not the same claim as raw CPU%).
 `hog`/`leak`/`net`/`self` needed no changes, confirmed against real
 process/connection/memory data from the same live daemon. `service` is
 reworded (Windows service name examples) with no rule changes.
+This load-profile decision was superseded by v0.62: keeping the PSI readout
+absent was correct, but leaving PSI-dependent rules installed caused permanent
+UNKNOWN diagnostics and falsely implied coverage.
 
 **v0.31 (2026-07-25)** — Windows implementation: adds the `windowsdesktop`
 init profile (PM-08) so Windows users get sane desktop-notification defaults

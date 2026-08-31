@@ -97,6 +97,8 @@ The generic `desktop`/`server` names select the current host's calibrated
 tree. Their explicit equivalents are `windesktop`/`winserver` on Windows and
 `macdesktop`/`macserver` on macOS. The macOS desktop channel uses Script Editor's
 Notification Center identity because it deliberately requires no app bundle.
+Windows system-pressure monitoring uses native available memory; it does not
+infer Linux PSI stall pressure from raw CPU utilization.
 The initial macOS event monitor is disabled and network/service rules are
 watchlist-driven, avoiding alerts from routine Apple diagnostics and ordinary
 desktop connection churn.

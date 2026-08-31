@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.44**. Companion to `SPEC.md` v0.61 — every design element
+Status: **DRAFT v0.45**. Companion to `SPEC.md` v0.62 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -314,8 +314,10 @@ subdirectory: Linux `desktop` → `profile/desktop` (real
 GNOME host-tuning data, `docs/tuning-desktop-xps15.md`); `windesktop` and
 `winserver` both → `profile/windows`, one shared tree since the fixes it
 carries are OS-semantic (dead rules removed because the metrics they key on
-can never exist on Windows, and read-only volumes excluded from writable-disk
-capacity rules), not a desktop-vs-server tuning distinction —
+can never exist on Windows, including PSI-dependent load branches; the native
+available-memory warning remains, and raw CPU is not treated as PSI; read-only
+volumes are excluded from writable-disk capacity rules), not a
+desktop-vs-server tuning distinction —
 there is no Windows tuning data to justify two separate trees. The remaining
 Linux `server` profile falls through to the normative, Linux-only uncalibrated
 `design/builtins` set. Profile effects are visible

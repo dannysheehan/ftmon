@@ -20,6 +20,7 @@ from ftmon.store.db import connect
 REPO = Path(__file__).resolve().parents[2]
 WINDOWS_PROFILE = REPO / "src" / "ftmon" / "definitions" / "profile" / "windows"
 DESIGN_WINDOWS_PROFILE = REPO / "design" / "profile" / "windows"
+GENERIC_LOAD = REPO / "src" / "ftmon" / "definitions" / "builtins" / "load.toml"
 
 _EXPECTED_FILES = {
     "disk.toml", "events.toml", "hog.toml", "leak.toml",
@@ -373,14 +374,103 @@ class TestEventsWindowsProfile:
         assert all("oom" not in rid for rid in rule_ids)
 
 
-class TestLoadWindowsProfileUnchanged:
-    def test_load_toml_keeps_psi_rules_matching_spec_7_7_5(self):
-        """SPEC 7.7.5: a PSI-less system gets an absent readout, not a
-        substitute metric -- load.toml is intentionally NOT reworked for
-        Windows, unlike disk/events. This guards against someone "fixing"
-        it later without re-reading that decision."""
+class ScriptedSystemSampler:
+    """Native-shaped Windows system source without Linux PSI metrics."""
+
+    decl = SOURCE_DECLS["system"]
+
+    def __init__(self) -> None:
+        self.script: list[list[tuple[str, dict, dict]]] = []
+        self.calls = 0
+
+    def push(self, *entities) -> None:
+        self.script.append(list(entities))
+
+    def sample(self, now, deadline_mono, options) -> Snapshot:
+        ents = self.script[min(self.calls, len(self.script) - 1)]
+        self.calls += 1
+        return Snapshot(
+            source="system",
+            ts=now,
+            entities=tuple(EntitySample(entity_id=e, attrs=a, metrics=m) for e, a, m in ents),
+        )
+
+
+def _windows_system_entity(mem_available_pct: float) -> tuple[str, dict, dict]:
+    total = 16.0 * 1024**3
+    available = total * mem_available_pct / 100.0
+    return (
+        "system",
+        {"hostname": "windows-canary"},
+        {
+            "load1": 0.0,
+            "load5": 0.0,
+            "load15": 0.0,
+            "cpu_pct": 25.0,
+            "mem_total_bytes": total,
+            "mem_available_bytes": available,
+            "mem_used_bytes": total - available,
+            "swap_used_pct": 10.0,
+        },
+    )
+
+
+class TestLoadWindowsProfile:
+    def test_load_toml_keeps_only_native_memory_pressure_rule(self):
+        """[MD-07][SA-04] Structurally absent PSI cannot imply coverage."""
         parsed = tomllib.loads((WINDOWS_PROFILE / "load.toml").read_text(encoding="utf-8"))
-        rule_ids = {r["id"] for r in parsed["rule"]}
-        assert rule_ids == {"pressure-warn", "pressure-crit"}
-        pressure_crit = next(r for r in parsed["rule"] if r["id"] == "pressure-crit")
-        assert "psi_some_mem" in pressure_crit["when"]
+        assert set(parsed["parameters"]) == {"mem_avail_pct_warn"}
+        assert parsed["glance"]["metric"] == "mem_avail_pct"
+        assert parsed["glance"]["aggregate"] == "min"
+        assert [rule["id"] for rule in parsed["rule"]] == ["pressure-warn"]
+        assert [derived["name"] for derived in parsed["derived"]] == ["mem_avail_pct"]
+        expressions = [rule["when"] for rule in parsed["rule"]]
+        expressions.extend(derived["expr"] for derived in parsed["derived"])
+        assert all("psi_" not in expression for expression in expressions)
+
+    def test_generic_linux_load_profile_retains_psi_semantics(self):
+        """[MD-07][PM-08] The Windows fallback cannot weaken generic Linux."""
+        parsed = tomllib.loads(GENERIC_LOAD.read_text(encoding="utf-8"))
+        assert {rule["id"] for rule in parsed["rule"]} == {
+            "pressure-warn",
+            "pressure-crit",
+        }
+        assert parsed["glance"]["metric"] == "psi_cpu_5m"
+        assert any("psi_some_cpu" in rule["when"] for rule in parsed["rule"])
+        assert any("psi_some_mem" in rule["when"] for rule in parsed["rule"])
+
+    def test_native_normal_memory_is_false_without_persistent_unknown(self, tmp_path):
+        """[EX-06][SA-04] A stock Windows snapshot evaluates FALSE, not UNKNOWN."""
+        paths = _windows_core_env(tmp_path, "load")
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
+        sampler = ScriptedSystemSampler()
+        for _ in range(5):
+            sampler.push(_windows_system_entity(40.0))
+        core.samplers["system"] = sampler
+        _tick_n(core, clock, 5)
+
+        assert core.pipeline.unknown_report(core.monitors, clock.now())["rules"] == []
+        conn = connect(paths.db_file, readonly=True)
+        row = conn.execute("SELECT state FROM incidents WHERE state='open'").fetchone()
+        conn.close()
+        assert row is None
+
+    def test_native_low_memory_still_opens_warning(self, tmp_path):
+        """[MD-07][SA-04] Retained native coverage still fires at its threshold."""
+        paths = _windows_core_env(tmp_path, "load")
+        clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+        core = DaemonCore(paths=paths, clock=clock, platform="windows")
+        sampler = ScriptedSystemSampler()
+        for _ in range(5):
+            sampler.push(_windows_system_entity(4.0))
+        core.samplers["system"] = sampler
+        _tick_n(core, clock, 5)
+
+        conn = connect(paths.db_file, readonly=True)
+        row = conn.execute(
+            "SELECT state, severity FROM incidents WHERE state='open' AND grp='pressure'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row["severity"] == 2
