@@ -200,7 +200,18 @@ class DaemonCore:
             )
             if self.event_source is not None else None
         )
+        # PM-07 is also the only durable witness that a definition changed
+        # while the daemon was down. Capture it before the initial load queues
+        # the current definitions for commit, then keep changed monitors out
+        # of restart continuity (MD-06).
+        previous_hashes = self._latest_monitor_hashes()
         self._load_definitions(initial=True)
+        current_definitions = {**self.monitors, **self.event_monitors}
+        self._startup_superseded_monitors = {
+            name
+            for name, mdef in current_definitions.items()
+            if name in previous_hashes and previous_hashes[name] != mdef.content_hash
+        }
         self._rebuild_incidents()
         if self.events_engine is not None and self.event_monitors:
             self._start_events()
@@ -408,7 +419,14 @@ class DaemonCore:
         rows = self.conn.execute(
             "SELECT * FROM incidents WHERE state IN ('open', 'acked')"
         ).fetchall()
-        self.events_engine.rebuild(rows, list(self.event_monitors.values()))
+        self.events_engine.rebuild(
+            [
+                row
+                for row in rows
+                if row["monitor"] not in self._startup_superseded_monitors
+            ],
+            list(self.event_monitors.values()),
+        )
 
     def _warn_on_unapplied_event_channels(self) -> None:
         """Once the event reader has started, its subscribed channels are
@@ -568,6 +586,9 @@ class DaemonCore:
             "SELECT * FROM incidents WHERE state IN ('open', 'acked')"
         ).fetchall()
         for row in rows:
+            if row["monitor"] in self._startup_superseded_monitors:
+                self._clear_startup_superseded(row)
+                continue
             if row["monitor"] in self.event_monitors:
                 continue  # episode incidents rebuild in _start_events (IN-08)
             key = (row["monitor"], row["entity_id"], row["grp"])
@@ -625,6 +646,50 @@ class DaemonCore:
                 float(row_ls["last_seen"])
                 if row_ls and row_ls["last_seen"] is not None else now,
             )
+
+    def _latest_monitor_hashes(self) -> dict[str, str]:
+        """Latest PM-07 hash per monitor before this process queues loads."""
+        rows = self.conn.execute(
+            """
+            SELECT ml.monitor, ml.hash
+            FROM monitor_loads AS ml
+            JOIN (
+                SELECT monitor, MAX(loaded_ts) AS loaded_ts
+                FROM monitor_loads
+                GROUP BY monitor
+            ) AS latest
+              ON latest.monitor = ml.monitor AND latest.loaded_ts = ml.loaded_ts
+            """
+        ).fetchall()
+        return {str(row["monitor"]): str(row["hash"]) for row in rows}
+
+    def _clear_startup_superseded(self, row: sqlite3.Row) -> None:
+        """MD-06: silently close state owned by an offline-old definition."""
+        now = self.clock.now()
+        cfg = inc.GroupConfig(
+            monitor=row["monitor"],
+            entity_id=row["entity_id"],
+            group=row["grp"],
+            rungs=(),
+        )
+        core = IncidentCore(
+            incident_id=row["id"],
+            state=row["state"],
+            severity=row["severity"],
+            owning_rule=row["owning_rule"],
+            opened_ts=row["opened_ts"],
+            last_notify_ts=row["opened_ts"],
+            notify_count=row["notify_count"],
+            backoff_tier=0,
+            flap_clears=(),
+            occurrences=row["occurrences"],
+            ack_by=row["ack_by"],
+            ack_ts=float(row["ack_ts"]) if row["ack_ts"] is not None else None,
+        )
+        state, effects = inc.clear_superseded(
+            cfg, GroupState(rungs={}, core=core), now
+        )
+        self.executor.apply(cfg, state, effects, now)
 
     def _refresh_acks(self) -> None:
         """Acks land in the DB from CLI/MCP/web (PM-03 small writes); the

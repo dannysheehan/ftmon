@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.42**. Companion to `SPEC.md` v0.59 — every design element
+Status: **DRAFT v0.43**. Companion to `SPEC.md` v0.60 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -738,6 +738,15 @@ CREATE TABLE cursors(   source TEXT PRIMARY KEY, cursor TEXT, updated_ts INT) WI
 CREATE TABLE monitor_loads(monitor TEXT, loaded_ts INT, hash TEXT, normalized TEXT,
   PRIMARY KEY(monitor, loaded_ts)) WITHOUT ROWID;            -- PM-07 (keep last 20/monitor)
 ```
+
+At daemon construction, the latest persisted `monitor_loads.hash` values are
+read before initial definition loads are queued. Current metric and event
+definitions whose hashes differ form one startup-superseded set. Open/acked
+rows owned by that set receive the ordinary silent `superseded` transition and
+are excluded from both incident and episode rebuild; unchanged hashes follow
+the existing restart-continuity path. This ordering is essential: reading
+after the first tick committed current loads would erase the only durable
+evidence that the definition changed while the daemon was down (MD-06/PM-07).
 
 Migration `0003_notification_deliveries.sql` creates the two new tables, copies
 each legacy `outbox` row into `notifications`, and creates a `file` delivery:

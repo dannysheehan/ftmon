@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.59** — v0.59 exempts read-only volumes from the Windows disk
+Status: **DRAFT v0.60** — v0.60 makes MD-06 restart-safe: before initial load,
+the daemon compares current definitions with the latest PM-07 hashes and
+silently supersedes metric incidents and event episodes owned by definitions
+that changed during downtime (issue #160). v0.59 exempts read-only volumes from the Windows disk
 capacity monitor using the sampler's semantic mount attribute, so UDF optical
 media cannot masquerade as a full writable disk (CA-07, PM-08, issue #158).
 v0.58 removes `PrivateTmp` from the per-user Linux
@@ -968,7 +971,7 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 ### 8.3 Definition lifecycle
 
 - **MD-05** States: **draft** (in `monitors/drafts/`, never loaded by the daemon) → **enabled** (in `monitors/`) → **disabled** (`enabled = false` key retained in place, so disabling is a one-line edit and history stays in git/file). Approval = `ftmon monitor approve <name>` (CLI or web UI button) performing PM-06(d).
-- **MD-06** Editing an enabled file (PM-04) resets that monitor's incidents to `cleared (superseded)` and its confirm counters — a changed rule never inherits confirmation progress from its previous self.
+- **MD-06** Editing an enabled file (PM-04) resets that monitor's open/acked metric incidents and event episodes to `cleared (superseded)` and its confirm counters — a changed rule never inherits confirmation progress from its previous self. This applies whether the edit is hot-reloaded or happens while the daemon is down: at startup the current content hash MUST be compared with the latest persisted PM-07 hash before restart state is rebuilt. A changed definition clears silently (no recovery notification); an unchanged hash retains ordinary incident/episode and notification-backoff continuity.
 - **MD-09** Removing or renaming a definition: open incidents clear with `clear_reason = superseded`; stored samples/rollups age out by normal retention; baselines for the monitor are deleted; entity records are retained until their data ages out. A renamed monitor is a removal plus an addition (no identity continuity). "Ages out" is concrete (v0.43 amendment, issue #74): retention reaps a `gone` entity — and its `series`/`baselines` — once none of its series retain any `samples`/`rollup5m`/`rollup1h` row and no non-cleared incident references it. Watchlist/synthetic entities never reach this state: CA-08 keeps their `last_seen` refreshed every tick (they are always present), so `gone_ts` never gets set for them and they are structurally exempt, not specially cased. Reap runs unconditionally alongside normal pruning (it never removes data still inside its DM-04 window, so it is not a DM-05 degradation step) in bounded catalog-visited batches, the same catch-up shape as rollup rollforward. (v0.49 amendment, issue #103.) Waiting for every tier to empty is not sufficient on its own: hourly rollups outlive an exited process by up to 90 d, so they alone pin the entity, its series and its baselines, and a catalog cannot shrink faster than its longest window. Reap MUST therefore **expire** the hourly rollups of an entity continuously `gone` beyond DM-04's process 5-minute window, rather than only waiting for them — the entity then reaps on a subsequent pass through the unchanged emptiness test, so reap keeps exactly one definition of when an entity may be removed. An entity that reappears is no longer `gone` and MUST be treated as live from that moment, with no expiry applied and no attempt to reconstruct what an earlier expiry removed. Because one entity may hold arbitrarily many rows, this deletion MUST be bounded by a row budget **and** an elapsed-time budget per pass in addition to the existing catalog-visited cursor, and MUST make progress across passes rather than requiring any single entity to complete within one: a bound on entities visited does not bound work done. Expiry MUST be attributable — the rows removed and entities affected are reported like other reap output — because it destroys production history irreversibly and an operator must be able to see that it ran.
 
 ---
@@ -1489,6 +1492,15 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.60 (2026-08-31)** — closes the offline half of MD-06. Startup previously
+loaded current files into an empty in-memory monitor map, then rebuilt every
+open incident whose monitor/group names still existed; a definition changed
+during downtime therefore inherited the old incident despite its different
+PM-07 hash. The daemon now snapshots the latest persisted hashes before
+queuing current loads and silently supersedes changed monitors before metric
+incident or event-episode restart state is rebuilt. Unchanged definitions keep
+their existing continuity and backoff (MD-06, PM-07, issue #160).
 
 **v0.59 (2026-08-31)** — excludes read-only Windows volumes from disk-capacity
 monitoring. A native Server 2022 canary mounted its installation media as a
