@@ -45,7 +45,7 @@ jobs:
         with:
           python-version: ${{ steps.pins.outputs.python }}
       - name: Sync locked env + Windows packaging group
-        run: uv sync --locked --group windows-packaging
+        run: uv sync --locked --extra mcp --group windows-packaging
       - name: Record toolchain pins
         shell: pwsh
         run: |

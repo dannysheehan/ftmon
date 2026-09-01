@@ -134,6 +134,13 @@ loads no external assets. Prefer `uv tool` or `pipx` over a bare
 Scheduler, and server account setup are in the
 [installation guide](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md).
 
+The local AI integration is optional. Install it only on hosts that run the
+stdio MCP server:
+
+```sh
+uv tool install 'ftmon[mcp]'
+```
+
 For a headless single server, initialize with `--profile server`. This writes
 explicit settings with desktop popups disabled; remote ntfy, webhook, and SMTP
 channels use environment or protected-file credential references and maintain
@@ -146,7 +153,7 @@ UI through a public reverse proxy.
 ```sh
 git clone https://github.com/dannysheehan/ftmon.git
 cd ftmon
-uv sync
+uv sync --extra mcp
 uv run ftmon init --profile desktop
 uv run ftmon check
 uv run ftmon daemon
@@ -199,7 +206,7 @@ repository is MIT licensed, while the original SourceForge project is GPLv2.
 ## Development
 
 ```sh
-uv sync
+uv sync --extra mcp
 uv run ruff check src tests
 uv run pytest -q
 ```

@@ -26,7 +26,7 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --locked
+      - run: uv sync --locked --extra mcp
       - run: uv run ruff check src tests tools
       - run: uv run python tools/gen_reqindex.py --check
       - run: uv run pytest -q
@@ -57,7 +57,7 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
-      - run: uv sync --locked
+      - run: uv sync --locked --extra mcp
       - run: uv run ruff check src tests tools
       - run: uv run python tools/gen_reqindex.py --check
       - run: uv run pytest -q
@@ -77,3 +77,47 @@ jobs:
           for name, marker in expected.items():
               assert marker in _guide_text(name)
           '@ | uv run --isolated --no-project --with $wheel python -
+
+  macos:
+    name: macOS arm64 (3.13)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+      - run: uv sync --locked --extra mcp
+      - run: uv run ruff check src tests tools
+      - run: uv run python tools/gen_reqindex.py --check
+      - run: uv run pytest -q
+
+  macos-intel-install:
+    name: macOS Intel core wheel-only install
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+      - run: uv build --wheel --clear
+      - name: Install core wheel without source builds
+        run: |
+          uv run --isolated --no-project --no-build \
+            --with ./dist/ftmon-*.whl python - <<'PY'
+          import importlib.util
+          import io
+          from contextlib import redirect_stderr
+
+          import ftmon.cli
+          import ftmon.daemon
+          import ftmon.mcp_server
+          import ftmon.web.app
+
+          assert importlib.util.find_spec("mcp") is None
+          assert importlib.util.find_spec("jwt") is None
+          assert importlib.util.find_spec("cryptography") is None
+          error = io.StringIO()
+          with redirect_stderr(error):
+              assert ftmon.cli.main(["mcp"]) == 2
+          assert "ftmon[mcp]" in error.getvalue()
+          PY

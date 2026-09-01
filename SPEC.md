@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.63** — v0.63 makes known macOS per-process CPU permission
+Status: **DRAFT v0.64** — v0.64 makes the MCP server an explicit install-time
+extra so the daemon, CLI, and web UI install from wheels on Intel macOS without
+pulling the SDK's unused authentication/Rust build chain (MC-08, issue #110).
+v0.63 makes known macOS per-process CPU permission
 denials explicit applicability data, so the stock hog rules short-circuit
 FALSE for those entities while unexpected missing CPU remains UNKNOWN
 (PL-03, PL-05, EX-06, issue #157). v0.62 removes PSI-dependent rule branches from the
@@ -285,9 +288,10 @@ These were decided during specification and are not open for re-litigation by im
   expression namespace. Validation (MD-01) resolves expressions against the
   resulting declaration, which is also the documentation source for DO-01.
 
-On Intel macOS 12, the locked dependency set lacks a
-`cryptography==49.0.0` x86_64 wheel and requires a native OpenSSL/Rust build;
-support policy and packaging must be resolved before macOS is advertised.
+The core Python distribution excludes the optional MCP SDK dependency tree, so
+supported daemon, CLI, and web installs do not require an unrelated native
+OpenSSL/Rust build on Intel macOS. Operators who use the stdio server select
+the separately documented `mcp` extra.
 
 ### 4.2 Processes
 
@@ -1157,6 +1161,11 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
   not exposed (operational noise).
 - **MC-06** `monitor_paths` and `diagnose_monitor` are strictly read-only diagnostics: they answer "where do files go?" and "why isn't this monitor running?" in one round-trip each. `diagnose_monitor` may surface validation errors verbatim (already exposed by `get_monitor`) but MUST NOT expose registry argv or credentials — trust status is reported as booleans and stable categories only (SE-07). For every found monitor it also returns `last_result`: null when there is no DB, the monitor is non-external, or the **currently configured** `source_options.entity` has never produced a coherent EC-05 sample; otherwise the stored `plugin_state` (0–3), `plugin_ok`, `duration_s`, sanitized `plugin_message`, and `sample_age_s` for that entity at one shared sample timestamp. That block re-exposes already-persisted EC-05 fields under the local single-user trust model (SE-04): no registry argv or credentials; stderr remains excluded. `plugin_message` is control-stripped/truncated plugin stdout — FTMON does not apply secret-pattern redaction (NG-08). Write paths remain exactly drafts (`define_monitor`) and `ack_incident`; approval stays a human action (MD-05).
 - **MC-07** `list_baselines` is read-only, bounded and deterministic. It lists all stored baseline rows (never rows inferred from definitions) in `(monitor, entity, metric)` order, with optional exact filters and readiness filter. `limit` defaults to 100 and MUST be in `1..500`; pagination uses an opaque keyset cursor containing the last key and canonical filters so malformed or filter-mismatched cursors return MC-04 `invalid_params`. Learning rows expose their current level plus `updates`, `required_updates`, capped coverage, `ready`, UTC update bucket and effective half-life; `next_cursor` is null at the end.
+- **MC-08** The Python distribution MUST expose the MCP SDK only through the
+  named `mcp` extra; the daemon, CLI, and web UI remain installable and
+  importable without it. Invoking `ftmon mcp` without that extra MUST exit 2
+  without a traceback and name both `ftmon[mcp]` and the checkout installation
+  command. Frozen Windows ZIP/MSI distributions continue to include MCP.
 
 ---
 
@@ -1506,6 +1515,14 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.64 (2026-09-01)** — separates the optional stdio MCP server from the core
+Python install. MCP's authentication subtree pulled `cryptography`, whose
+current releases lack Intel macOS wheels, into every FTMON host despite the
+server not importing or using that subtree. The named `mcp` extra restores an
+x86_64 wheel-only core install; deterministic missing-extra guidance preserves
+the CLI contract, Windows frozen distributions retain MCP, and CI now exercises
+Apple Silicon plus an Intel no-source-build sentinel (MC-08, issue #110).
 
 **v0.63 (2026-09-01)** — distinguishes known macOS CPU permission denial from
 unexpected missing process data. A live Darwin canary exposed hundreds of

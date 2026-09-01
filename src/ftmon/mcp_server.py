@@ -1,4 +1,4 @@
-"""MCP server (MC-01..07, DESIGN section 13): FTMON for AI assistants.
+"""MCP server (MC-01..08, DESIGN section 13): FTMON for AI assistants.
 
 Two layers on purpose:
 - `McpApi` — every tool as a plain method returning JSON-able dicts. This
@@ -20,6 +20,7 @@ an action.
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
@@ -40,6 +41,10 @@ _EVENT_ENV = NameEnv(metrics=frozenset({"severity"}),
 _QM_MAX_ENTITIES = 50
 _QM_MAX_POINTS_PER_ENTITY = 2000
 _QM_MAX_TOTAL_POINTS = 10_000
+
+
+class McpExtraRequired(ModuleNotFoundError):
+    """The optional MCP SDK is absent from an otherwise valid core install."""
 
 
 def _qm_limits() -> dict[str, int]:
@@ -838,7 +843,15 @@ def _guide_text(name: str) -> str:
 
 
 def build_server(paths: Paths):
-    from mcp.server.fastmcp import FastMCP
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ModuleNotFoundError as exc:
+        # Only translate an absent SDK root. A broken SDK or missing transitive
+        # dependency must retain its original diagnostic instead of being
+        # misreported as an unselected extra.
+        if exc.name != "mcp":
+            raise
+        raise McpExtraRequired from exc
 
     server = FastMCP("ftmon")
     api = McpApi(paths)
@@ -937,6 +950,15 @@ def build_server(paths: Paths):
 
 
 def run(args) -> int:
-    """`ftmon mcp` — stdio server (SPEC section 11)."""
-    build_server(get_paths()).run()
+    """`ftmon mcp` — optional stdio server (SPEC section 11)."""
+    try:
+        server = build_server(get_paths())
+    except McpExtraRequired:
+        print(
+            "ftmon mcp requires the optional MCP support; install it with "
+            "`uv tool install 'ftmon[mcp]'` (or `uv sync --extra mcp` from a checkout)",
+            file=sys.stderr,
+        )
+        return 2
+    server.run()
     return 0
