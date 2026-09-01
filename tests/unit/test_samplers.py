@@ -290,9 +290,15 @@ def test_process_cpu_readability_distinguishes_denied_from_unexpected_failure(mo
     readable = _fake_proc(20, "readable")
     denied = _fake_proc(21, "denied")
     unexpected = _fake_proc(22, "unexpected")
+    vanished = _fake_proc(23, "vanished")
     denied.cpu_percent = lambda interval: (_ for _ in ()).throw(_psutil.AccessDenied())
     unexpected.cpu_percent = lambda interval: (_ for _ in ()).throw(OSError("transient"))
-    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [readable, denied, unexpected])
+    vanished.cpu_percent = lambda interval: (_ for _ in ()).throw(
+        _psutil.NoSuchProcess(23)
+    )
+    monkeypatch.setattr(
+        "psutil.process_iter", lambda *a, **k: [readable, denied, unexpected, vanished]
+    )
 
     entities = sampler.sample(now=1609459200.0, deadline_mono=2000.0, options={}).entities
     by_name = {entity.attrs["name"]: entity for entity in entities}
@@ -302,6 +308,8 @@ def test_process_cpu_readability_distinguishes_denied_from_unexpected_failure(mo
     assert "cpu_pct" not in by_name["denied"].metrics
     assert "cpu_pct_readable" not in by_name["unexpected"].attrs
     assert "cpu_pct" not in by_name["unexpected"].metrics
+    assert "cpu_pct_readable" not in by_name["vanished"].attrs
+    assert "cpu_pct" not in by_name["vanished"].metrics
 
 
 def test_process_fd_limit_soft_emits_soft_rlimit(monkeypatch):

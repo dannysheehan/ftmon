@@ -264,8 +264,9 @@ coalescing every missing value to zero.
 The macOS hog profile applies the same distinction with a source capability
 attr: `cpu_pct_readable == "true" and avg(cpu_pct, "5m") > warn_pct` returns
 FALSE for an explicit OS permission denial, but remains UNKNOWN when the marker
-itself is absent or inconsistent. Applicability attrs must describe a known
-source outcome; they are not a generic way to convert missing metrics to OK.
+itself is absent or says `"true"` while the metric is missing. Applicability
+attrs must describe a known source outcome; they are not a generic way to
+convert missing metrics to OK.
 
 ### Per-source names
 

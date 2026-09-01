@@ -188,6 +188,11 @@ class MixedProcessSampler:
                     {"name": "unexpected"},
                     {"rss_bytes": 1000.0},
                 ),
+                EntitySample(
+                    "inconsistent:4:100",
+                    {"name": "inconsistent", "cpu_pct_readable": "true"},
+                    {"rss_bytes": 1000.0},
+                ),
             ),
         )
 
@@ -213,8 +218,8 @@ def test_hog_mixed_cpu_visibility_keeps_only_unexpected_missing_unknown(tmp_path
         (item["rule"], item["unknown_entities"], tuple(item["missing_metrics"]))
         for item in report["rules"]
     } == {
-        ("hog-warn", 1, ("cpu_pct",)),
-        ("hog-crit", 1, ("cpu_pct",)),
+        ("hog-warn", 2, ("cpu_pct",)),
+        ("hog-crit", 2, ("cpu_pct",)),
     }
     conn = connect(paths.db_file, readonly=True)
     incident = conn.execute(
