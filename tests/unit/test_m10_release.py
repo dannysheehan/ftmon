@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -314,6 +315,13 @@ def test_attack_surface_listeners_are_loopback_or_stdio_pm_05_se_01(tmp_path):
     paths.ensure()
     server = build_server(paths)
     assert server is not None
+
+
+def test_mcp_sdk_is_optional_in_python_metadata_mc_08():
+    """[MC-08] Core metadata omits MCP while its named extra retains the SDK."""
+    project = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    assert not any(dep.startswith("mcp") for dep in project["project"]["dependencies"])
+    assert project["project"]["optional-dependencies"]["mcp"] == ["mcp>=1,<2"]
 
 
 def test_self_builtin_encodes_rb_01_budgets_rb_01():

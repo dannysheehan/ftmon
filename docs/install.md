@@ -29,6 +29,14 @@ ftmon init --profile desktop
 ftmon check
 ```
 
+This core install includes the daemon, CLI, and web UI without the MCP SDK's
+authentication dependency tree. If this host will run `ftmon mcp`, install the
+optional integration instead:
+
+```sh
+uv tool install 'ftmon[mcp]'
+```
+
 `pipx install ftmon` is an equivalent isolated installer if you prefer pipx.
 PyPI's project page shows `pip install ftmon` in the sidebar; prefer
 `uv tool` or `pipx` so the CLI is not mixed into a shared environment.
@@ -55,7 +63,8 @@ ftmon init --profile desktop
 ftmon check
 ```
 
-For development, use `uv sync` followed by `uv run ftmon ...`. `ftmon init`
+For development, use `uv sync --extra mcp` followed by `uv run ftmon ...` so
+the complete test suite can exercise the optional server. `ftmon init`
 creates private directories, installs eight built-in monitor definitions (the
 Linux `desktop` profile uses calibrated thresholds documented in
 [docs/tuning-desktop-xps15.md](tuning-desktop-xps15.md)), and writes explicit
@@ -96,22 +105,14 @@ while read-only/nobrowse disk images are excluded.
 See [macOS monitoring rationale](macos-monitoring.md) for the rule-by-rule
 selection and deliberately deferred Apple-native signals.
 
-### macOS (Homebrew + launchd)
+### macOS (standalone uv + launchd)
 
-On macOS, the most reliable setup is to install Homebrew first, then install
-`uv` and FTMON into the account that will own the monitor state. If you are
-building from a checkout instead of PyPI, the same commands work; just replace
-`uv tool install ftmon` with `uv tool install .` from the repository root.
+On macOS, install standalone `uv` and FTMON into the account that will own the
+monitor state. If you are building from a checkout instead of PyPI, the same
+commands work; just replace `uv tool install ftmon` with `uv tool install .`
+from the repository root.
 
 ```sh
-# Install Homebrew if it is not already present:
-# /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-brew install uv openssl@3 pkg-config
-export PATH="$HOME/.local/bin:$PATH"
-export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH"
-export OPENSSL_DIR="$(brew --prefix openssl@3)"
-
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -120,9 +121,12 @@ ftmon init --profile macserver    # or: ftmon init --profile macdesktop
 ftmon check
 ```
 
-If the install fails while building the `cryptography` dependency, the missing
-OpenSSL headers are the usual cause. The `brew install openssl@3 pkg-config`
-step and the two `export` lines above are the fix that worked in practice.
+The core install is wheel-only on supported Intel and Apple Silicon macOS
+versions and does not pull `cryptography`. If this host needs MCP, install
+`'ftmon[mcp]'`; current MCP authentication dependencies may require a native
+Rust/OpenSSL build on Intel. Prefer the standalone `uv` installer above on
+older Intel releases, where asking Homebrew for `uv` can trigger a much larger
+unsupported-host source-build chain.
 
 For persistent per-user services, render the bundled launchd plist templates
 into `~/Library/LaunchAgents/` with the actual `ftmon` path and log directory
@@ -894,6 +898,12 @@ disk space, and an external HTTPS/banner probe. Keep access logs on bounded
 retention and avoid query-string retention when it is not operationally useful.
 
 ## MCP registration
+
+Install the optional server before registering it:
+
+```sh
+uv tool install 'ftmon[mcp]'
+```
 
 Claude Code:
 

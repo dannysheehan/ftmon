@@ -1,4 +1,4 @@
-"""[MC-01][MC-02][MC-03][MC-04][MC-05][MC-07][PM-06][TS-06] MCP tool surface: McpApi over a
+"""[MC-01][MC-02][MC-03][MC-04][MC-05][MC-07][MC-08][PM-06][TS-06] MCP tool surface: McpApi over a
 DaemonCore-populated database, plus the draft/approve/enable lifecycle.
 
 McpApi is tested directly (no stdio, TS-03: injected FakeClock shared with the
@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import time
+from argparse import Namespace
 from datetime import UTC, datetime
 
 import pytest
@@ -23,7 +24,9 @@ from ftmon.mcp_server import (
     _QM_MAX_ENTITIES,
     TOOL_NAMES,
     McpApi,
+    McpExtraRequired,
     build_server,
+    run,
 )
 from ftmon.store.db import connect, migrate
 from ftmon.store.query import Query, SeriesPoint, SeriesResult
@@ -88,6 +91,20 @@ def _seed_baselines(paths, rows: list[tuple[str, str, str, float, int, int, floa
 
 
 class TestSurface:
+    def test_missing_optional_sdk_exits_with_install_guidance_mc_08(
+        self, monkeypatch, capsys
+    ):
+        """[MC-08] A core-only install explains how to enable MCP."""
+
+        def fail(_paths):
+            raise McpExtraRequired
+
+        monkeypatch.setattr("ftmon.mcp_server.build_server", fail)
+        assert run(Namespace()) == 2
+        err = capsys.readouterr().err
+        assert "ftmon[mcp]" in err
+        assert "uv sync --extra mcp" in err
+
     def test_tool_list_is_exactly_frozen_names(self, core_env):  # noqa: F811
         """[MC-01] build_server exposes exactly TOOL_NAMES, nothing else."""
         server = build_server(core_env)

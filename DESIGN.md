@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.46**. Companion to `SPEC.md` v0.63 — every design element
+Status: **DRAFT v0.47**. Companion to `SPEC.md` v0.64 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -178,7 +178,7 @@ Layering rule (enforced by a lint test): `expr` imports only stdlib; `model` imp
 | --- | --- | --- |
 | psutil | samplers | the entire PRECALCS layer |
 | platformdirs | FS-01 | |
-| mcp | §13 server | official SDK, `mcp.server.fastmcp.FastMCP`, stdio |
+| mcp (optional extra) | §13 server | official SDK, `mcp.server.fastmcp.FastMCP`, stdio; excluded from core installs (MC-08) |
 | starlette + uvicorn | web UI | small ASGI; no FastAPI (no pydantic needed) |
 | jinja2 | web templates | autoescape on (SE-02) |
 | tomli-w | writing drafts/normalized TOML | reads use stdlib `tomllib` |
@@ -1473,9 +1473,14 @@ page contract serves MCP and the Baselines web index (MC-07/UI-02).
 
 ---
 
-## 13. MCP server (`mcp_server.py`, MC-01..07)
+## 13. MCP server (`mcp_server.py`, MC-01..08)
 
-FastMCP over stdio; every tool = thin wrapper on `Query`/`SmallWrites`/`definitions`. Parameter schemas (FROZEN; `range` = duration string or `[iso, iso]`):
+FastMCP over stdio, selected with the named `mcp` package extra; every tool =
+thin wrapper on `Query`/`SmallWrites`/`definitions`. The SDK import remains
+inside `build_server`, so core CLI/web/daemon imports have no MCP dependency.
+Only absence of the SDK root becomes the deterministic MC-08 exit-2 guidance;
+missing SDK internals or transitive modules retain their original diagnostics.
+Parameter schemas (FROZEN; `range` = duration string or `[iso, iso]`):
 
 | Tool | Params (required bold) | Returns |
 | --- | --- | --- |
@@ -1817,6 +1822,7 @@ plugin remains under its own license (EC-01/02/07/09, SE-07).
 | D30 | Shared skills read live repository authority | avoids freezing schema details in prompt assets; SPEC, templates and tests remain the only behavioral contract |
 | D31 | Container monitoring stays behind the external-check boundary in 2.0 | a rootful engine socket is effectively administrative authority and conflicts with SE-01; a recipe can use a pre-existing same-user rootless socket without adding a daemon dependency, while canary evidence must justify any post-2.0 per-container sampler/event design |
 | D32 | Explicit per-monitor glance metadata | multi-entity monitors and arbitrary rules cannot honestly reveal one primary value, unit, aggregate or threshold label by inference |
+| D33 | MCP as a named Python extra | keeps unused OAuth/cryptography dependencies out of core monitoring installs while preserving the complete frozen Windows CLI and an actionable stdio-server opt-in (MC-08) |
 
 ---
 

@@ -22,7 +22,7 @@ boundary is deliberate.
 Everything runs through `uv`:
 
 ```sh
-uv sync                          # install/refresh the environment
+uv sync --extra mcp              # install/refresh the complete test environment
 uv run ruff check src tests tools  # lint (ruff is also the formatter; line length 100)
 uv run pytest -q                 # full gate: unit + e2e + traceability (~35 s)
 uv run pytest -q tests/ai_skills                       # shared-skill contract
@@ -31,7 +31,7 @@ uv run pytest tests/unit/test_expr_eval.py -q          # one file
 uv run ftmon check             # validate monitor definitions (CL-02) — not a sampler
 python3 tools/gen_reqindex.py --check   # regenerate/verify tests/reqindex.json from SPEC.md
 # Windows packaging (issue #95; Windows x64 host + .NET SDK 9):
-uv sync --group windows-packaging
+uv sync --extra mcp --group windows-packaging
 uv run python tools/windows/build_windows.py   # onedir ZIP + per-user MSI
 ```
 

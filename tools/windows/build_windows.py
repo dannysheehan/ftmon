@@ -2,7 +2,7 @@
 
 Run on Windows x64 with the repository uv environment:
 
-    uv sync --group windows-packaging
+    uv sync --extra mcp --group windows-packaging
     uv run python tools/windows/build_windows.py
 
 Optional flags:
