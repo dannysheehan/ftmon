@@ -91,13 +91,8 @@ jobs:
       - run: uv run python tools/gen_reqindex.py --check
       - name: Tighten external-check fixture interpreter permissions
         run: |
-          uv run python - <<'PY'
-          import sys
-          from pathlib import Path
-
-          interpreter = Path(sys.executable).resolve()
-          interpreter.chmod(interpreter.stat().st_mode & ~0o022)
-          PY
+          interpreter="$(uv run python -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          sudo chmod go-w "$interpreter"
       - run: uv run pytest -q
 
   macos-intel-install:
