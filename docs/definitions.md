@@ -261,13 +261,20 @@ Likewise, Linux inode rules reject `vfat` before reading `inode_used_pct` but
 leave an unexpected missing read on ext4 as UNKNOWN. This is narrower than
 coalescing every missing value to zero.
 
+The macOS hog profile applies the same distinction with a source capability
+attr: `cpu_pct_readable == "true" and avg(cpu_pct, "5m") > warn_pct` returns
+FALSE for an explicit OS permission denial, but remains UNKNOWN when the marker
+itself is absent or says `"true"` while the metric is missing. Applicability
+attrs must describe a known source outcome; they are not a generic way to
+convert missing metrics to OK.
+
 ### Per-source names
 
 Run `ftmon monitors` / read the built-ins for live examples. Summary:
 
 | Source | Entities | Metrics | Attrs |
 | --- | --- | --- | --- |
-| `process` | every process (track-all + top-N/promoted persistence) | `cpu_pct rss_bytes num_fds fd_limit_soft num_threads io_read_bytes io_write_bytes` | `name cmdline username exe exe_base display cmd_hint` |
+| `process` | every process (track-all + top-N/promoted persistence) | `cpu_pct rss_bytes num_fds fd_limit_soft num_threads io_read_bytes io_write_bytes` | `name cmdline username exe exe_base display cmd_hint cpu_pct_readable` |
 | `disk` | mounts | `total_bytes used_bytes free_bytes used_pct inode_used_pct` | `fstype device` |
 | `system` | one (`system`) | `load1 load5 load15 cpu_pct mem_* swap_used_pct psi_some_*` | `hostname` |
 | `unit` | watchlist targets | `present restarts` | `unit kind` |

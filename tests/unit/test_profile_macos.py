@@ -76,6 +76,17 @@ def test_platform_noise_rules_are_removed_and_events_use_safe_admission():
     assert "{ unit =" not in service
 
 
+def test_hog_profile_guards_only_known_cpu_permission_denials():
+    """[PL-03][PM-08] Readable CPU keeps both windows; denied CPU is inapplicable."""
+    hog = tomllib.loads((PROFILE / "hog.toml").read_text())
+    assert hog["monitor"]["version"] == 3
+    rules = {rule["id"]: rule["when"] for rule in hog["rule"]}
+    assert rules == {
+        "hog-warn": 'cpu_pct_readable == "true" and avg(cpu_pct, "5m") > warn_pct',
+        "hog-crit": 'cpu_pct_readable == "true" and avg(cpu_pct, "15m") > crit_pct',
+    }
+
+
 def test_leak_profile_requires_persistent_growth_and_exempts_gui_helpers():
     leak = tomllib.loads((PROFILE / "leak.toml").read_text())
     assert leak["parameters"]["warn_mb_per_h"]["value"] == 96
@@ -152,3 +163,69 @@ def test_memory_rule_body_fires_with_low_real_shaped_data(tmp_path):
     conn = connect(paths.db_file, readonly=True)
     assert conn.execute("SELECT 1 FROM incidents WHERE state='open'").fetchone() is not None
     conn.close()
+
+
+class MixedProcessSampler:
+    decl = SOURCE_DECLS["process"]
+
+    def sample(self, now, deadline_mono, options):
+        return Snapshot(
+            "process",
+            now,
+            (
+                EntitySample(
+                    "readable:1:100",
+                    {"name": "readable", "cpu_pct_readable": "true"},
+                    {"cpu_pct": 95.0, "rss_bytes": 1000.0},
+                ),
+                EntitySample(
+                    "denied:2:100",
+                    {"name": "denied", "cpu_pct_readable": "false"},
+                    {"rss_bytes": 1000.0},
+                ),
+                EntitySample(
+                    "unexpected:3:100",
+                    {"name": "unexpected"},
+                    {"rss_bytes": 1000.0},
+                ),
+                EntitySample(
+                    "inconsistent:4:100",
+                    {"name": "inconsistent", "cpu_pct_readable": "true"},
+                    {"rss_bytes": 1000.0},
+                ),
+            ),
+        )
+
+
+def test_hog_mixed_cpu_visibility_keeps_only_unexpected_missing_unknown(tmp_path):
+    """[EX-06][PL-03][SA-04] Known denial is FALSE; inconsistency stays UNKNOWN."""
+    env = {
+        f"FTMON_{kind}_DIR": str(tmp_path / kind.lower())
+        for kind in ("CONFIG", "DATA", "STATE", "RUNTIME")
+    }
+    paths = get_paths(env)
+    paths.ensure()
+    (paths.monitors_dir / "hog.toml").write_bytes((PROFILE / "hog.toml").read_bytes())
+    clock = FakeClock(wall=1_700_000_000.0, mono=1000.0)
+    core = DaemonCore(paths=paths, clock=clock, platform="darwin")
+    core.samplers["process"] = MixedProcessSampler()
+    for _ in range(6):
+        core.on_tick(clock.now(), clock.monotonic(), 0.0)
+        clock.advance(60)
+
+    report = core.pipeline.unknown_report(core.monitors, clock.now())
+    assert {
+        (item["rule"], item["unknown_entities"], tuple(item["missing_metrics"]))
+        for item in report["rules"]
+    } == {
+        ("hog-warn", 2, ("cpu_pct",)),
+        ("hog-crit", 2, ("cpu_pct",)),
+    }
+    conn = connect(paths.db_file, readonly=True)
+    incident = conn.execute(
+        "SELECT entity_id, severity FROM incidents WHERE state='open' AND grp='hog'"
+    ).fetchone()
+    conn.close()
+    assert incident is not None
+    assert incident["entity_id"] == "readable:1:100"
+    assert incident["severity"] == 3

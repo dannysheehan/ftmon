@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.45**. Companion to `SPEC.md` v0.62 — every design element
+Status: **DRAFT v0.46**. Companion to `SPEC.md` v0.63 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -961,6 +961,15 @@ removes it, while a run with no evaluations is no evidence either way and does
 not move the streak. Definition content hashes prevent MD-06 reloads from
 inheriting old streaks, and the current loaded set removes deleted rules before
 publication. Restart resets the in-memory streaks.
+
+Known source applicability is expressed with declared attrs and ordered guards,
+not by coercing a missing metric. For macOS process CPU, `cpu_pct_readable` is
+`"true"` after a successful read and `"false"` only on explicit
+`psutil.AccessDenied`; other failures omit the marker. The macOS hog rules test
+that marker first, so known denial short-circuits FALSE while unclassified
+absence or an inconsistent successful-read marker reaches this UNKNOWN path.
+Concretely, an absent marker or `"true"` without `cpu_pct` remains UNKNOWN; the declared
+sampler contract emits no other values (PL-03/PL-05, issue #157).
 
 At each tick the daemon replaces the single `eval_unknown_report` metadata
 value in the same transaction as `last_tick_ts`. It contains the current
