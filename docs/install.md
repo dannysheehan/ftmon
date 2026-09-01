@@ -258,6 +258,10 @@ Upgrade ordering (MSI or `uv tool upgrade`):
 4. re-run `Install-FTMONTasks.ps1` (refreshes the runner copy and absolute path)
 5. `Start-ScheduledTask` and verify with `ftmon status` / `ftmon doctor`
 
+`Stop-ScheduledTask` terminates the wrapper and its FTMON child process tree.
+Before upgrading, confirm that no stale `ftmon.exe daemon` or `ftmon.exe web`
+process remains; v2.0.0a17 and earlier could leave those children running.
+
 Windows Installer rolls the application payload back automatically if an MSI
 upgrade transaction fails. MSI downgrades are blocked by design. To roll back
 deliberately to an earlier release:
@@ -275,7 +279,8 @@ Scheduler helpers or MSI packaging). Record evidence with:
 
 ```powershell
 # Performs native observations (duplicate start, no console, three ticks,
-# forced restart, web loopback, remove). reboot_logon_recovery stays pending.
+# forced restart, task-stop child cleanup, web loopback, remove).
+# reboot_logon_recovery stays pending.
 uv run python tools/windows/record_native_checklist.py --observe
 
 # After a real reboot+logon with tasks installed, edit the evidence file

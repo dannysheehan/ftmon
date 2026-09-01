@@ -5,8 +5,8 @@ Writes dated evidence under ``soak/windows-native/`` (gitignored via ``soak/``).
 Automated probes only check task *configuration* (IgnoreNew, WindowStyle Hidden
 tokens, Limited, …). Native *observations* — repeated Start-ScheduledTask with
 no duplicate process, no visible console, three ticks, forced restart, web
-loopback, remove — are separate fields. Use ``--observe`` to perform those on
-this host (except reboot+logon, which remains operator-filled).
+loopback, stop-tree cleanup, and remove — are separate fields. Use ``--observe``
+to perform those on this host (except reboot+logon, which remains operator-filled).
 
 Workflow::
 
@@ -34,6 +34,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import psutil
+
 ROOT = Path(__file__).resolve().parents[2]
 EVIDENCE_DIR = ROOT / "soak" / "windows-native"
 WINDOWS_DIR = ROOT / "src" / "ftmon" / "windows"
@@ -44,6 +46,7 @@ MANUAL_KEYS = (
     "no_duplicate_on_repeat_start",
     "no_visible_console",
     "forced_daemon_restart",
+    "task_stop_terminates_children",
     "reboot_logon_recovery",
     "three_daemon_cycles",
     "web_loopback_only",
@@ -54,6 +57,7 @@ _ENV_FOR_KEY = {
     "no_duplicate_on_repeat_start": "FTMON_CHECKLIST_NO_DUPLICATE",
     "no_visible_console": "FTMON_CHECKLIST_NO_CONSOLE",
     "forced_daemon_restart": "FTMON_CHECKLIST_FORCED_RESTART",
+    "task_stop_terminates_children": "FTMON_CHECKLIST_STOP_TERMINATES",
     "reboot_logon_recovery": "FTMON_CHECKLIST_REBOOT_LOGON",
     "three_daemon_cycles": "FTMON_CHECKLIST_THREE_CYCLES",
     "web_loopback_only": "FTMON_CHECKLIST_WEB_LOOPBACK",
@@ -151,6 +155,19 @@ def _ftmon_pids() -> list[int]:
     if isinstance(data, list):
         return [int(x) for x in data]
     return []
+
+
+def _process_tree_pids(root_pids: list[int]) -> list[int]:
+    """Return existing roots and descendants, including launcher-created Python."""
+    found: set[int] = set()
+    for root_pid in root_pids:
+        try:
+            root = psutil.Process(root_pid)
+            found.add(root.pid)
+            found.update(child.pid for child in root.children(recursive=True))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return sorted(found)
 
 
 def _processes_have_visible_main_window(pids: list[int]) -> bool:
@@ -268,6 +285,7 @@ def _observe_native(results: dict[str, str], notes: list[str], exe: Path) -> Non
             "no_visible_console",
             "three_daemon_cycles",
             "forced_daemon_restart",
+            "task_stop_terminates_children",
             "web_loopback_only",
             "remove_leaves_no_tasks",
         ):
@@ -382,6 +400,7 @@ def _observe_native(results: dict[str, str], notes: list[str], exe: Path) -> Non
     web_install = _ps(f"& '{INSTALLER}' -Action Install -FtmonExe '{exe}' -IncludeWeb")
     if web_install.returncode != 0:
         results["web_loopback_only"] = "fail"
+        results["task_stop_terminates_children"] = "fail"
         notes.append("observe: -IncludeWeb install failed")
     else:
         _ps("Start-ScheduledTask -TaskName 'FTMON web'")
@@ -427,6 +446,25 @@ def _observe_native(results: dict[str, str], notes: list[str], exe: Path) -> Non
         if web_pids and _processes_have_visible_main_window(web_pids):
             results["no_visible_console"] = "fail"
             notes.append("observe: process has visible MainWindowHandle after web start")
+
+        running_tree = _process_tree_pids(_ftmon_pids())
+        _ps("Stop-ScheduledTask -TaskName 'FTMON daemon' -ErrorAction SilentlyContinue")
+        _ps("Stop-ScheduledTask -TaskName 'FTMON web' -ErrorAction SilentlyContinue")
+        deadline = time.time() + 15
+        stopped = False
+        remaining: list[int] = []
+        while time.time() < deadline:
+            remaining = [pid for pid in running_tree if psutil.pid_exists(pid)]
+            if not remaining and not _ftmon_pids():
+                stopped = True
+                break
+            time.sleep(1)
+        results["task_stop_terminates_children"] = "pass" if stopped else "fail"
+        if not stopped:
+            notes.append(
+                "observe: FTMON process tree remains after Stop-ScheduledTask: "
+                f"original_alive={remaining} roots={_ftmon_pids()}"
+            )
 
     remove = _ps(f"& '{INSTALLER}' -Action Remove")
     if remove.returncode != 0:
@@ -484,6 +522,7 @@ def _format_evidence(
             "  no_duplicate_on_repeat_start — Start-ScheduledTask twice; same process set",
             "  no_visible_console — running task processes have MainWindowHandle 0",
             "  forced_daemon_restart — kill ftmon; task restarts within ~1m",
+            "  task_stop_terminates_children — Stop-ScheduledTask leaves no ftmon child",
             "  reboot_logon_recovery — reboot, log on as task owner, monitoring resumes",
             "  three_daemon_cycles — last_tick_ts advances three times under the task",
             "  web_loopback_only — with -IncludeWeb, listener is 127.0.0.1 only",
