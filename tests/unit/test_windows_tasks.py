@@ -25,6 +25,12 @@ RUNNER = WINDOWS_DIR / "Invoke-FTMONTask.ps1"
 
 def _powershell() -> str | None:
     """Absolute Windows PowerShell path, or None when unavailable."""
+    # GitHub's macOS image happens to include PowerShell, but the Task runner
+    # deliberately depends on Windows Start-Process and environment semantics.
+    # Treating that unrelated host binary as a supported wrapper harness makes
+    # platform-specific tests run for the wrong reason.
+    if sys.platform == "darwin":
+        return None
     if os.name == "nt":
         candidate = Path(os.environ.get("SystemRoot", r"C:\Windows")) / (
             r"System32\WindowsPowerShell\v1.0\powershell.exe"
