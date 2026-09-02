@@ -234,7 +234,7 @@ wheels = [
 
 [[package]]
 name = "ftmon"
-version = "2.0.0a17"
+version = "2.0.0a18"
 source = { editable = "." }
 dependencies = [
     { name = "jinja2" },
