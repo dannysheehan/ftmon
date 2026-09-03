@@ -16,7 +16,9 @@ from argparse import Namespace
 from datetime import UTC, datetime
 
 import pytest
+from mcp import Client
 
+from ftmon import __version__
 from ftmon.clock import FakeClock
 from ftmon.daemon import DaemonCore
 from ftmon.definitions import loader, manage
@@ -110,6 +112,64 @@ class TestSurface:
         server = build_server(core_env)
         tools = asyncio.run(server.list_tools())
         assert {t.name for t in tools} == set(TOOL_NAMES)
+
+    @pytest.mark.parametrize(
+        ("mode", "protocol"),
+        (("auto", "2026-07-28"), ("legacy", "2025-11-25")),
+    )
+    def test_v2_client_preserves_surface_metadata_and_authority_mc_01_mc_05(
+        self, core_env, mode, protocol  # noqa: F811
+    ):
+        """[MC-01][MC-03][MC-05][TS-06] Modern and legacy clients see one frozen server."""
+        server = build_server(core_env)
+
+        async def exercise():
+            async with Client(server, mode=mode, raise_exceptions=True) as client:
+                assert client.protocol_version == protocol
+                assert client.server_info is not None
+                assert client.server_info.name == "ftmon"
+                assert client.server_info.version == __version__
+                assert "human action" in (client.instructions or "")
+
+                listing = await client.list_tools()
+                tools = {tool.name: tool for tool in listing.tools}
+                assert set(tools) == set(TOOL_NAMES)
+                for name, tool in tools.items():
+                    assert tool.annotations is not None
+                    assert tool.annotations.read_only_hint is (
+                        name not in {"define_monitor", "ack_incident"}
+                    )
+                    assert tool.annotations.destructive_hint is False
+                    assert tool.annotations.open_world_hint is False
+                    assert tool.annotations.idempotent_hint is (
+                        True
+                        if name not in {"define_monitor", "ack_incident"}
+                        else None
+                    )
+
+                status = await client.call_tool("get_status", {})
+                assert status.is_error is False
+                assert json.loads(status.content[0].text)["daemon_alive"] is False
+
+                defined = await client.call_tool(
+                    "define_monitor", {"toml_text": DRAFT2}
+                )
+                assert defined.is_error is False
+                assert json.loads(defined.content[0].text)["draft_path"].endswith(
+                    "leak2.toml"
+                )
+
+                resources = await client.list_resources()
+                assert [str(resource.uri) for resource in resources.resources] == [
+                    "ftmon://docs/definitions",
+                    "ftmon://docs/check-authoring",
+                    "ftmon://docs/external-checks",
+                ]
+                for resource in resources.resources:
+                    body = await client.read_resource(str(resource.uri))
+                    assert body.contents and body.contents[0].text
+
+        asyncio.run(exercise())
 
     @pytest.mark.parametrize(
         ("uri", "expected"),

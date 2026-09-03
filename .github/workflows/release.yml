@@ -40,6 +40,12 @@ jobs:
           for name, marker in expected.items():
               assert marker in _guide_text(name)
           PY
+      - name: Smoke installed wheel MCP over stdio
+        run: |
+          ftmon_wheels=(dist/ftmon-*.whl)
+          uv run --isolated --no-project \
+            --with "${ftmon_wheels[0]}[mcp]" \
+            python tools/smoke_mcp.py
       - name: Check tag matches package version
         run: |
           version=$(uv run python -c "import ftmon; print(ftmon.__version__)")

@@ -288,6 +288,12 @@ Register `ftmon mcp` with your AI client. For Claude Code:
 claude mcp add ftmon -- ftmon mcp        # or: uv run ftmon mcp (from source)
 ```
 
+The same local stdio endpoint supports modern and legacy MCP clients. It reports
+the installed FTMON version and concise operating instructions to the client;
+tool annotations mark thirteen operations read-only and only the two proposal/
+acknowledgement operations writable. All tools are local and non-destructive,
+and approving a proposed monitor always remains a separate human action.
+
 The assistant gets tools for status, metric queries with automatic
 resolution, top consumers, per-process history, events, incidents with a
 full `explain_incident` story, monitor listing/validation — and exactly

@@ -80,7 +80,7 @@ hiddenimports += [
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan",
     "uvicorn.lifespan.on",
-    "mcp.server.fastmcp",
+    "mcp.server.mcpserver.server",
 ]
 
 # Task helpers, licence, and generated notices live beside ftmon.exe in COLLECT.

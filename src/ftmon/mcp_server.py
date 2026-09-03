@@ -5,7 +5,7 @@ Two layers on purpose:
   is the tested surface; it never touches stdio and takes injected `now`
   values (TS-03), so the whole tool surface unit-tests against a prepared
   database without an MCP client in sight.
-- `build_server` — FastMCP registration only. Thin enough that the frozen
+- `build_server` — MCPServer registration only. Thin enough that the frozen
   tool list (MC-01) is checkable by introspecting the returned server.
 
 Error philosophy (MC-04): tools return `{"error": {code, message, hint}}`
@@ -25,7 +25,7 @@ from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 
-from ftmon import glance
+from ftmon import __version__, glance
 from ftmon.clock import SystemClock
 from ftmon.definitions import loader, manage
 from ftmon.definitions.loader import declared_metric_names
@@ -844,7 +844,8 @@ def _guide_text(name: str) -> str:
 
 def build_server(paths: Paths):
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server import MCPServer
+        from mcp.types import ToolAnnotations
     except ModuleNotFoundError as exc:
         # Only translate an absent SDK root. A broken SDK or missing transitive
         # dependency must retain its original diagnostic instead of being
@@ -853,16 +854,36 @@ def build_server(paths: Paths):
             raise
         raise McpExtraRequired from exc
 
-    server = FastMCP("ftmon")
+    server = MCPServer(
+        "ftmon",
+        description="Local FTMON health, metrics, incidents, and monitor authoring",
+        instructions=(
+            "Investigate with the read-only status, metric, event, incident, and "
+            "monitor tools. Read the packaged authoring resources before proposing "
+            "a monitor. Only define_monitor and ack_incident write state; monitor "
+            "approval remains a human action."
+        ),
+        version=__version__,
+    )
     api = McpApi(paths)
 
-    server.tool(name="get_status",
+    def register_tool(*, name: str, description: str):
+        read_only = name not in {"define_monitor", "ack_incident"}
+        annotations = ToolAnnotations(
+            read_only_hint=read_only,
+            destructive_hint=False,
+            idempotent_hint=True if read_only else None,
+            open_world_hint=False,
+        )
+        return server.tool(name=name, description=description, annotations=annotations)
+
+    register_tool(name="get_status",
                 description="Daemon liveness, monitors, open incidents, "
                 "self metrics, plus each eligible monitor's declared primary "
                 "readout in glances[] (raw value+unit+thresholds for "
                 "trustworthy dashboard states, ≤64, with truncation metadata)")(
                 api.get_status)
-    server.tool(name="query_metrics",
+    register_tool(name="query_metrics",
                 description="Time-series data; resolution auto-chosen (DM-06); "
                 "bounded to 50 entities / 10000 points with truncation "
                 "metadata; empty series include empty_reason and "
@@ -871,36 +892,36 @@ def build_server(paths: Paths):
                 'get_process_history for name/pid; range like "90m" or '
                 "[iso, iso]")(
                 api.query_metrics)
-    server.tool(name="list_baselines",
+    register_tool(name="list_baselines",
                 description="Stored EWMA levels and learning coverage; exact "
                 "filters with bounded keyset pagination (MC-07)")(
                 api.list_baselines)
-    server.tool(name="top_consumers",
+    register_tool(name="top_consumers",
                 description="Ranked cpu|rss|io consumers over a range")(
                 api.top_consumers)
-    server.tool(name="get_process_history",
+    register_tool(name="get_process_history",
                 description="Metrics + lifecycle for processes matching a "
                 "name or pid")(api.get_process_history)
-    server.tool(name="list_events",
+    register_tool(name="list_events",
                 description="Stored journal/system events")(api.list_events)
-    server.tool(name="list_incidents",
+    register_tool(name="list_incidents",
                 description="Incidents and episodes")(api.list_incidents)
-    server.tool(name="explain_incident",
+    register_tool(name="explain_incident",
                 description="Full story of one incident: rule, data, events, "
                 "history")(api.explain_incident)
-    server.tool(name="list_monitors",
+    register_tool(name="list_monitors",
                 description="All monitor definitions incl. drafts")(
                 api.list_monitors)
-    server.tool(name="get_monitor",
+    register_tool(name="get_monitor",
                 description="One definition with validation status and load "
                 "history")(api.get_monitor)
-    server.tool(name="monitor_paths",
+    register_tool(name="monitor_paths",
                 description="Resolved filesystem layout for authoring: "
                 "monitors, drafts, actions, check registry, database "
                 "(MC-06). Read ftmon://docs/definitions and "
                 "ftmon://docs/check-authoring before writing monitors or "
                 "check executables")(api.monitor_paths)
-    server.tool(name="diagnose_monitor",
+    register_tool(name="diagnose_monitor",
                 description="Why isn't this monitor running? Location, "
                 "validation, load state, external-alias trust, and last "
                 "plugin result (state/message/sample age) in one call. "
@@ -909,13 +930,13 @@ def build_server(paths: Paths):
                 "/trends despite slope rules, see authoring traps in "
                 "ftmon://docs/definitions (Trends are opt-in via [[trend]])")(
                 api.diagnose_monitor)
-    server.tool(name="validate_monitor",
+    register_tool(name="validate_monitor",
                 description="Validate a monitor TOML without writing "
                 "anything. Read ftmon://docs/definitions authoring traps "
                 "first; growth/slope alerts need [[trend]] for /trends; "
                 "ftmon-json checks must exit 0 — see "
                 "ftmon://docs/check-authoring")(api.validate_monitor)
-    server.tool(name="define_monitor",
+    register_tool(name="define_monitor",
                 description="Validate and save a monitor TOML as a draft. "
                 "Drafts are never loaded by the daemon: a human must approve "
                 "via `ftmon monitor approve <name>` or the web UI Monitors "
@@ -925,7 +946,7 @@ def build_server(paths: Paths):
                 "ftmon-json checks must exit 0 — see "
                 "ftmon://docs/check-authoring")(
                 api.define_monitor)
-    server.tool(name="ack_incident",
+    register_tool(name="ack_incident",
                 description="Acknowledge an incident (stops re-notifying, "
                 "keeps watching)")(api.ack_incident)
 

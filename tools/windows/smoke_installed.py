@@ -183,8 +183,7 @@ def main() -> int:
         raise SystemExit("doctor reported ImportError (toast/pywin32?)")
 
     try:
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp import Client, StdioServerParameters
     except ImportError as exc:
         raise SystemExit(f"mcp client required for smoke MCP handshake: {exc}") from exc
 
@@ -192,19 +191,25 @@ def main() -> int:
 
     async def _mcp() -> None:
         params = StdioServerParameters(command=exe, args=["mcp"], env=env)
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools = await session.list_tools()
+        for mode, expected_protocol in (
+            ("auto", "2026-07-28"),
+            ("legacy", "2025-11-25"),
+        ):
+            async with Client(params, mode=mode) as client:
+                if client.protocol_version != expected_protocol:
+                    raise SystemExit(
+                        f"unexpected {mode} MCP protocol: {client.protocol_version}"
+                    )
+                tools = await client.list_tools()
                 if not tools.tools:
                     raise SystemExit("expected MCP tools")
-                resources = await session.list_resources()
+                resources = await client.list_resources()
                 if not resources.resources:
                     raise SystemExit("expected MCP resources")
                 guide = next(
                     r for r in resources.resources if "definitions" in str(r.uri)
                 )
-                body = await session.read_resource(guide.uri)
+                body = await client.read_resource(str(guide.uri))
                 if not body.contents:
                     raise SystemExit("expected packaged guide contents")
 

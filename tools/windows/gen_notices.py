@@ -15,17 +15,17 @@ ROOT = Path(__file__).resolve().parents[2]
 # frozen onedir (onedir alone is incomplete under PyInstaller).
 _FALLBACK_RUNTIME = (
     "anyio",
-    "certifi",
     "click",
     "h11",
-    "httpcore",
-    "httpx",
+    "httpcore2",
+    "httpx2",
     "idna",
     "jinja2",
     "jsonschema",
     "jsonschema-specifications",
     "markupsafe",
     "mcp",
+    "mcp-types",
     "platformdirs",
     "psutil",
     "pydantic",
@@ -33,7 +33,6 @@ _FALLBACK_RUNTIME = (
     "pywin32",
     "referencing",
     "rpds-py",
-    "sniffio",
     "starlette",
     "tomli-w",
     "typing-extensions",
@@ -246,8 +245,8 @@ def main(argv: list[str] | None = None) -> int:
         "jsonschema",
         "click",
         "anyio",
-        "httpx",
-        "httpcore",
+        "httpx2",
+        "httpcore2",
     ):
         if required not in joined:
             raise SystemExit(f"notices missing expected package {required!r}")
