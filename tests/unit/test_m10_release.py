@@ -321,7 +321,7 @@ def test_mcp_sdk_is_optional_in_python_metadata_mc_08():
     """[MC-08] Core metadata omits MCP while its named extra retains the SDK."""
     project = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
     assert not any(dep.startswith("mcp") for dep in project["project"]["dependencies"])
-    assert project["project"]["optional-dependencies"]["mcp"] == ["mcp>=1,<2"]
+    assert project["project"]["optional-dependencies"]["mcp"] == ["mcp>=2,<3"]
 
 
 def test_self_builtin_encodes_rb_01_budgets_rb_01():

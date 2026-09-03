@@ -31,6 +31,12 @@ jobs:
       - run: uv run python tools/gen_reqindex.py --check
       - run: uv run pytest -q
       - run: uv build --clear
+      - name: Smoke installed wheel MCP over stdio
+        run: |
+          ftmon_wheels=(dist/ftmon-*.whl)
+          uv run --isolated --no-project \
+            --with "${ftmon_wheels[0]}[mcp]" \
+            python tools/smoke_mcp.py
       - name: Verify packaged authoring guides
         run: |
           uv run --isolated --no-project --with ./dist/ftmon-*.whl python - <<'PY'
@@ -62,6 +68,11 @@ jobs:
       - run: uv run python tools/gen_reqindex.py --check
       - run: uv run pytest -q
       - run: uv build --clear
+      - name: Smoke installed wheel MCP over stdio
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem dist/ftmon-*.whl | Select-Object -First 1).FullName
+          uv run --isolated --no-project --with "$($wheel)[mcp]" python tools/smoke_mcp.py
       - name: Verify packaged authoring guides
         shell: pwsh
         run: |

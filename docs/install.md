@@ -930,7 +930,9 @@ Claude Desktop configuration:
 ```
 
 Replace `YOU` with the account name and restart Claude Desktop. MCP uses stdio;
-it does not open another network listener.
+it does not open another network listener. The SDK v2 server negotiates modern
+and legacy MCP clients from this same command, so no compatibility-specific
+registration is needed.
 
 ## Actions
 

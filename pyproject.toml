@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1,<2"]
+mcp = ["mcp>=2,<3"]
 
 [project.scripts]
 ftmon = "ftmon.cli:main"

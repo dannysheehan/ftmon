@@ -1,6 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.64** — v0.64 makes the MCP server an explicit install-time
+Status: **DRAFT v0.65** — v0.65 migrates the optional stdio server to the
+official MCP SDK v2 `MCPServer` while preserving its frozen tools, resources,
+response contracts, and two narrow write paths. The server reports package
+version and operating instructions, publishes accurate read/write annotations,
+and is exercised through modern, legacy, and installed-wheel stdio clients
+(MC-01/03/05/08, TS-06, issue #99). v0.64 makes the MCP server an explicit install-time
 extra so the daemon, CLI, and web UI install from wheels on Intel macOS without
 pulling the SDK's unused authentication/Rust build chain (MC-08, issue #110).
 v0.63 makes known macOS per-process CPU permission
@@ -1128,7 +1133,8 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 
 ## 11. MCP server
 
-Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of the DB except the three marked ✎.
+Served over stdio by `ftmon mcp` using the official MCP SDK v2 `MCPServer`.
+All tools are synchronous reads of local state except the two marked ✎.
 
 | Tool | Signature (abridged) | Behavior |
 |---|---|---|
@@ -1143,11 +1149,11 @@ Served over stdio by `ftmon mcp` (FastMCP). All tools are synchronous reads of t
 | `monitor_paths` | () | resolved filesystem layout an author needs (monitors, drafts, actions, check registry, db) — the JSON form of `ftmon paths` (CL-06) |
 | `diagnose_monitor` | (name) | where the file lives (enabled/draft/missing), validation errors, enabled state, last load hash and age, for external monitors whether the alias is registered and its executable trusted (no argv exposure, SE-07), and `last_result` for the configured `source_options.entity` (`plugin_state`/`plugin_ok`/`duration_s`/`plugin_message`/`sample_age_s`, or null when never sampled / non-external / no DB) |
 | `list_baselines` | (monitor?, entity?, metric?, ready?, limit=100, cursor?) | learned level, update-count coverage/readiness, effective half-life and last update for stored baseline rows; deterministic keyset pagination |
-| `validate_monitor` ✎(no writes) | (toml_text) | full validation, returns errors or normalized form |
+| `validate_monitor` | (toml_text) | full validation, returns errors or normalized form |
 | `define_monitor` ✎ | (toml_text) | validate → write to `drafts/` (PM-06) → return draft path plus structured `next_steps` (CLI approve command and web UI) |
 | `ack_incident` ✎ | (id, note?) | sets acked with `by = "mcp"`, note into history |
 
-- **MC-01** The tool list above is the complete v1 tool surface; names and required parameters are frozen by this spec (exact JSON schemas in the design doc). Every tool answers within 2 s on a DM-05-sized database. `query_metrics` MUST use an observed-first, work-bounded read (list entities with in-range observations, then fetch points only for returned entities after a capped-count preflight) so high entity cardinality cannot force full point materialization for discarded series. `get_status` additionally returns `glances`: the UI-17/UI-18 readouts of monitors whose UI-14 state permits one, each record identifying monitor, winning entity, metric, raw value, declared unit, aggregate and ordered labelled thresholds with raw values. It is bounded at 64 records ordered by monitor name ascending, and `glances_returned`, `glances_matched`, `glances_truncated` and `limits.max_glances` are present on every response including empty ones. `get_status` MUST load definitions with the same action and check-registry authority as the dashboard, so a monitor whose external alias is unavailable is reported as `config_error` rather than as a loaded monitor.
+- **MC-01** The tool list above is the complete v1 tool surface; names and required parameters are frozen by this spec (exact JSON schemas in the design doc). The server identity is `ftmon`; it MUST report the installed package version and concise instructions stating that reads inspect local FTMON state, only `define_monitor` and `ack_incident` write, and monitor approval remains a human action. MCP tool annotations MUST mark every other tool read-only, those two tools writable, every tool non-destructive and local/closed-world, and read tools idempotent. Every tool answers within 2 s on a DM-05-sized database. `query_metrics` MUST use an observed-first, work-bounded read (list entities with in-range observations, then fetch points only for returned entities after a capped-count preflight) so high entity cardinality cannot force full point materialization for discarded series. `get_status` additionally returns `glances`: the UI-17/UI-18 readouts of monitors whose UI-14 state permits one, each record identifying monitor, winning entity, metric, raw value, declared unit, aggregate and ordered labelled thresholds with raw values. It is bounded at 64 records ordered by monitor name ascending, and `glances_returned`, `glances_matched`, `glances_truncated` and `limits.max_glances` are present on every response including empty ones. `get_status` MUST load definitions with the same action and check-registry authority as the dashboard, so a monitor whose external alias is unavailable is reported as `config_error` rather than as a loaded monitor.
 - **MC-02** Range parameters accept `"90m"`-style durations or ISO-8601 pairs; all responses carry UTC timestamps plus the host's IANA timezone name once per response for the model to localize.
 - **MC-03** `define_monitor` MUST refuse (not silently overwrite) a name that already exists as enabled/disabled; drafts may be overwritten (iterating on a draft is the normal flow).
 - **MC-04** Error responses are structured (`code`, `message`, `hint`) — a less capable model must be able to self-correct from validation errors (MD-01's quality bar applies).
@@ -1515,6 +1521,16 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.65 (2026-09-04)** — migrates the optional stdio server from the MCP SDK
+v1 compatibility API to the official SDK v2 `MCPServer` without changing the
+frozen 15-tool or three-resource application surface. Server initialization now
+reports FTMON's installed version and operational instructions, while tool
+annotations accurately identify thirteen read-only operations and the two
+narrow, non-destructive write paths. CI drives one server with both the modern
+and legacy protocol modes and launches the built wheel over real stdio on Linux
+and Windows, so compatibility is proven at the packaged command boundary rather
+than only through direct Python calls (MC-01/03/05/08, TS-06, issue #99).
 
 **v0.64 (2026-09-01)** — separates the optional stdio MCP server from the core
 Python install. MCP's authentication subtree pulled `cryptography`, whose

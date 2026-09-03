@@ -11,7 +11,7 @@ def test_license_text_finds_licenses_subdirectory():
     """Licence files under dist-info/licenses/ must be discovered."""
     import importlib.metadata as md
 
-    dist = md.distribution("httpx")
+    dist = md.distribution("httpx2")
     text = gen_notices._license_text(dist)
     assert text is not None
     assert len(text.strip()) > 20
@@ -30,7 +30,7 @@ def test_collect_notices_unions_onedir_with_build_env(tmp_path: Path):
     assert "onlypkg" in notices
     # Build-env closure packages remain present.
     keys = " ".join(notices).lower().replace("_", "-")
-    for required in ("pydantic", "anyio", "httpx", "click", "markupsafe"):
+    for required in ("pydantic", "anyio", "httpx2", "click", "markupsafe"):
         assert required in keys
     assert len(notices) >= 20
     # Prefer build-env licence text over empty onedir metadata.
