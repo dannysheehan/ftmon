@@ -13,8 +13,10 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -101,6 +103,9 @@ def _compile_fake_ftmon(
     stdout_text: str = "",
     stderr_text: str = "",
     stderr_bytes: int = 0,
+    pid_path: Path | None = None,
+    sleep_ms: int = 0,
+    child_exe: Path | None = None,
 ) -> Path:
     """Build a real PE console stub (batch files named .exe are not CreateProcess-safe)."""
     if os.name != "nt":
@@ -132,6 +137,29 @@ def _compile_fake_ftmon(
     record_cs = str(record).replace("\\", "\\\\").replace('"', '\\"')
     stdout_cs = stdout_text.replace("\\", "\\\\").replace('"', '\\"')
     stderr_cs = stderr_text.replace("\\", "\\\\").replace('"', '\\"')
+    pid_cs = ""
+    if pid_path is not None:
+        escaped_pid = str(pid_path).replace("\\", "\\\\").replace('"', '\\"')
+        pid_cs = (
+            f'                File.WriteAllText("{escaped_pid}", '
+            "System.Diagnostics.Process.GetCurrentProcess().Id.ToString());\n"
+        )
+    sleep_line = ""
+    if sleep_ms > 0:
+        sleep_line = f"                System.Threading.Thread.Sleep({sleep_ms});\n"
+    child_line = ""
+    if child_exe is not None:
+        escaped_child = str(child_exe).replace("\\", "\\\\").replace('"', '\\"')
+        child_line = textwrap.dedent(
+            f"""\
+                            var childInfo = new System.Diagnostics.ProcessStartInfo();
+                            childInfo.FileName = "{escaped_child}";
+                            childInfo.Arguments = "daemon";
+                            childInfo.UseShellExecute = false;
+                            var child = System.Diagnostics.Process.Start(childInfo);
+                            child.WaitForExit();
+            """
+        )
     flood_line = ""
     if stderr_bytes > 0:
         flood_line = f'                Console.Error.Write(new string(\'x\', {stderr_bytes}));\n'
@@ -142,9 +170,9 @@ def _compile_fake_ftmon(
         public static class FakeFtmon {{
             public static int Main(string[] args) {{
                 File.WriteAllText("{record_cs}", string.Join("\\n", args));
-                if ("{stdout_cs}".Length > 0) Console.Out.WriteLine("{stdout_cs}");
+{pid_cs}                if ("{stdout_cs}".Length > 0) Console.Out.WriteLine("{stdout_cs}");
                 if ("{stderr_cs}".Length > 0) Console.Error.WriteLine("{stderr_cs}");
-{flood_line}                return {exit_code};
+{flood_line}{sleep_line}{child_line}                return {exit_code};
             }}
         }}
         """
@@ -329,11 +357,97 @@ def test_runner_drains_large_stderr_without_deadlock(tmp_path: Path):
     assert log.stat().st_size > 1_000_000
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Objects are Windows-only")
+@pytest.mark.parametrize("role", ["daemon", "web"])
+def test_runner_termination_kills_child_process_tree_pl_01(
+    tmp_path: Path, role: str
+):
+    """[PL-01][DO-02] Forced runner termination cannot orphan its FTMON child."""
+    grandchild_dir = tmp_path / "grandchild"
+    grandchild_dir.mkdir()
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    grandchild = _compile_fake_ftmon(
+        grandchild_dir,
+        pid_path=grandchild_pid_file,
+        sleep_ms=60_000,
+    )
+    launcher_pid_file = tmp_path / "launcher.pid"
+    launcher = _compile_fake_ftmon(
+        tmp_path,
+        pid_path=launcher_pid_file,
+        child_exe=grandchild,
+    )
+    log = tmp_path / "task-daemon.log"
+    ps = _powershell()
+    assert ps is not None
+    env = {
+        **os.environ,
+        "FTMON_TASK_MAX_ATTEMPTS": "1",
+        "FTMON_TASK_RESTART_DELAY_SEC": "0",
+    }
+    runner = subprocess.Popen(
+        [
+            ps,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "RemoteSigned",
+            "-File",
+            str(RUNNER),
+            "-Role",
+            role,
+            "-FtmonExe",
+            str(launcher),
+            "-LogFile",
+            str(log),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    process_ids: list[int] = []
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not (
+            launcher_pid_file.is_file() and grandchild_pid_file.is_file()
+        ):
+            time.sleep(0.1)
+        assert launcher_pid_file.is_file(), "runner did not start the launcher"
+        assert grandchild_pid_file.is_file(), "launcher did not start its child"
+        process_ids = [
+            int(launcher_pid_file.read_text(encoding="utf-8")),
+            int(grandchild_pid_file.read_text(encoding="utf-8")),
+        ]
+        assert all(psutil.pid_exists(pid) for pid in process_ids)
+
+        # Terminate only PowerShell. The Job Object must kill the child; using
+        # taskkill /T here would hide the regression by killing the tree itself.
+        runner.kill()
+        runner.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and any(
+            psutil.pid_exists(pid) for pid in process_ids
+        ):
+            time.sleep(0.1)
+        assert all(not psutil.pid_exists(pid) for pid in process_ids)
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait(timeout=10)
+        for pid in process_ids:
+            if psutil.pid_exists(pid):
+                try:
+                    psutil.Process(pid).kill()
+                except psutil.NoSuchProcess:
+                    pass
+
+
 def test_runner_uses_redirected_stream_files_not_sequential_read():
     """[PL-01] Runner must not ReadToEnd stdout before draining stderr."""
     text = RUNNER.read_text(encoding="utf-8")
-    assert "RedirectStandardOutput" in text
-    assert "RedirectStandardError" in text
+    assert "OpenInheritedFile(stdoutPath" in text
+    assert "OpenInheritedFile(stderrPath" in text
     assert ".ReadToEnd(" not in text
     assert "StandardOutput.ReadToEnd" not in text
     assert "StandardError.ReadToEnd" not in text
@@ -353,8 +467,24 @@ _INSTALLER_REQUIRED = (
 )
 _RUNNER_REQUIRED = (
     ("ValidateSet('daemon', 'web')", "role allow-list"),
-    ("RedirectStandardOutput", "stdout redirect"),
-    ("RedirectStandardError", "stderr redirect"),
+    ("OpenInheritedFile(stdoutPath", "stdout redirect"),
+    ("OpenInheritedFile(stderrPath", "stderr redirect"),
+    ("private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE", "child lifetime job"),
+    ("private const uint EXTENDED_STARTUPINFO_PRESENT", "extended child creation"),
+    (
+        "attributeList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,",
+        "atomic child job assignment",
+    ),
+    (
+        "attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,",
+        "restricted handle inheritance",
+    ),
+    (
+        "private static extern bool InitializeProcThreadAttributeList",
+        "process attribute initialization",
+    ),
+    ("private static extern bool UpdateProcThreadAttribute", "process attribute update"),
+    ("created = CreateProcess(", "native child creation"),
     ("restarting $Role in", "wrapper restart loop"),
     ("$maxAttempts = 255", "restart budget"),
 )
@@ -387,6 +517,16 @@ def runner_contract_errors(text: str) -> list[str]:
     for token, label in _RUNNER_REQUIRED:
         if token not in text:
             errors.append(f"missing {label}: {token!r}")
+    job_attribute = text.find(
+        "attributeList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,"
+    )
+    child_create = text.find("created = CreateProcess(")
+    if (
+        job_attribute >= 0
+        and child_create >= 0
+        and job_attribute > child_create
+    ):
+        errors.append("job-list attribute is configured after child creation")
     if ".ReadToEnd(" in text or "StandardOutput.ReadToEnd" in text:
         errors.append("forbidden sequential ReadToEnd drain")
     return errors
@@ -416,6 +556,13 @@ def test_installer_and_runner_contract_mutations_are_rejected():
     for token, label in _RUNNER_REQUIRED:
         mutated = runner.replace(token, "MUTATED", 1)
         assert runner_contract_errors(mutated), f"runner mutant for {label} was accepted"
+
+    job_attribute = "attributeList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,"
+    child_create = "created = CreateProcess("
+    reordered = runner.replace(job_attribute, "MUTATED_JOB", 1).replace(
+        child_create, job_attribute, 1
+    ).replace("MUTATED_JOB", child_create, 1)
+    assert "after child creation" in " ".join(runner_contract_errors(reordered))
 
 
 def test_runner_rejects_non_daemon_web_roles():
