@@ -3,12 +3,33 @@
 
 Reads stored self-monitor history (RB-02), incident/outbox state, and doctor
 output — the same query path operators trust — rather than sampling from ps/top.
+
+Each budget is measured as its requirement states it, which is rarely the most
+convenient series to hand:
+
+- RB-01 bounds CPU "averaged over 10 m", so percentiles are taken over
+  10-minute means and never over the per-tick samples underneath them. One
+  tick's spike is not a budget breach; reporting it as `max` invited exactly
+  that reading, and on real soak data the two differ by more than three times.
+- DM-05's target is *used pages*. Per RB-02 the physical file participates in
+  no budget identity: WAL and freelist hold it near the ceiling long after
+  retention has released the space, so a file-size percentile reports a pin the
+  daemon is not holding. Both are shown, only one is judged.
+- Percentiles read the stored tiers directly instead of `Query.series`, whose
+  LTTB downsampling picks visually representative points for charts — right for
+  a graph, wrong for a distribution.
+
+A 30-day window outlives raw retention, so older stretches survive only as
+5-minute and then hourly rollups. An hourly mean cannot express a 10-minute
+average or a peak, so the coarse tail is summarized apart from the verdict
+rather than being silently averaged into it.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -19,7 +40,21 @@ from ftmon.store.query import Query
 
 _RB_CPU_PCT = 1.0
 _RB_RSS_MB = 100
-_RB_DB_MB = 200
+_DM05_DB_MB = 200
+
+# RB-01's averaging window, in seconds. The number is the requirement.
+_CPU_WINDOW_S = 600
+
+_MIB = 1024 * 1024
+
+# (table, time column, value column, count column). Tiers that can still
+# express a 10-minute average, finest first.
+_FINE_TIERS = (
+    ("samples", "ts", "value", None),
+    ("rollup5m", "bucket", "avg", "cnt"),
+)
+# Retained longest and too coarse for either RB-01 quantity.
+_COARSE_TIER = ("rollup1h", "bucket", "avg", "cnt")
 
 
 def _percentile(values: list[float], pct: float) -> float | None:
@@ -30,27 +65,75 @@ def _percentile(values: list[float], pct: float) -> float | None:
     return ordered[idx]
 
 
-def _series_values(q: Query, metric: str, *, now: float, days: int = 30) -> list[float]:
-    start = now - days * 86400
-    results = q.series(
-        monitor="self",
-        metric=metric,
-        entity_id="ftmon",
-        start=start,
-        end=now,
-        now=now,
-        max_points=50_000,
-        statistic="avg",
-    )
-    values: list[float] = []
-    for result in results:
-        values.extend(p.value for p in result.points if p.value is not None)
-    return values
+def _tier_points(
+    conn: sqlite3.Connection,
+    tier: tuple[str, str, str, str | None],
+    metric: str,
+    start: float,
+    end: float,
+) -> list[tuple[int, float, int]]:
+    """`(ts, value, weight)` for one storage tier, oldest first."""
+    table, tcol, vcol, ccol = tier
+    weight = f"COALESCE(d.{ccol}, 1)" if ccol else "1"
+    try:
+        rows = conn.execute(
+            f"SELECT d.{tcol} AS ts, d.{vcol} AS value, {weight} AS weight "  # noqa: S608
+            f"FROM {table} d JOIN series s ON s.id = d.series_id "
+            "WHERE s.monitor='self' AND s.entity_id='ftmon' AND s.metric=? "
+            f"AND d.{tcol} >= ? AND d.{tcol} <= ? ORDER BY d.{tcol}",
+            (metric, round(start), round(end)),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # A database written by an older schema simply has less to say.
+        return []
+    return [(int(r["ts"]), float(r["value"]), int(r["weight"] or 1))
+            for r in rows if r["value"] is not None]
 
 
-def build_report(db_path: Path, *, now: float | None = None) -> str:
+def _merged_points(
+    conn: sqlite3.Connection, metric: str, *, start: float, end: float
+) -> tuple[list[tuple[int, float, int]], list[tuple[int, float, int]]]:
+    """Window history as (fine, coarse), each tier covering only what finer ones lost.
+
+    Retention trims from the old end, so the tiers partition the window rather
+    than overlapping it; taking the finest available for each stretch avoids
+    counting the same minute twice at two resolutions.
+    """
+    fine: list[tuple[int, float, int]] = []
+    horizon = None
+    for tier in _FINE_TIERS:
+        points = _tier_points(conn, tier, metric, start, end)
+        if horizon is not None:
+            points = [p for p in points if p[0] < horizon]
+        if points:
+            horizon = points[0][0] if horizon is None else min(horizon, points[0][0])
+            fine.extend(points)
+    fine.sort()
+
+    coarse = _tier_points(conn, _COARSE_TIER, metric, start, end)
+    if fine:
+        coarse = [p for p in coarse if p[0] < fine[0][0]]
+    return fine, coarse
+
+
+def _window_means(points: list[tuple[int, float, int]], window_s: int) -> list[float]:
+    """Count-weighted means over fixed `window_s` buckets — RB-01's quantity."""
+    buckets: dict[int, tuple[float, int]] = {}
+    for ts, value, weight in points:
+        key = ts // window_s
+        total, count = buckets.get(key, (0.0, 0))
+        buckets[key] = (total + value * weight, count + weight)
+    return [total / count for total, count in buckets.values() if count]
+
+
+def _span_hours(points: list[tuple[int, float, int]]) -> float:
+    return (points[-1][0] - points[0][0]) / 3600 if len(points) > 1 else 0.0
+
+
+def build_report(db_path: Path, *, now: float | None = None, days: int = 30) -> str:
     """Return markdown summarizing TS-17 gate evidence from *db_path*."""
     now = time.time() if now is None else now
+    start = now - days * 86400
     conn = connect(db_path)
     try:
         migrate(conn)
@@ -58,9 +141,12 @@ def build_report(db_path: Path, *, now: float | None = None) -> str:
         status = q.status(now=now)
         doctor = inspect(conn, now=now)
 
-        cpu = _series_values(q, "cpu_pct", now=now)
-        rss = [v / (1024 * 1024) for v in _series_values(q, "rss_bytes", now=now)]
-        db = [v / (1024 * 1024) for v in _series_values(q, "db_bytes", now=now)]
+        cpu_fine, cpu_coarse = _merged_points(conn, "cpu_pct", start=start, end=now)
+        rss_fine, rss_coarse = _merged_points(conn, "rss_bytes", start=start, end=now)
+        used_fine, used_coarse = _merged_points(conn, "db_used_bytes", start=start, end=now)
+        file_fine, _ = _merged_points(conn, "db_bytes", start=start, end=now)
+
+        cpu_means = _window_means(cpu_fine, _CPU_WINDOW_S)
 
         self_incidents = conn.execute(
             "SELECT id, state, severity, opened_ts, cleared_ts, clear_reason "
@@ -89,30 +175,55 @@ def build_report(db_path: Path, *, now: float | None = None) -> str:
             f"- Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(now))}",
             f"- Database: `{db_path}`",
             f"- Last tick age: {status.get('last_tick_age_s')}",
-            f"- DB size (doctor): {doctor['db_bytes']:,} bytes",
+            f"- DB used (doctor, DM-05 budget): {doctor['used_bytes']:,} bytes",
+            f"- DB file on disk (no budget identity): {doctor['db_bytes']:,} bytes",
+            f"- DB freelist: {doctor['freelist_bytes']:,} bytes",
             "",
-            "## RB-01 self-monitor percentiles (30 d window)",
+            f"## RB-01 / DM-05 budgets ({days} d window)",
             "",
-            "| Metric | p50 | p95 | max | budget |",
+            "| Quantity | p50 | p95 | max | budget |",
             "| --- | ---: | ---: | ---: | ---: |",
         ]
 
-        def _row(label: str, values: list[float], budget: float, unit: str = "") -> None:
-            suffix = f" {unit}".rstrip()
-            p50 = _percentile(values, 50)
-            p95 = _percentile(values, 95)
-            mx = max(values) if values else None
-
+        def _row(label: str, values: list[float], budget: float | None,
+                 unit: str, places: int) -> None:
             def _fmt(value: float | None) -> str:
-                return "—" if value is None else f"{value:.3g}{suffix}"
+                return "—" if value is None else f"{value:.{places}f} {unit}"
 
+            target = "—" if budget is None else f"{budget:g} {unit}"
             lines.append(
-                f"| {label} | {_fmt(p50)} | {_fmt(p95)} | {_fmt(mx)} | {budget:g}{suffix} |"
+                f"| {label} | {_fmt(_percentile(values, 50))} "
+                f"| {_fmt(_percentile(values, 95))} "
+                f"| {_fmt(max(values) if values else None)} | {target} |"
             )
 
-        _row("cpu_pct", cpu, _RB_CPU_PCT, "%")
-        _row("rss_mb", rss, _RB_RSS_MB, "MB")
-        _row("db_mb", db, _RB_DB_MB, "MB")
+        _row("cpu_pct (10 m avg)", cpu_means, _RB_CPU_PCT, "%", 2)
+        _row("rss_mb", [v / _MIB for _, v, _ in rss_fine], _RB_RSS_MB, "MB", 1)
+        _row("db_used_mb", [v / _MIB for _, v, _ in used_fine], _DM05_DB_MB, "MB", 1)
+        _row("db_file_mb (non-normative)", [v / _MIB for _, v, _ in file_fine], None, "MB", 1)
+
+        lines.extend([
+            "",
+            f"- CPU: {len(cpu_means)} ten-minute windows over "
+            f"{_span_hours(cpu_fine):.1f} h of 60 s/5 m data. Percentiles are of those "
+            "means, per RB-01; a single tick's spike is not a budget breach.",
+            "- `db_file_mb` carries no budget: WAL and freelist keep the file near the "
+            "ceiling after retention has released the pages (RB-02).",
+        ])
+        if not used_fine:
+            lines.append(
+                "- `db_used_bytes` is absent from this database — a build older than the "
+                "DM-05 used-page metric. Storage cannot be judged from this window."
+            )
+        if cpu_coarse or rss_coarse or used_coarse:
+            coarse_cpu = _percentile([v for _, v, _ in cpu_coarse], 95)
+            lines.append(
+                "- Older stretches survive only as hourly rollups, too coarse for a "
+                "10-minute average or a peak, so they are excluded above. For trend "
+                f"only: {len(cpu_coarse)} hourly CPU means, p95 "
+                f"{'—' if coarse_cpu is None else f'{coarse_cpu:.2f} %'}, spanning "
+                f"{_span_hours(cpu_coarse):.1f} h."
+            )
 
         lines.extend([
             "",
@@ -156,8 +267,12 @@ def main(argv: list[str] | None = None) -> int:
         "-o", "--output", type=Path,
         help="Write markdown report to this path (default: stdout)",
     )
+    parser.add_argument(
+        "--days", type=int, default=30,
+        help="Evidence window in days (default: 30, the TS-17 gate)",
+    )
     args = parser.parse_args(argv)
-    report = build_report(args.database.expanduser().resolve())
+    report = build_report(args.database.expanduser().resolve(), days=args.days)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(report, encoding="utf-8")
