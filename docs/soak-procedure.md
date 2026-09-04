@@ -47,16 +47,46 @@ ftmon incidents --all > soak/evidence/$(hostname)-incidents-$(date +%Y%m%d).txt
 
 Store reports under `soak/evidence/` (gitignored) or attach to release notes.
 
+Pass `--days N` to narrow the window; the default 30 is the TS-17 gate.
+
+## How each budget is measured
+
+The report deliberately does not take the most convenient series for each
+budget, because two of them do not say what the requirement says.
+
+- **CPU is a 10-minute average.** RB-01 bounds CPU "averaged over 10 m", so
+  percentiles are taken over 10-minute means, not over the per-tick samples
+  underneath. A single tick's spike is not a budget breach — on real soak data
+  the per-sample maximum read 6.60 % where the 10-minute maximum was 1.98 %.
+- **Storage is used pages, not the file.** DM-05's target is used pages, and
+  RB-02 states the physical file participates in no budget identity. WAL and
+  freelist hold the file near the ceiling long after retention has released the
+  space, so `db_file_mb` is reported but never judged. A leg sitting *at* the
+  target with `db_degrading` clearing normally is retention working correctly,
+  not a failure; sustained `db_degrading` is the failure.
+- **Percentiles read the stored tiers directly.** `Query.series` downsamples
+  with LTTB, which selects visually representative points for a chart — the
+  wrong sample for a distribution.
+- **The hourly tail is excluded from the verdict.** A 30-day window outlives
+  raw retention, so its oldest stretch survives only as hourly rollups, which
+  cannot express a 10-minute average or a peak. Those are summarized separately
+  as trend, and the report states how much of the window the verdict covers.
+
 ## Gate checklist (TS-17)
 
 | Check | Source |
 | --- | --- |
 | No unexplained daemon restarts | `self` daemon-start events, journalctl |
-| RB-01 budgets held | `soak_report.py` self-monitor percentiles |
-| DB ≤ 200 MB after retention cycles | `soak_report.py` / `ftmon doctor` |
+| RB-01 CPU: p95 of 10-minute means | `soak_report.py` `cpu_pct (10 m avg)` row |
+| RB-01 RSS: daemon, and web/MCP ≤ 80 MB each | `soak_report.py` `rss_mb` row |
+| DM-05: `db_used` at or under target, degradation not sustained | `soak_report.py` `db_used_mb` row / `ftmon doctor` |
 | Outbox draining | pending `notification_deliveries` in report |
 | No unexplained `self` incidents | report incident section |
 | Clean `ftmon doctor` at end | doctor JSON `ok: true` |
+
+A leg whose `self` monitor alarms above the normative budget cannot evidence
+the incident criterion: set `cpu_budget_pct` to RB-01's figure on soak hosts, or
+record the deviation in the host manifest.
 
 ## Clock reset
 
