@@ -38,7 +38,7 @@ import json
 import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ftmon.store.db import connect, migrate
@@ -149,7 +149,19 @@ def parse_since(text: str) -> float:
 
 
 def _stamp(epoch: float) -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(epoch))
+    """Local wall time, falling back to UTC where the platform refuses.
+
+    Windows' localtime() rejects pre-epoch timestamps, which a synthetic window
+    reaches whenever `now` is small: a fixture at now=1000 puts the default
+    30-day start at -2,591,000. A report must not fail over the label on a
+    timestamp it can still measure.
+    """
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(epoch))
+    except (OSError, OverflowError, ValueError):
+        return datetime.fromtimestamp(epoch, tz=UTC).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
 
 
 def build_report(

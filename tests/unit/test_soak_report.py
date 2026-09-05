@@ -209,3 +209,34 @@ def test_since_accepts_iso_8601_and_epoch_ts_17():
     # Z is what the host manifests actually carry, so it is the format that
     # must not regress -- the same instant as the offset form above.
     assert soak_report.parse_since("2026-09-04T03:49:15Z") == 1788493755.0
+
+
+def test_window_label_survives_a_platform_that_rejects_pre_epoch_time_ts_17(monkeypatch):
+    """[TS-17] A report must not fail over the label on a timestamp it can measure.
+
+    Windows' localtime() raises on pre-epoch values, which the default 30-day
+    window reaches whenever `now` is small — a fixture at now=1000 starts the
+    window at -2,591,000. Caught by Windows CI, reproduced here by refusing the
+    same way on any platform.
+    """
+    def _refuse(_value):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(soak_report.time, "localtime", _refuse)
+
+    assert soak_report._stamp(-2_591_000) == "1969-12-02 00:16:40 UTC"
+
+
+def test_report_builds_against_a_pre_epoch_window_ts_17(tmp_path):
+    """[TS-17] The small-`now` fixture path must produce a report, not an OSError."""
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    _samples(conn, "cpu_pct", [(900, 0.2)])
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=1000.0)
+
+    assert "# FTMON soak evidence report" in report
+    assert "- Window:" in report
