@@ -206,3 +206,6 @@ def test_since_accepts_iso_8601_and_epoch_ts_17():
     assert soak_report.parse_since("1700000000") == 1_700_000_000.0
     # An explicit offset must be honoured rather than reinterpreted as local.
     assert soak_report.parse_since("2026-09-04T13:49:15+10:00") == 1788493755.0
+    # Z is what the host manifests actually carry, so it is the format that
+    # must not regress -- the same instant as the offset form above.
+    assert soak_report.parse_since("2026-09-04T03:49:15Z") == 1788493755.0
