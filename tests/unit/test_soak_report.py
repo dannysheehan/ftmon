@@ -154,3 +154,89 @@ def test_missing_used_page_metric_is_stated_not_silently_blank_dm_05(tmp_path):
 
     assert "absent from this database" in report
     assert "Storage cannot be judged" in report
+
+
+def test_since_scopes_the_window_to_the_build_under_test_ts_17(tmp_path):
+    """[TS-17] An in-place upgrade must not report the replaced build's history.
+
+    Both legs were upgraded on their carried databases, so a rolling 30-day
+    window blends two builds and the older, longer one wins the percentiles.
+    """
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    upgrade = _NOW - 3600
+    old = [(upgrade - 86400 + 60 * i, 9.0) for i in range(120)]
+    new = [(upgrade + 60 * i, 0.4) for i in range(60)]
+    _samples(conn, "cpu_pct", old + new)
+    conn.commit()
+    conn.close()
+
+    unscoped = _cpu_row(soak_report.build_report(db, now=_NOW))
+    scoped = _cpu_row(soak_report.build_report(db, now=_NOW, since=upgrade))
+
+    assert "9.00 %" in unscoped  # the replaced build dominates a rolling window
+    assert "9.00 %" not in scoped
+    assert "0.40 %" in scoped
+
+
+def test_report_states_the_window_it_used_ts_17(tmp_path):
+    """[TS-17] The window must be on the page, not inferred from odd percentiles.
+
+    A capture scoped to the wrong build is only detectable by a reader who
+    already suspects it, unless the report says which window it measured.
+    """
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    _samples(conn, "cpu_pct", [(_NOW - 600 + 60 * i, 0.5) for i in range(10)])
+    conn.commit()
+    conn.close()
+
+    rolling = soak_report.build_report(db, now=_NOW)
+    scoped = soak_report.build_report(db, now=_NOW, since=_NOW - 7200)
+
+    assert "rolling 30 d" in rolling
+    assert "scoped to the build under test" in scoped
+    assert "2.0 h," in scoped  # the window it actually measured
+
+
+def test_since_accepts_iso_8601_and_epoch_ts_17():
+    """[TS-17] Manifests record ISO-8601; operators reach for epoch seconds."""
+    assert soak_report.parse_since("1700000000") == 1_700_000_000.0
+    # An explicit offset must be honoured rather than reinterpreted as local.
+    assert soak_report.parse_since("2026-09-04T13:49:15+10:00") == 1788493755.0
+    # Z is what the host manifests actually carry, so it is the format that
+    # must not regress -- the same instant as the offset form above.
+    assert soak_report.parse_since("2026-09-04T03:49:15Z") == 1788493755.0
+
+
+def test_window_label_survives_a_platform_that_rejects_pre_epoch_time_ts_17(monkeypatch):
+    """[TS-17] A report must not fail over the label on a timestamp it can measure.
+
+    Windows' localtime() raises on pre-epoch values, which the default 30-day
+    window reaches whenever `now` is small — a fixture at now=1000 starts the
+    window at -2,591,000. Caught by Windows CI, reproduced here by refusing the
+    same way on any platform.
+    """
+    def _refuse(_value):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(soak_report.time, "localtime", _refuse)
+
+    assert soak_report._stamp(-2_591_000) == "1969-12-02 00:16:40 UTC"
+
+
+def test_report_builds_against_a_pre_epoch_window_ts_17(tmp_path):
+    """[TS-17] The small-`now` fixture path must produce a report, not an OSError."""
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    _samples(conn, "cpu_pct", [(900, 0.2)])
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=1000.0)
+
+    assert "# FTMON soak evidence report" in report
+    assert "- Window:" in report

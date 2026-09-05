@@ -49,6 +49,23 @@ Store reports under `soak/evidence/` (gitignored) or attach to release notes.
 
 Pass `--days N` to narrow the window; the default 30 is the TS-17 gate.
 
+**Scope the window to the build under test.** A leg upgraded in place keeps the
+previous build's history in the same database, so a rolling 30-day window blends
+two builds and the older, longer one wins the percentiles — on the 2026-09-06
+capture that was the difference between a reported RSS p95 of 194.5 MB and the
+running build's actual 74.7 MB. Pass `--since` with the leg's start:
+
+```sh
+uv run python tools/soak_report.py ~/.local/share/ftmon/ftmon.db \
+  --since 2026-09-04T13:49:15+10:00 -o report.md
+```
+
+`--since` takes ISO-8601 or epoch seconds and overrides `--days`. The packaged
+capture script reads it from the host manifest (`window_starts_at`, falling back
+to `deployed_at`), so the weekly timer needs no editing when the clock starts.
+Every report prints the window it measured; check that line before quoting a
+number from it.
+
 ## How each budget is measured
 
 The report deliberately does not take the most convenient series for each

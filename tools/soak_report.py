@@ -23,6 +23,12 @@ A 30-day window outlives raw retention, so older stretches survive only as
 5-minute and then hourly rollups. An hourly mean cannot express a 10-minute
 average or a peak, so the coarse tail is summarized apart from the verdict
 rather than being silently averaged into it.
+
+A leg upgraded in place keeps the previous build's history in the same
+database, so a fixed 30-day window blends two builds and reports the older one
+(issue #178). `--since` scopes the window to the build under test, and the
+window actually used is printed in the report: a reader should see the mismatch
+on the page rather than infer it from a percentile that looks wrong.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ import json
 import sqlite3
 import sys
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ftmon.store.db import connect, migrate
@@ -46,6 +53,9 @@ _DM05_DB_MB = 200
 _CPU_WINDOW_S = 600
 
 _MIB = 1024 * 1024
+
+# Pure arithmetic base for pre-epoch labels; see _stamp.
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 # (table, time column, value column, count column). Tiers that can still
 # express a 10-minute average, finest first.
@@ -130,10 +140,46 @@ def _span_hours(points: list[tuple[int, float, int]]) -> float:
     return (points[-1][0] - points[0][0]) / 3600 if len(points) > 1 else 0.0
 
 
-def build_report(db_path: Path, *, now: float | None = None, days: int = 30) -> str:
+def parse_since(text: str) -> float:
+    """Epoch seconds from an ISO-8601 timestamp or a raw epoch value."""
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    stamp = datetime.fromisoformat(text)
+    # A bare timestamp is the operator's local time; manifests carry an offset.
+    return (stamp.astimezone() if stamp.tzinfo is None else stamp).timestamp()
+
+
+def _stamp(epoch: float) -> str:
+    """Local wall time, falling back to UTC where the platform refuses.
+
+    Windows rejects pre-epoch timestamps, which a synthetic window reaches
+    whenever `now` is small: a fixture at now=1000 puts the default 30-day start
+    at -2,591,000. A report must not fail over the label on a timestamp it can
+    still measure.
+
+    The fallback is deliberately arithmetic. `datetime.fromtimestamp` is not an
+    escape from this — on Windows it refuses the same values through the same
+    platform conversion, which is how the first attempt at this fix failed.
+    """
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(epoch))
+    except (OSError, OverflowError, ValueError):
+        return (_EPOCH + timedelta(seconds=epoch)).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def build_report(
+    db_path: Path, *, now: float | None = None, days: int = 30, since: float | None = None
+) -> str:
     """Return markdown summarizing TS-17 gate evidence from *db_path*."""
     now = time.time() if now is None else now
-    start = now - days * 86400
+    start = now - days * 86400 if since is None else since
+    scope = (
+        f"rolling {days} d"
+        if since is None
+        else "scoped to the build under test (--since)"
+    )
     conn = connect(db_path)
     try:
         migrate(conn)
@@ -178,8 +224,10 @@ def build_report(db_path: Path, *, now: float | None = None, days: int = 30) -> 
             f"- DB used (doctor, DM-05 budget): {doctor['used_bytes']:,} bytes",
             f"- DB file on disk (no budget identity): {doctor['db_bytes']:,} bytes",
             f"- DB freelist: {doctor['freelist_bytes']:,} bytes",
+            f"- Window: {_stamp(start)} → {_stamp(now)} "
+            f"({(now - start) / 3600:.1f} h, {scope})",
             "",
-            f"## RB-01 / DM-05 budgets ({days} d window)",
+            "## RB-01 / DM-05 budgets",
             "",
             "| Quantity | p50 | p95 | max | budget |",
             "| --- | ---: | ---: | ---: | ---: |",
@@ -271,8 +319,16 @@ def main(argv: list[str] | None = None) -> int:
         "--days", type=int, default=30,
         help="Evidence window in days (default: 30, the TS-17 gate)",
     )
+    parser.add_argument(
+        "--since", type=parse_since, default=None,
+        help="Window start as ISO-8601 or epoch seconds; overrides --days. Use the "
+             "current leg's start so an in-place upgrade does not report the "
+             "previous build's history (issue #178)",
+    )
     args = parser.parse_args(argv)
-    report = build_report(args.database.expanduser().resolve(), days=args.days)
+    report = build_report(
+        args.database.expanduser().resolve(), days=args.days, since=args.since
+    )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(report, encoding="utf-8")
