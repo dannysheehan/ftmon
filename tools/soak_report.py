@@ -38,7 +38,7 @@ import json
 import sqlite3
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ftmon.store.db import connect, migrate
@@ -53,6 +53,9 @@ _DM05_DB_MB = 200
 _CPU_WINDOW_S = 600
 
 _MIB = 1024 * 1024
+
+# Pure arithmetic base for pre-epoch labels; see _stamp.
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 # (table, time column, value column, count column). Tiers that can still
 # express a 10-minute average, finest first.
@@ -151,17 +154,19 @@ def parse_since(text: str) -> float:
 def _stamp(epoch: float) -> str:
     """Local wall time, falling back to UTC where the platform refuses.
 
-    Windows' localtime() rejects pre-epoch timestamps, which a synthetic window
-    reaches whenever `now` is small: a fixture at now=1000 puts the default
-    30-day start at -2,591,000. A report must not fail over the label on a
-    timestamp it can still measure.
+    Windows rejects pre-epoch timestamps, which a synthetic window reaches
+    whenever `now` is small: a fixture at now=1000 puts the default 30-day start
+    at -2,591,000. A report must not fail over the label on a timestamp it can
+    still measure.
+
+    The fallback is deliberately arithmetic. `datetime.fromtimestamp` is not an
+    escape from this — on Windows it refuses the same values through the same
+    platform conversion, which is how the first attempt at this fix failed.
     """
     try:
         return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(epoch))
     except (OSError, OverflowError, ValueError):
-        return datetime.fromtimestamp(epoch, tz=UTC).strftime(
-            "%Y-%m-%d %H:%M:%S UTC"
-        )
+        return (_EPOCH + timedelta(seconds=epoch)).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def build_report(
