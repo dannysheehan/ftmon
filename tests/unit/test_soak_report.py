@@ -240,3 +240,62 @@ def test_report_builds_against_a_pre_epoch_window_ts_17(tmp_path):
 
     assert "# FTMON soak evidence report" in report
     assert "- Window:" in report
+
+
+def test_superseded_clear_is_explained_not_counted_against_the_gate_rb_02(tmp_path):
+    """[RB-02][TS-17] Changing definitions supersedes an incident; that is explained.
+
+    Splitting the combined `budget` group into cpu/rss/db groups, which RB-02
+    requires, superseded the old group's incident on both soak legs — and made
+    each report claim one unexplained self incident, which TS-17 forbids.
+    """
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    conn.executemany(
+        "INSERT INTO incidents(monitor, grp, entity_id, state, severity, owning_rule, "
+        "opened_ts, cleared_ts, clear_reason) VALUES('self',?,'ftmon','cleared',2,?,?,?,?)",
+        [
+            ("budget", "rss-budget", _NOW - 7200, _NOW - 3600, "superseded"),
+            ("cpu-budget", "cpu-budget", _NOW - 1800, _NOW - 900, "recovered"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "- Unexplained self incidents: 0" in report
+
+
+def test_terminal_delivery_failures_are_not_reported_as_backlog_ts_17(tmp_path):
+    """[TS-17][NO-07] "Outbox draining" is about retriable debt, not dead rows.
+
+    A permanently failed delivery never drains and nothing prunes the table, so
+    counting it as pending leaves the criterion unsatisfiable forever while
+    hiding a defect inside a number that looks like a stuck queue.
+    """
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO notifications(id, incident_id, created_ts, severity, kind, title, "
+        "body, monitor, entity_id) VALUES(1, 1, ?, 2, 'open', 't', 'b', 'self', 'ftmon')",
+        (_NOW - 600,),
+    )
+    conn.executemany(
+        "INSERT INTO notification_deliveries(notification_id, channel, state, "
+        "attempt_count, next_attempt_ts, delivered_ts, last_error) VALUES(1,?,?,?,?,?,?)",
+        [
+            ("desktop", "failed", 1, None, None, "desktop_exit (1)"),
+            ("ntfy", "pending", 1, _NOW + 30, None, "timeout"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "- Pending deliveries (retriable backlog): 1" in report
+    assert "Terminally failed: desktop x1 (desktop_exit (1))" in report
+    assert "defect signal, not backlog" in report
