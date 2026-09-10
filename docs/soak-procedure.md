@@ -97,9 +97,16 @@ budget, because two of them do not say what the requirement says.
 | RB-01 CPU: p95 of 10-minute means | `soak_report.py` `cpu_pct (10 m avg)` row |
 | RB-01 RSS: daemon, and web/MCP ≤ 80 MB each | `soak_report.py` `rss_mb` row |
 | DM-05: `db_used` at or under target, degradation not sustained | `soak_report.py` `db_used_mb` row / `ftmon doctor` |
-| Outbox draining | pending `notification_deliveries` in report |
-| No unexplained `self` incidents | report incident section |
+| Outbox draining | `Pending deliveries (retriable backlog)` in report |
+| No terminally failed deliveries | `Terminally failed` line, absent when clean |
+| No unexplained `self` incidents | report incident section (`superseded` counts as explained) |
 | Clean `ftmon doctor` at end | doctor JSON `ok: true` |
+
+`superseded` is an explained clear: changing a definition supersedes the old
+group's incident, which is what splitting the combined `budget` group into
+cpu/rss/db groups per RB-02 did on both legs. Terminal delivery failures are
+listed separately from backlog because nothing prunes them — they never drain,
+so counting them as pending would leave the criterion permanently unmet.
 
 A leg whose `self` monitor alarms above the normative budget cannot evidence
 the incident criterion: set `cpu_budget_pct` to RB-01's figure on soak hosts, or

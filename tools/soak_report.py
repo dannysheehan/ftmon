@@ -54,6 +54,12 @@ _CPU_WINDOW_S = 600
 
 _MIB = 1024 * 1024
 
+# Clear reasons that describe why an incident ended, so TS-17 must not count
+# them as unexplained. `superseded` is the one that bit: changing definitions
+# supersedes the old group's incident, and splitting the combined `budget`
+# group into cpu/rss/db per RB-02 did exactly that on both soak legs.
+_EXPLAINED_CLEARS = (None, "recovered", "entity_gone", "superseded")
+
 # Pure arithmetic base for pre-epoch labels; see _stamp.
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -201,12 +207,23 @@ def build_report(
         unexplained_self = [
             row for row in self_incidents
             if row["state"] in ("open", "acked")
-            or (row["clear_reason"] not in (None, "recovered", "entity_gone"))
+            or (row["clear_reason"] not in _EXPLAINED_CLEARS)
         ]
 
+        # Backlog and terminal failure are different facts. TS-17 asks whether
+        # the outbox *drains*, which is a statement about retriable debt; a
+        # delivery that failed permanently never drains and nothing prunes the
+        # table, so counting it as pending would leave the gate unsatisfiable
+        # while disguising a defect as a queue that is not moving.
         pending_deliveries = conn.execute(
-            "SELECT COUNT(*) FROM notification_deliveries WHERE delivered_ts IS NULL"
+            "SELECT COUNT(*) FROM notification_deliveries "
+            "WHERE delivered_ts IS NULL AND state != 'failed'"
         ).fetchone()[0]
+        failed_deliveries = conn.execute(
+            "SELECT channel, COUNT(*) AS n, MAX(last_error) AS err "
+            "FROM notification_deliveries WHERE state = 'failed' "
+            "GROUP BY channel ORDER BY n DESC"
+        ).fetchall()
         total_deliveries = conn.execute(
             "SELECT COUNT(*) FROM notification_deliveries"
         ).fetchone()[0]
@@ -282,8 +299,16 @@ def build_report(
             "",
             "## Notification outbox",
             "",
-            f"- Pending deliveries: {pending_deliveries}",
+            f"- Pending deliveries (retriable backlog): {pending_deliveries}",
             f"- Total delivery rows: {total_deliveries}",
+            *(
+                ["- Terminally failed: "
+                 + "; ".join(f"{r['channel']} x{r['n']} ({r['err']})"
+                             for r in failed_deliveries)
+                 + " — these never drain and nothing prunes them, so they are a"
+                   " defect signal, not backlog"]
+                if failed_deliveries else []
+            ),
             "",
             "## Doctor",
             "",
