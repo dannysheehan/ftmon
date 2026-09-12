@@ -1,6 +1,11 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.65** — v0.65 migrates the optional stdio server to the
+Status: **DRAFT v0.66** — v0.66 makes RB-01's CPU budget explicit about what it
+scales with. The daemon's cost tracks **sampled** process count, not persisted
+cardinality, so the figure is stated for a reference server profile and a profile
+may carry a calibration derived in DM-16's worksheet — while a looser threshold is
+recorded as an operational value and never as compliance, keeping the Windows
+sampler overhead a tracked defect (RB-01, DM-16, TS-17, issue #175). v0.65 migrates the optional stdio server to the
 official MCP SDK v2 `MCPServer` while preserving its frozen tools, resources,
 response contracts, and two narrow write paths. The server reports package
 version and operating instructions, publishes accurate read/write annotations,
@@ -1232,7 +1237,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 ## 13. Resource budget (self-enforced)
 
-- **RB-01** Daemon steady-state: ≤ 1 % of one CPU averaged over 10 m; RSS ≤ 100 MB; DB ≤ 200 MB (DM-05). Web UI and MCP processes: RSS ≤ 80 MB each. Feasibility is demonstrated, not asserted: DM-16's capacity worksheet.
+- **RB-01** Daemon steady-state on the **reference server profile** (≈ 100 sampled processes): ≤ 1 % of one CPU averaged over 10 m; RSS ≤ 100 MB; DB ≤ 200 MB (DM-05). Web UI and MCP processes: RSS ≤ 80 MB each. Feasibility is demonstrated, not asserted: DM-16's capacity worksheet. The CPU figure scales with **sampled** process count, not with persisted cardinality: under SA-05 track-all the sampler visits every process while persisting few, so a desktop profile costs more than a server profile holding a larger catalog. A profile MAY therefore carry a calibrated `cpu_budget_pct` above the reference figure, provided the calibration is derived in DM-16's worksheet from that profile's sampled population and is recorded in the profile's own definition rather than applied by hand to a host. A calibrated alarm threshold is an operational value and **not a grant of compliance**: where measured cost exceeds what process-count scaling explains, RB-01 is missed, and the miss MUST be tracked as a defect rather than absorbed by raising the threshold — Windows `ProcessSampler` at ~15–60 % of one core is such a miss, and its profile's 30 % threshold records the symptom, not permission. Evidence under TS-17 MUST state the measured value, the reference figure, and the profile figure it was measured against, so a pass can never rest on an unstated calibration. (v0.66 amendment, issue #175.)
 - **RB-02** The daemon samples **itself** (cpu, rss, cycle duration, per-source duration, DB size, event queue depth, ring-buffer memory, event_source_last_activity_age) into the built-in `self` monitor (§7.7) with rules that open a `warning` incident on sustained budget breach — the monitor must not become the hog, and if it does, it tells on itself. Per-source duration MUST partition `sampling_seconds_total` into fixed cumulative counters for the finite sampler registry: `sampling_process_seconds_total`, `sampling_disk_seconds_total`, `sampling_system_seconds_total`, `sampling_net_seconds_total`, `sampling_unit_seconds_total`, `sampling_self_seconds_total`, and `sampling_external_seconds_total`. Every cache-miss sample is charged to exactly one counter, cache hits cost none, and the seven deltas MUST sum to the aggregate delta within numeric precision. The external counter covers the existing shared-sample projection call; external-check preparation/execution remains outside `sampling_seconds_total` and is bounded separately by EC-02. No monitor, alias, plugin, or runtime source name may create another self metric. Post-sample tick cost MUST likewise partition `pipeline_seconds_total` into fixed cumulative counters for a closed compile-time phase vocabulary: `pipeline_ingest_seconds_total`, `pipeline_derived_seconds_total`, `pipeline_exempt_seconds_total`, `pipeline_rules_seconds_total`, and `pipeline_persist_seconds_total`. The five deltas MUST sum to the aggregate delta within numeric precision. The aggregate covers persistence selection and disappearance tracking as well as projection and rule evaluation, so the split MUST keep `persist` distinct: growth confined to it indicates catalog or storage pressure rather than evaluation cost, and one undecomposed total cannot express that difference. (v0.46 amendment, issue #104; v0.53 amendment, issue #106; v0.54 amendment, issue #143.) "DB size" is five distinct quantities, not one: the physical database file, SQLite's logical page allocation, used pages, reusable freelist bytes, and signed headroom against DM-05's target. The physical file and the logical allocation are **not** interchangeable — WAL mode lets committed pages live outside the main file until a checkpoint — so only `used + freelist == allocated` holds, and the physical file participates in no budget identity. A metric that previously reported the physical file MUST keep reporting it, since redefining a persisted series introduces a step no database ever took. Headroom MUST be measured against that normative target rather than against whatever level a definition alarms at, so retuning a threshold cannot move the reported distance to the budget. The self source MUST also expose the counts of entities and series for which durable history is currently being written (DM-16). Unrelated budgets MUST occupy distinct incident groups: a single group shared by CPU, memory and storage lets one incident stay open while ownership moves between them, so its duration and recovery history describe nothing in particular.
 - **RB-03** Tier-1 e2e tests assert cycle-time and DB-growth invariants under a synthetic 300-process, 10-events/s load (§16.4).
 
@@ -1521,6 +1526,18 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.66 (2026-09-12)** — states what RB-01's CPU budget scales with. Seven days of
+TS-17 evidence on two 2.0.0a19 legs measured 0.62 % p95 of one core on a 99-process
+server and 1.01 % on a 238-process desktop, with process sampling 89–94 % of all
+sampling time; the server held 7,980 process entities against the desktop's 458 and
+was still the cheaper leg, so the driver is the sampled population, not the catalog.
+The budget is therefore expressed for a reference server profile, with per-profile
+calibrations derived in DM-16's worksheet and recorded in the profile definition. A
+calibrated threshold explicitly does not confer compliance: the Windows sampler's
+~15–60 % remains a defect its profile's 30 % threshold merely records, and TS-17
+evidence must name the measured value, the reference figure, and the profile figure
+(RB-01, DM-16, TS-17, issue #175).
 
 **v0.65 (2026-09-04)** — migrates the optional stdio server from the MCP SDK
 v1 compatibility API to the official SDK v2 `MCPServer` without changing the

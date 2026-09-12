@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.48**. Companion to `SPEC.md` v0.65 — every design element
+Status: **DRAFT v0.49**. Companion to `SPEC.md` v0.66 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -869,6 +869,42 @@ assumptions — `ftmon doctor` (CL-05) reports both counts separately rather
 than treating the active-state assumption as a total-catalog budget, since
 doing so would produce routine false pressure on any host with real process
 churn.
+
+**v0.49 (issue #175): what the CPU budget actually scales with.** RB-01 stated
+one CPU figure while the product shipped four thresholds — 1.5 generic, 4.0
+desktop, 10 macOS, 30 Windows — and the spec never said why. Seven days of
+TS-17 evidence on two `2.0.0a19` legs, measured as 10-minute means per RB-01:
+
+| | reference server leg | desktop leg |
+| --- | ---: | ---: |
+| sampled (live) processes | 99 | 238 |
+| `sampling_process_seconds_total` per hour of daemon life | 2.72 s | 8.08 s |
+| that as % of one core | 0.076 % | 0.225 % |
+| measured `cpu_pct` p50 / p95 | 0.54 / 0.62 % | 0.97 / 1.01 % |
+| persisted process entities | **7,980** | 458 |
+
+The last row is the one that settles the mechanism: the server holds seventeen
+times the catalog and is still the cheaper leg, so cost follows the **sampled**
+population, not persisted cardinality. That is SA-05 track-all behaving as
+specified — the sampler visits every process and selects few — and it is the
+same sampled-to-selected ratio DM-16 already invokes for storage pressure.
+
+Fitting the two legs gives `cpu ≈ 0.23 % + 0.0031 % × sampled processes`, which
+at the worksheet's 400-entity planning assumption predicts **1.47 %** — within
+rounding of the 1.5 the generic built-in has shipped all along. That agreement
+is the reason to trust the shape, but it is a two-point fit against two
+unknowns: it is a derivation basis to re-fit as more profiles report, not a
+validated model, and it must not be quoted as one.
+
+What it does **not** license: Windows `ProcessSampler` measured ~15–60 % of one
+core, which no process-count scaling explains (the Windows leg samples no more
+than a Linux server). That profile's 30 % threshold records a defect, tracked in
+`docs/WIN-BACKLOG.md`, and RB-01 v0.66 says so explicitly so a calibration can
+never be mistaken for compliance. The shipped desktop threshold of 4.0 is
+likewise looser than this derivation supports (~1.5 at 400 processes, against a
+leg measuring 1.01 % at 238) and wants tightening on its own evidence rather
+than in this amendment, since narrowing a live alarm changes what existing
+desktop installs report.
 
 **v0.27 (issue #103): reap expires the hourly tail rather than waiting for
 it.** "Bounded by DM-04's retention windows" above is exactly the problem —

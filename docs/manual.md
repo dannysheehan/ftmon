@@ -71,8 +71,12 @@ average over ~3 days) and rules can compare against it:
 the first ~24 h of data — baseline rules are automatically silent while
 learning.
 
-**Budget.** FTMON promises to stay under ~1% CPU, ~100 MB RAM, and a
-200 MB database. How much history that buys depends on what the data is
+**Budget.** FTMON promises to stay under ~1% CPU on a server-shaped host,
+~100 MB RAM, and a 200 MB database. The CPU figure scales with how many
+processes are *sampled*, not how many are kept: a desktop watching a few
+hundred processes costs more than a server watching a hundred, so each profile
+ships its own alarm threshold and the dashboard shows both that and the 1%
+reference. How much history that buys depends on what the data is
 about: durable things — your disks, the system, FTMON itself — keep 48 h of
 raw samples, a month at 5-minute resolution and roughly a year of hourly
 history. Individual processes come and go in their thousands, so their
@@ -411,9 +415,11 @@ never the only way to tell.
 
 The limits come from your own `self.toml`, not from the spec. If you have
 raised `cpu_budget_pct` because your host is noisier than the default, the
-page compares against your value and shows RB-01's cross-platform target of
-1% alongside — they differ on purpose, and seeing both tells you whether a
-comfortable reading is comfortable against a relaxed bar.
+page compares against your value and shows RB-01's reference figure of 1%
+alongside — they differ on purpose, and seeing both tells you whether a
+comfortable reading is comfortable against a relaxed bar. The reference
+describes a server-shaped host; a looser profile threshold is a calibration for
+a larger sampled population, not a different promise.
 
 A percentage above 100 is shown as it is. Six percent CPU against a 1.5%
 threshold reads as 400%, not as a full bar, because how far over matters.
