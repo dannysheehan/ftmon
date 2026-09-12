@@ -52,6 +52,14 @@ gap.
   instead of treating this as a bug to fix. Rejected for now (user
   decision, 2026-07-26) in favor of investigating a real fix first, but
   worth revisiting if the investigation doesn't find a good one.
+  **Still rejected after SPEC v0.66 (issue #175).** That amendment made RB-01's
+  CPU figure scale with sampled process count and allowed per-profile
+  calibrations, which might look like the carve-out above — it is not. It says
+  in terms that a calibrated threshold is an operational value and never a
+  grant of compliance, and that measured cost which process-count scaling
+  cannot explain is a defect. Windows samples no more processes than a Linux
+  server and costs 15–60x more, so this item stands exactly as written; the
+  profile's 30% records the symptom.
 
 **Likely touchpoints**: `src/ftmon/sources/process.py`,
 `src/ftmon/definitions/profile/windows/self.toml` (revert the

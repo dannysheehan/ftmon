@@ -299,3 +299,88 @@ def test_terminal_delivery_failures_are_not_reported_as_backlog_ts_17(tmp_path):
     assert "- Pending deliveries (retriable backlog): 1" in report
     assert "Terminally failed: desktop x1 (desktop_exit (1))" in report
     assert "defect signal, not backlog" in report
+
+
+def _write_self_def(tmp_path, value):
+    monitors = tmp_path / "monitors"
+    monitors.mkdir(parents=True, exist_ok=True)
+    (monitors / "self.toml").write_text(
+        "[parameters]\n"
+        f'cpu_budget_pct = {{ value = {value}, doc = "d" }}\n',
+        encoding="utf-8",
+    )
+    return monitors
+
+
+def test_profile_cpu_budget_reads_the_deployed_calibration_rb_01(tmp_path, monkeypatch):
+    """[RB-01][DM-16] The profile figure lives in the definition, not the database."""
+    monitors = _write_self_def(tmp_path, 4.0)
+    monkeypatch.setattr(soak_report, "get_paths",
+                        lambda: type("P", (), {"monitors_dir": monitors})())
+
+    assert soak_report.profile_cpu_budget() == 4.0
+
+
+def test_a_calibration_above_the_reference_is_not_reported_as_compliance_rb_01(
+    tmp_path, monkeypatch
+):
+    """[RB-01] RB-01 v0.66: a looser threshold is an operational value, not a pass.
+
+    The Windows profile's 30 % records measured sampler overhead that no
+    process-count scaling explains; reporting it as the budget would launder a
+    tracked defect into compliance.
+    """
+    monitors = _write_self_def(tmp_path, 30)
+    monkeypatch.setattr(soak_report, "get_paths",
+                        lambda: type("P", (), {"monitors_dir": monitors})())
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    _samples(conn, "cpu_pct", [(_NOW - 600 + 60 * i, 0.5) for i in range(10)])
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "RB-01 reference: 1 % of one core (server profile)" in report
+    assert "calibrated **30 %**" in report
+    assert "not compliance" in report
+
+
+def test_a_profile_inside_the_reference_is_reported_plainly_rb_01(tmp_path, monkeypatch):
+    """[RB-01] A leg alarming at or below the reference needs no caveat."""
+    monitors = _write_self_def(tmp_path, 1.0)
+    monkeypatch.setattr(soak_report, "get_paths",
+                        lambda: type("P", (), {"monitors_dir": monitors})())
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    _samples(conn, "cpu_pct", [(_NOW - 600 + 60 * i, 0.5) for i in range(10)])
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "at or inside the reference" in report
+    assert "not compliance" not in report
+
+
+def test_an_unreadable_calibration_is_stated_not_omitted_rb_01(tmp_path, monkeypatch):
+    """[RB-01] Evidence must never rest on an unstated calibration.
+
+    Silence would read as "measured against the reference", which is precisely
+    the assumption RB-01 v0.66 forbids a pass from resting on.
+    """
+    monkeypatch.setattr(soak_report, "get_paths",
+                        lambda: type("P", (), {"monitors_dir": tmp_path / "absent"})())
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    _samples(conn, "cpu_pct", [(_NOW - 60, 0.5)])
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "could not be read" in report
+    assert "unstated" in report
