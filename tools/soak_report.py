@@ -38,9 +38,11 @@ import json
 import sqlite3
 import sys
 import time
+import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ftmon.paths import get_paths
 from ftmon.store.db import connect, migrate
 from ftmon.store.doctor import inspect
 from ftmon.store.query import Query
@@ -53,6 +55,12 @@ _DM05_DB_MB = 200
 _CPU_WINDOW_S = 600
 
 _MIB = 1024 * 1024
+
+# Clear reasons that describe why an incident ended, so TS-17 must not count
+# them as unexplained. `superseded` is the one that bit: changing definitions
+# supersedes the old group's incident, and splitting the combined `budget`
+# group into cpu/rss/db per RB-02 did exactly that on both soak legs.
+_EXPLAINED_CLEARS = (None, "recovered", "entity_gone", "superseded")
 
 # Pure arithmetic base for pre-epoch labels; see _stamp.
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -151,6 +159,25 @@ def parse_since(text: str) -> float:
     return (stamp.astimezone() if stamp.tzinfo is None else stamp).timestamp()
 
 
+def profile_cpu_budget() -> float | None:
+    """This host's calibrated `cpu_budget_pct`, or None if it cannot be read.
+
+    RB-01 v0.66 requires TS-17 evidence to name the profile figure it was
+    measured against as well as the reference figure, so a pass can never rest
+    on an unstated calibration. The threshold lives in the deployed definition,
+    not in the database, so it is read from the resolved monitors directory.
+    """
+    try:
+        text = (get_paths().monitors_dir / "self.toml").read_text(encoding="utf-8")
+        params = tomllib.loads(text).get("parameters", {})
+        value = params.get("cpu_budget_pct")
+        if isinstance(value, dict):
+            value = value.get("value")
+        return float(value) if value is not None else None
+    except (OSError, ValueError, tomllib.TOMLDecodeError, TypeError):
+        return None
+
+
 def _stamp(epoch: float) -> str:
     """Local wall time, falling back to UTC where the platform refuses.
 
@@ -201,12 +228,23 @@ def build_report(
         unexplained_self = [
             row for row in self_incidents
             if row["state"] in ("open", "acked")
-            or (row["clear_reason"] not in (None, "recovered", "entity_gone"))
+            or (row["clear_reason"] not in _EXPLAINED_CLEARS)
         ]
 
+        # Backlog and terminal failure are different facts. TS-17 asks whether
+        # the outbox *drains*, which is a statement about retriable debt; a
+        # delivery that failed permanently never drains and nothing prunes the
+        # table, so counting it as pending would leave the gate unsatisfiable
+        # while disguising a defect as a queue that is not moving.
         pending_deliveries = conn.execute(
-            "SELECT COUNT(*) FROM notification_deliveries WHERE delivered_ts IS NULL"
+            "SELECT COUNT(*) FROM notification_deliveries "
+            "WHERE delivered_ts IS NULL AND state != 'failed'"
         ).fetchone()[0]
+        failed_deliveries = conn.execute(
+            "SELECT channel, COUNT(*) AS n, MAX(last_error) AS err "
+            "FROM notification_deliveries WHERE state = 'failed' "
+            "GROUP BY channel ORDER BY n DESC"
+        ).fetchall()
         total_deliveries = conn.execute(
             "SELECT COUNT(*) FROM notification_deliveries"
         ).fetchone()[0]
@@ -250,8 +288,30 @@ def build_report(
         _row("db_used_mb", [v / _MIB for _, v, _ in used_fine], _DM05_DB_MB, "MB", 1)
         _row("db_file_mb (non-normative)", [v / _MIB for _, v, _ in file_fine], None, "MB", 1)
 
+        profile_budget = profile_cpu_budget()
+        if profile_budget is None:
+            calibration = (
+                "- RB-01 reference: 1 % of one core (server profile). This host's "
+                "`cpu_budget_pct` could not be read, so the figure the daemon actually "
+                "alarms at is unstated — resolve that before quoting this as evidence."
+            )
+        elif profile_budget > _RB_CPU_PCT:
+            calibration = (
+                f"- RB-01 reference: {_RB_CPU_PCT:g} % of one core (server profile). This "
+                f"host alarms at a calibrated **{profile_budget:g} %**. A calibration is an "
+                "operational value, not compliance: judge the measured figure against the "
+                "reference, and treat any excess that process-count scaling does not "
+                "explain as a defect."
+            )
+        else:
+            calibration = (
+                f"- RB-01 reference: {_RB_CPU_PCT:g} % of one core (server profile); this "
+                f"host alarms at {profile_budget:g} %, at or inside the reference."
+            )
+
         lines.extend([
             "",
+            calibration,
             f"- CPU: {len(cpu_means)} ten-minute windows over "
             f"{_span_hours(cpu_fine):.1f} h of 60 s/5 m data. Percentiles are of those "
             "means, per RB-01; a single tick's spike is not a budget breach.",
@@ -282,8 +342,16 @@ def build_report(
             "",
             "## Notification outbox",
             "",
-            f"- Pending deliveries: {pending_deliveries}",
+            f"- Pending deliveries (retriable backlog): {pending_deliveries}",
             f"- Total delivery rows: {total_deliveries}",
+            *(
+                ["- Terminally failed: "
+                 + "; ".join(f"{r['channel']} x{r['n']} ({r['err']})"
+                             for r in failed_deliveries)
+                 + " — these never drain and nothing prunes them, so they are a"
+                   " defect signal, not backlog"]
+                if failed_deliveries else []
+            ),
             "",
             "## Doctor",
             "",

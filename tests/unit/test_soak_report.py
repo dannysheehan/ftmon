@@ -6,6 +6,8 @@ quantity is indistinguishable from a daemon that passed or failed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from tools import soak_report
 
 from ftmon.store.db import connect, migrate
@@ -240,3 +242,163 @@ def test_report_builds_against_a_pre_epoch_window_ts_17(tmp_path):
 
     assert "# FTMON soak evidence report" in report
     assert "- Window:" in report
+
+
+def test_superseded_clear_is_explained_not_counted_against_the_gate_rb_02(tmp_path):
+    """[RB-02][TS-17] Changing definitions supersedes an incident; that is explained.
+
+    Splitting the combined `budget` group into cpu/rss/db groups, which RB-02
+    requires, superseded the old group's incident on both soak legs — and made
+    each report claim one unexplained self incident, which TS-17 forbids.
+    """
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    conn.executemany(
+        "INSERT INTO incidents(monitor, grp, entity_id, state, severity, owning_rule, "
+        "opened_ts, cleared_ts, clear_reason) VALUES('self',?,'ftmon','cleared',2,?,?,?,?)",
+        [
+            ("budget", "rss-budget", _NOW - 7200, _NOW - 3600, "superseded"),
+            ("cpu-budget", "cpu-budget", _NOW - 1800, _NOW - 900, "recovered"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "- Unexplained self incidents: 0" in report
+
+
+def test_terminal_delivery_failures_are_not_reported_as_backlog_ts_17(tmp_path):
+    """[TS-17][NO-07] "Outbox draining" is about retriable debt, not dead rows.
+
+    A permanently failed delivery never drains and nothing prunes the table, so
+    counting it as pending leaves the criterion unsatisfiable forever while
+    hiding a defect inside a number that looks like a stuck queue.
+    """
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO notifications(id, incident_id, created_ts, severity, kind, title, "
+        "body, monitor, entity_id) VALUES(1, 1, ?, 2, 'open', 't', 'b', 'self', 'ftmon')",
+        (_NOW - 600,),
+    )
+    conn.executemany(
+        "INSERT INTO notification_deliveries(notification_id, channel, state, "
+        "attempt_count, next_attempt_ts, delivered_ts, last_error) VALUES(1,?,?,?,?,?,?)",
+        [
+            ("desktop", "failed", 1, None, None, "desktop_exit (1)"),
+            ("ntfy", "pending", 1, _NOW + 30, None, "timeout"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "- Pending deliveries (retriable backlog): 1" in report
+    assert "Terminally failed: desktop x1 (desktop_exit (1))" in report
+    assert "defect signal, not backlog" in report
+
+
+def _write_self_def(tmp_path, value):
+    monitors = tmp_path / "monitors"
+    monitors.mkdir(parents=True, exist_ok=True)
+    (monitors / "self.toml").write_text(
+        "[parameters]\n"
+        f'cpu_budget_pct = {{ value = {value}, doc = "d" }}\n',
+        encoding="utf-8",
+    )
+    return monitors
+
+
+def test_profile_cpu_budget_reads_the_deployed_calibration_rb_01(tmp_path, monkeypatch):
+    """[RB-01][DM-16] The profile figure lives in the definition, not the database."""
+    monitors = _write_self_def(tmp_path, 4.0)
+    monkeypatch.setattr(soak_report, "get_paths",
+                        lambda: type("P", (), {"monitors_dir": monitors})())
+
+    assert soak_report.profile_cpu_budget() == 4.0
+
+
+def test_a_calibration_above_the_reference_is_not_reported_as_compliance_rb_01(
+    tmp_path, monkeypatch
+):
+    """[RB-01] RB-01 v0.66: a looser threshold is an operational value, not a pass.
+
+    The Windows profile's 30 % records measured sampler overhead that no
+    process-count scaling explains; reporting it as the budget would launder a
+    tracked defect into compliance.
+    """
+    monitors = _write_self_def(tmp_path, 30)
+    monkeypatch.setattr(soak_report, "get_paths",
+                        lambda: type("P", (), {"monitors_dir": monitors})())
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    _samples(conn, "cpu_pct", [(_NOW - 600 + 60 * i, 0.5) for i in range(10)])
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "RB-01 reference: 1 % of one core (server profile)" in report
+    assert "calibrated **30 %**" in report
+    assert "not compliance" in report
+
+
+def test_a_profile_inside_the_reference_is_reported_plainly_rb_01(tmp_path, monkeypatch):
+    """[RB-01] A leg alarming at or below the reference needs no caveat."""
+    monitors = _write_self_def(tmp_path, 1.0)
+    monkeypatch.setattr(soak_report, "get_paths",
+                        lambda: type("P", (), {"monitors_dir": monitors})())
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    _samples(conn, "cpu_pct", [(_NOW - 600 + 60 * i, 0.5) for i in range(10)])
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "at or inside the reference" in report
+    assert "not compliance" not in report
+
+
+def test_an_unreadable_calibration_is_stated_not_omitted_rb_01(tmp_path, monkeypatch):
+    """[RB-01] Evidence must never rest on an unstated calibration.
+
+    Silence would read as "measured against the reference", which is precisely
+    the assumption RB-01 v0.66 forbids a pass from resting on.
+    """
+    monkeypatch.setattr(soak_report, "get_paths",
+                        lambda: type("P", (), {"monitors_dir": tmp_path / "absent"})())
+    db = tmp_path / "ftmon.db"
+    conn = connect(db)
+    migrate(conn)
+    _samples(conn, "cpu_pct", [(_NOW - 60, 0.5)])
+    conn.commit()
+    conn.close()
+
+    report = soak_report.build_report(db, now=_NOW)
+
+    assert "could not be read" in report
+    assert "unstated" in report
+
+
+def test_capture_script_exports_the_paths_the_calibration_lookup_needs_rb_01():
+    """[RB-01] A server-profile capture must resolve the deployed self.toml.
+
+    The service account has no login session, so `ftmon.paths` needs the same
+    explicit locations the unit sets. Without them the report cannot name the
+    profile figure RB-01 v0.66 requires, and says so rather than guessing —
+    which is how this was caught, on a real capture.
+    """
+    script = (Path(__file__).resolve().parents[2] / "tools"
+              / "capture_soak_evidence.sh").read_text(encoding="utf-8")
+
+    assert "export FTMON_CONFIG_DIR=" in script
+    # The report reads the definition; the DB path is passed as an argument.
+    assert script.index("export FTMON_CONFIG_DIR=") < script.index("soak_report.py")
