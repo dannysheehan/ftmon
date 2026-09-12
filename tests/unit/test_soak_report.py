@@ -6,6 +6,8 @@ quantity is indistinguishable from a daemon that passed or failed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from tools import soak_report
 
 from ftmon.store.db import connect, migrate
@@ -384,3 +386,19 @@ def test_an_unreadable_calibration_is_stated_not_omitted_rb_01(tmp_path, monkeyp
 
     assert "could not be read" in report
     assert "unstated" in report
+
+
+def test_capture_script_exports_the_paths_the_calibration_lookup_needs_rb_01():
+    """[RB-01] A server-profile capture must resolve the deployed self.toml.
+
+    The service account has no login session, so `ftmon.paths` needs the same
+    explicit locations the unit sets. Without them the report cannot name the
+    profile figure RB-01 v0.66 requires, and says so rather than guessing —
+    which is how this was caught, on a real capture.
+    """
+    script = (Path(__file__).resolve().parents[2] / "tools"
+              / "capture_soak_evidence.sh").read_text(encoding="utf-8")
+
+    assert "export FTMON_CONFIG_DIR=" in script
+    # The report reads the definition; the DB path is passed as an argument.
+    assert script.index("export FTMON_CONFIG_DIR=") < script.index("soak_report.py")
