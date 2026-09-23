@@ -1,0 +1,41 @@
+schema = 1
+
+[recipe]
+id = "nvidia-gpu"
+title = "NVIDIA GPU health"
+summary = "Track one NVIDIA GPU's temperature, utilization, memory and power, with confirmed heat and check-health alerts."
+kind = "ftmon-json"
+platforms = ["linux"]
+upstream = "https://github.com/dannysheehan/ftmon/tree/main/extra-monitors/nvidia-gpu"
+license = "MIT"
+status = "tested"
+privilege = "none"
+network = false
+last_verified_version = "FTMON check_gpu recipe script; deterministic fixtures only (NVIDIA driver not verified)"
+category = "hardware"
+tags = ["gpu", "hardware", "nvidia", "power", "temperature", "utilization"]
+min_ftmon_version = "2.0.0a19"
+
+[[fixtures]]
+path = "fixtures/ok.txt"
+exit_code = 0
+state = 0
+labels = ["temp", "util", "mem_util", "mem_used", "mem_total", "power", "power_limit", "fan_pct", "sm_clock", "mem_clock"]
+
+[[fixtures]]
+path = "fixtures/warning.txt"
+exit_code = 0
+state = 1
+labels = ["temp", "util", "mem_util", "mem_used", "mem_total", "power", "power_limit", "fan_pct", "sm_clock", "mem_clock"]
+
+[[fixtures]]
+path = "fixtures/critical.txt"
+exit_code = 0
+state = 2
+labels = ["temp", "util", "mem_util", "mem_used", "mem_total", "power", "power_limit", "fan_pct", "sm_clock", "mem_clock"]
+
+[[fixtures]]
+path = "fixtures/unknown.txt"
+exit_code = 0
+state = 3
+labels = []

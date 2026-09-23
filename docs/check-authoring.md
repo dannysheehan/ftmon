@@ -16,6 +16,50 @@ administrator grants that executable authority to run, see
 output onto stored metrics, see the "External checks" section of
 [Definitions](definitions.md), served as `ftmon://docs/definitions`.
 
+## Report collection failures safely
+
+An upstream command can report an error on stdout, on stderr, or both; some
+commands leave stderr empty. When writing a wrapper, inspect both streams and
+choose a concise, bounded, control-safe diagnostic that helps an operator
+identify the failed operation. Remove credentials and other sensitive values
+before emitting or recording that diagnostic. Do not assume stderr contains
+the useful detail, and do not copy arbitrary upstream output into a message.
+
+Keep the check's stdout valid for its selected protocol even on failure. A
+Nagios check reports state 3 with a useful first-line message (and may omit
+perfdata); an FTMON JSON check reports `state: 3` in a valid object and still
+exits 0. Execution failures such as launch failure, timeout, signals, or an
+invalid process exit are represented by FTMON as unknown/state 3; for JSON,
+nonzero exit discards stdout. FTMON may retain a control-stripped, capped
+stdout summary, but it does not redact secrets and does not persist stderr.
+Do not rely on stderr as a diagnostic that will be available later in FTMON.
+
+Collection status is recorded independently of whether a definition contains
+a health rule. Preserve plugin state and collection availability as core
+status information; an author-supplied `plugin_ok` rule must not be the only
+way to make check failures observable. Avoid using a check-health boolean as
+a guard around threshold rules. For example,
+`plugin_ok == 1 and queue_depth > limit` evaluates false when collection
+fails, and false can advance incident clearing. Leave the metric comparison
+unguarded: absent measurements remain unknown, so missing data cannot be
+mistaken for recovery. Keep plugin warning/critical state rules separate when
+those states are useful to alert on.
+
+An optional value that the dependency does not support is different from a
+failed dependency. Omit unsupported or structurally unavailable values rather
+than substituting zero or reporting a fabricated failure. Conversely, a
+failed command or malformed partial result must not be presented as a
+successful collection just because one value could be parsed. Document which
+values are optional and which indicate a failed check, and make each case
+distinct in the emitted protocol.
+
+Account for warmup and recovery in the check's behavior and documentation.
+Describe when its measurements first become valid, what it emits while data is
+warming up, how warning/critical/unknown states transition, and what healthy
+recovery output looks like. Missing warmup or failure data must not be encoded
+as zero. Keep state transitions meaningful across cycles so FTMON's ordinary
+confirmation and recovery handling receives truthful evidence.
+
 ## What a check is, and the boundary around it
 
 An external check is a small, separately maintained program — your own
@@ -288,6 +332,15 @@ and print exactly one line (`nagios`) or one JSON object (`ftmon-json`) and
 exit. A check that hangs, forks and detaches, or produces multi-line/streamed
 output is fighting the contract, not working within it.
 
+When testing a wrapper or integration, include deterministic cases for useful
+errors written only to stdout with stderr empty, errors on stderr, timeout,
+partial results, and a later successful recovery. Check that diagnostics stay
+bounded and control-safe, credentials do not appear, stdout remains valid for
+the chosen protocol, unsupported optional values are omitted, and failed
+values are not replaced with zero. Protocol fixtures prove output parsing;
+execution-failure cases may need a local fake executable or wrapper test
+because a saved output fixture cannot represent a timeout or separate stderr.
+
 ## Handing off to registration and mapping
 
 Once the executable is written, installed, and passes `ftmon check trust`:
@@ -312,12 +365,14 @@ Once the executable is written, installed, and passes `ftmon check trust`:
    `ftmon monitor rescan` if you don't want to wait out the window while
    iterating.
 
-If a mapped metric label is absent from successful check output, rules that
-need that metric can remain UNKNOWN. After three affected due runs,
-`ftmon doctor` attributes the monitor/rule and missing metric name. Treat that
-as a mapping/output contract problem first; do not hide it with
-`coalesce(metric, 0)` unless missing output is explicitly equivalent to a safe
-zero for that check.
+If a mapped metric label is absent from successful check output, that metric
+is absent; rules that need it can remain UNKNOWN. After three affected due
+runs, `ftmon doctor` attributes the monitor/rule and missing metric name.
+Treat an unexpected absence as a mapping/output contract problem first; do not
+hide it with `coalesce(metric, 0)` unless missing output is explicitly
+equivalent to a safe zero for that check. A deliberately unsupported optional
+value should be documented as such and must not imply that the rest of the
+collection failed.
 
 If a run comes back `unknown`, work outward from the failure category
 in [External checks' troubleshooting table](external-checks.md#troubleshooting)

@@ -1,0 +1,12 @@
+[check.nvidia_gpu]
+# The check's 3 s nvidia-smi deadline leaves room within FTMON's 5 s deadline.
+# Thresholds apply to temperature (C) and GPU utilization (%) in that order.
+argv = [
+  "/usr/local/lib/ftmon/checks/check_gpu",
+  "--index", "0",
+  "--warn", "80,95",
+  "--crit", "90,98",
+  "--timeout", "3",
+]
+protocol = "ftmon-json"
+timeout = "5s"

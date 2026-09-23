@@ -103,6 +103,25 @@ file edits. Do not add extra files outside the recipe contract.
   metric names, units and kinds.
 - Confirm plugin warning/critical/unknown states across sensible cycles. Treat
   unknown as check health, never success.
+- Preserve the protocol distinction: Nagios exit `0/1/2/3` means
+  OK/warning/critical/unknown, while `ftmon-json` always exits `0` and puts
+  state `3` in its JSON object for unknown. Execution failures become unknown
+  independently of definition rules; core collection status must remain
+  visible without adding an author health rule.
+- For wrappers, inspect stdout and stderr for useful failure context, including
+  stdout-only errors when stderr is empty. Emit a concise bounded,
+  control-safe diagnostic with credentials removed, and keep stdout valid for
+  the selected protocol. FTMON does not persist stderr, and nonzero JSON exits
+  discard stdout.
+- Keep threshold rules unguarded by a check-health boolean: a false guard on
+  failed collection can count as recovery. Missing values stay absent, never
+  zero; document intentionally unsupported optional values separately from a
+  failed dependency or malformed partial result.
+- Document warmup, measurement validity, failure states and healthy recovery
+  across cycles. Add deterministic wrapper/fake-executable cases for
+  stdout-only errors, stderr-only errors, both streams empty, timeout, partial
+  measurements and failure followed by recovery;
+  protocol fixtures alone cannot represent timeout or separate stderr.
 - Add derived values and `[[trend]]` only when a returned metric has meaningful
   time behavior. Do not invent panels merely to decorate Exchange.
 - Document tunable thresholds as parameters and keep plugin thresholds in argv.

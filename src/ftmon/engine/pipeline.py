@@ -20,8 +20,9 @@ import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 
+from ftmon.checks.health import runtime_rules
 from ftmon.clock import Clock, SystemClock
-from ftmon.definitions.loader import MonitorDef
+from ftmon.definitions.loader import MonitorDef, declared_metric_names
 from ftmon.engine.context import EntityCtx
 from ftmon.engine.render import render_message
 from ftmon.engine.rings import RingStore
@@ -114,6 +115,7 @@ class Pipeline:
         # Cardinality follows loaded rule definitions, never sampled entities;
         # the persisted doctor report is capped again at the publication edge.
         self._unknown_rules: dict[tuple[str, str], _UnknownRuleState] = {}
+        self._external_observations: dict[str, dict] = {}
 
     def run_monitor(
         self,
@@ -149,6 +151,8 @@ class Pipeline:
             )
             snapshot_cache[cache_key] = snap
 
+        rules = runtime_rules(mdef)
+        declared = declared_metric_names(mdef) if mdef.source == "external" else frozenset()
         st = self._state.setdefault(mdef.name, _MonitorState())
         rings = self._rings
 
@@ -175,6 +179,8 @@ class Pipeline:
             missing_causes: dict[str, frozenset[str]] = {}
             available = set(ent.metrics)
             for name, expr in mdef.derived:
+                if mdef.source == "external":
+                    ctx = replace(ctx, unavailable_metrics=declared - available)
                 v = expr.eval(ctx, counter=self._counter)
                 if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
                     rings.append(mdef.name, ent.entity_id, name, snap.ts, float(v))
@@ -196,11 +202,11 @@ class Pipeline:
 
         exempt_entities: set[str] = set()
         outcomes: list[EvalOutcome] = []
-        evaluated_by_rule = dict.fromkeys((rule.id for rule in mdef.rules), 0)
-        missing_unknown_by_rule = dict.fromkeys((rule.id for rule in mdef.rules), 0)
-        missing_metrics_by_rule = {rule.id: set() for rule in mdef.rules}
+        evaluated_by_rule = dict.fromkeys((rule.id for rule in rules), 0)
+        missing_unknown_by_rule = dict.fromkeys((rule.id for rule in rules), 0)
+        missing_metrics_by_rule = {rule.id: set() for rule in rules}
         rule_metric_names = {
-            rule.id: frozenset(rule.when.metric_names) for rule in mdef.rules
+            rule.id: frozenset(rule.when.metric_names) for rule in rules
         }
         # Exempt and rules share one pass, so their split is the only one that
         # needs a per-entity reading. Measured at 101 ns/call: ~0.02% of one
@@ -211,6 +217,11 @@ class Pipeline:
         for ent in snap.entities:
             entity_started = self._clock.monotonic()
             ctx = self._ctx(mdef, ent.entity_id, ent.attrs, now)
+            if mdef.source == "external":
+                ctx = replace(
+                    ctx, unavailable_metrics=declared - set(ent.metrics)
+                    - set(derived_vals.get(ent.entity_id, {})),
+                )
             # CA-07 needs this tick's transient context to decide exclusion,
             # but excluded entities must never enter persistent history.
             excluded = any(e.eval(ctx, counter=self._counter) is True for e in mdef.exempt)
@@ -228,7 +239,7 @@ class Pipeline:
             values["entity"] = ent.attrs.get("display") or ent.attrs.get("name", ent.entity_id)
             values["monitor"] = mdef.name
             available_metrics = set(ent.metrics) | set(derived_vals.get(ent.entity_id, {}))
-            for rule in mdef.rules:
+            for rule in rules:
                 evaluated_by_rule[rule.id] += 1
                 result = to_tribool(rule.when.eval(ctx, counter=self._counter))
                 if result is TriBool.UNKNOWN:
@@ -266,6 +277,29 @@ class Pipeline:
         # unattributed remainder would break the exact partition.
         phase["rules"] += (mark - previous) - exempt_s
 
+        if mdef.source == "external" and snap.entities:
+            ent = snap.entities[0]
+            if ent.entity_id not in exempt_entities and (
+                mdef.name in self._external_observations or len(self._external_observations) < 64
+            ):
+                self._external_observations[mdef.name] = {
+                    "content_hash": mdef.content_hash,
+                    "entity_id": ent.entity_id,
+                    "sampled_at": snap.ts,
+                    "plugin_state": ent.metrics.get("plugin_state"),
+                    "plugin_message": ent.attrs.get("plugin_message", "")[:2048],
+                    "failure": ent.attrs.get("plugin_failure") or None,
+                    "available_metrics": sorted(
+                        set(ent.metrics) | set(derived_vals.get(ent.entity_id, {}))
+                    )[:128],
+                    "metrics_truncated": len(
+                        set(ent.metrics) | set(derived_vals.get(ent.entity_id, {}))
+                    ) > 128,
+                    "rules": {ev.rule_id: ev.result.name for ev in outcomes[:128]},
+                    "rules_truncated": len(outcomes) > 128,
+                }
+            elif ent.entity_id in exempt_entities:
+                self._external_observations.pop(mdef.name, None)
         self._persist(mdef, snap, derived_vals, exempt_entities, st, now, writer)
         self._track_gone(mdef, st, now, writer)
         previous, mark = mark, self._clock.monotonic()
@@ -326,7 +360,7 @@ class Pipeline:
         loaded = {
             (mdef.name, rule.id): mdef.content_hash
             for mdef in monitors.values()
-            for rule in mdef.rules
+            for rule in runtime_rules(mdef)
         }
         for key, state in list(self._unknown_rules.items()):
             if loaded.get(key) != state.content_hash:
@@ -389,7 +423,7 @@ class Pipeline:
         missing_unknown_by_rule: Mapping[str, int],
         missing_metrics_by_rule: Mapping[str, set[str]],
     ) -> None:
-        for rule in mdef.rules:
+        for rule in runtime_rules(mdef):
             key = (mdef.name, rule.id)
             if evaluated_by_rule[rule.id] <= 0:
                 # No evaluation is neither continued failure nor recovery.
@@ -413,6 +447,32 @@ class Pipeline:
                 missing_metrics=tuple(sorted(missing_metrics_by_rule[rule.id])),
                 last_run_ts=now,
             )
+
+    def prune_external_observations(self, monitors: Mapping[str, MonitorDef]) -> None:
+        """Release slots held by removed or changed definitions before sampling."""
+        for name, record in list(self._external_observations.items()):
+            mdef = monitors.get(name)
+            if (mdef is None or mdef.source != "external"
+                    or mdef.content_hash != record["content_hash"]):
+                del self._external_observations[name]
+
+    def external_report(
+        self, monitors: Mapping[str, MonitorDef], now: float, *, daemon_pid: int,
+    ) -> dict:
+        """EC-11: publish bounded evidence from actual completed observations."""
+        self.prune_external_observations(monitors)
+        records = dict(sorted(self._external_observations.items()))
+        report = {
+            "version": 1, "daemon_pid": daemon_pid, "generated_ts": now,
+            "monitors": records,
+            "truncated": sum(m.source == "external" for m in monitors.values()) > 64 or any(
+                r.get("metrics_truncated") or r.get("rules_truncated") for r in records.values()
+            ),
+        }
+        while records and len(json.dumps(report).encode("utf-8")) > 64 * 1024:
+            records.pop(next(reversed(records)))
+            report["truncated"] = True
+        return report
 
     @property
     def promotion_rejections_total(self) -> int:
@@ -553,6 +613,10 @@ class Pipeline:
         """CA-08: discovered entities absent past gone_grace are marked gone;
         rings are dropped so a reused entity_id starts clean. Incident
         auto-clear on gone happens in the M2 incident engine."""
+        # EC-11: registry-backed synthetic entities do not disappear when a
+        # due alias is skipped; absence must never become false recovery.
+        if mdef.source == "external":
+            return
         for entity_id, last_seen in list(st.seen.items()):
             if now - last_seen <= self._gone_grace_s:
                 continue

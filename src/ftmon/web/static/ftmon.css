@@ -719,6 +719,14 @@ pre {
 
 .uplot { max-width: 100% }
 
+.trend-panel-empty {
+  padding: .75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted);
+}
+
 .baseline-key {
   display: flex;
   align-items: center;

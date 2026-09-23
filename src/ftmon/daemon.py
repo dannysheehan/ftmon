@@ -25,6 +25,7 @@ from queue import SimpleQueue
 
 from ftmon import definitions
 from ftmon.checks import CheckRunner, ExternalSampler
+from ftmon.checks.health import runtime_rules
 from ftmon.checks.registry import RegistryError
 from ftmon.checks.registry import empty as empty_registry
 from ftmon.checks.registry import load as load_check_registry
@@ -530,6 +531,7 @@ class DaemonCore:
             if self.events_engine is not None:
                 self.events_engine.supersede(name, now)  # MD-09
             del self.event_monitors[name]
+        self.pipeline.prune_external_observations(self.monitors)
         if (
             self.events_engine is not None
             and self.events_engine._started
@@ -541,7 +543,7 @@ class DaemonCore:
         """Rung configs per (monitor, group), severity-descending — the
         order the incident engine's ownership rule depends on (IN-03)."""
         by_group: dict[str, list[inc.RungConfig]] = {}
-        for rule in mdef.rules:
+        for rule in runtime_rules(mdef):
             by_group.setdefault(rule.group, []).append(
                 inc.RungConfig(
                     rule_id=rule.id,
@@ -813,6 +815,11 @@ class DaemonCore:
                 separators=(",", ":"),
             ),
         )
+        self.writer.set_meta(
+            "external_observations",
+            json.dumps(self.pipeline.external_report(self.monitors, wall, daemon_pid=os.getpid())),
+        )
+        self.writer.set_meta("daemon_pid", str(os.getpid()))
         self.writer.set_meta("last_tick_ts", repr(wall))
         commit_started = self.clock.monotonic()
         try:

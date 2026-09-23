@@ -21,7 +21,7 @@ Read this list first when writing or reviewing a definition via MCP.
 | **`incident_group` needs `group`** | Overlay incidents on Trends only when the profile's `incident_group` matches a rule `group`. |
 | **Signed rate units** | `slope()` is per-second; convert in the derived expr (e.g. `* 3600` for per-hour). Units are labels, not converters. |
 | **`monot()` is rise-biased** | Fine for leak/temp-up. For bidirectional series, prefer `coverage()` over `monot()` as confidence. |
-| **External `plugin_state` rules** | Always alert on `plugin_state == 3` (check health). Use state 1/2 **or** metric thresholds — do not double-threshold inconsistently. |
+| **External `plugin_state` rules** | Core supplies UNKNOWN check-health coverage; an authored health rule with proven coverage retains its policy. Use state 1/2 **or** metric thresholds — do not double-threshold inconsistently. |
 | **No argv in definitions** | Alias only; admin owns `checks.toml`. Writing a check executable? See `ftmon://docs/check-authoring` (always exit 0 for ftmon-json). |
 | **Native units / `scale`** | Store what the plugin emits; `scale` is a rare real conversion, not a unit label. |
 | **Unmapped labels vanish** | Only `[[source_options.perfdata]]` mappings persist (EC-04). |
@@ -399,7 +399,8 @@ scale = 1.0
 plugin label and unique destination metric. `plugin_uom` must match exactly;
 `unit` and `kind = "gauge"|"counter"` become FTMON's schema, and optional
 finite `scale` defaults to 1. Fixed names are `plugin_state`, `plugin_ok`,
-`duration_s`, and string attribute `plugin_message`. Mapped metric names enter
+`duration_s`, and string attributes `plugin_message` and `plugin_failure` (an
+execution/protocol failure category, empty for valid protocol output). Mapped metric names enter
 the expression environment before derived expressions, rules and Trends are
 validated (MD-11).
 
@@ -420,6 +421,31 @@ the separate `checks.toml` authority described by
 a new check executable, see [Writing an external check](check-authoring.md)
 (`ftmon://docs/check-authoring`). Drafts may reference a future alias, but
 approval and active validation fail until an administrator creates it.
+
+FTMON automatically supplies collection-health warning coverage (EC-11). When
+no existing rule proves UNKNOWN coverage, the runtime adds an
+internal `@check-health` rule: two completed state-3 results open a warning;
+two completed state-0/1/2 results clear it. Budget-skipped checks freeze those
+counters. Normal acknowledgment, notification backoff and restart continuity
+apply. This internal rule does not edit your TOML.
+
+A call-free rule that proves failure coverage from `plugin_state` or
+`plugin_ok` can own health coverage instead; for example `plugin_state == 3`,
+`plugin_ok == 0`, or `plugin_state == 3 or temperature > 80`. FTMON proves the
+condition true for state 3 with all other measurements unknown, but not true
+for state 0 with those measurements unknown. Its configured severity and
+confirmation/clear counts remain authoritative; a broad condition may still
+alert on valid warning/critical readings. A condition requiring another
+measurement or a window cannot guarantee coverage during missing data.
+Rule and group names do not determine health ownership.
+
+Missing measurements from a completed external result are unavailable to current
+rule and derived evaluation, even if old readings remain in history. This keeps
+an open metric incident from claiming recovery on an obsolete value. It also
+allows valid sibling measurements to continue when an optional value is absent.
+An explicit false applicability guard still counts as false: do not guard a
+threshold with `plugin_ok == 1`, because collection failure would then look like
+recovery. See [check authoring](check-authoring.md#report-collection-failures-safely).
 
 ## 4. Cookbook
 
