@@ -414,7 +414,8 @@ article,
 .tile-focus .tile-glance-value { font-size: 1.35rem }
 .tile-focus .tile-glance-thresholds { font-size: .95rem }
 .tile-focus .tile-desc { grid-area: desc }
-.tile-focus .tile-meta { grid-area: meta; font-size: 1rem; font-weight: 650 }
+.tile-focus .tile-details { grid-area: meta }
+.tile-focus .tile-meta { font-size: 1rem }
 .tile-focus .tile-trends { grid-area: trends }
 .tile-focus .tile-meter { width: 100%; max-width: 28rem }
 
@@ -496,6 +497,13 @@ article,
 .tile-meter-mark-full { stroke: var(--ink); stroke-opacity: .75; stroke-width: 1.5 }
 .tile-desc { margin: 0; color: var(--muted); font-size: .92rem }
 .tile-meta { margin: 0; font-size: .92rem }
+.tile-details {
+  /* One grid item owns metadata; its paragraphs need separate flowing rows. */
+  display: grid;
+  gap: .35rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .tile-trends { display: flex; flex-wrap: wrap; gap: .35rem .8rem; margin: 0 }
 
 .monitor-tile a {
@@ -620,7 +628,7 @@ article,
   text-overflow: ellipsis;
   min-width: 0;
 }
-.monitor-list .tile-meta,
+.monitor-list .tile-details,
 .monitor-list .tile-trends { display: none }
 
 .stale {
