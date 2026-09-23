@@ -66,6 +66,8 @@ rate_unit = "percent"
 
 
 def _site(tmp_path, *, monitor_text=_MONITOR):
+    # Historical fixtures must stay after 1970: Windows datetime.fromtimestamp
+    # rejects negative epochs even though Linux accepts them.
     paths = get_paths({
         "FTMON_CONFIG_DIR": str(tmp_path / "config"),
         "FTMON_DATA_DIR": str(tmp_path / "data"),
@@ -83,18 +85,18 @@ def _site(tmp_path, *, monitor_text=_MONITOR):
     conn = connect(paths.db_file)
     migrate(conn)
     conn.executemany("INSERT INTO meta(key,value) VALUES(?,?)", [
-        ("last_tick_ts", "1000"), ("daemon_pid", "42"),
+        ("last_tick_ts", "1700000000"), ("daemon_pid", "42"),
     ])
     conn.execute("INSERT INTO monitor_loads VALUES(?,?,?,?)",
-                 ("probe", 1000, definition.content_hash, definition.normalized_toml))
+                 ("probe", 1700000000, definition.content_hash, definition.normalized_toml))
     conn.execute("INSERT INTO entities VALUES(?,?,?,?,?,?)",
-                 ("probe", "device", 1, 1000, None, "{}"))
+                 ("probe", "device", 1, 1700000000, None, "{}"))
     conn.commit()
     conn.close()
-    return TestClient(create_app(paths, FakeClock(wall=1000, mono=1000))), paths, definition
+    return TestClient(create_app(paths, FakeClock(wall=1700000000, mono=1000))), paths, definition
 
 
-def _report(conn, definition, *, sampled_at=1000, plugin_state=3,
+def _report(conn, definition, *, sampled_at=1700000000, plugin_state=3,
             metrics=("plugin_state", "plugin_ok", "duration_s", "temperature"),
             rules=None, pid=42, message="Check failed"):
     observation = {
@@ -105,7 +107,7 @@ def _report(conn, definition, *, sampled_at=1000, plugin_state=3,
         "rules": rules or {"probe-health": "TRUE" if plugin_state == 3 else "FALSE",
                            "fan-low": "UNKNOWN"},
     }
-    report = {"version": 1, "daemon_pid": pid, "generated_ts": 1000,
+    report = {"version": 1, "daemon_pid": pid, "generated_ts": 1700000000,
               "monitors": {"probe": observation}, "truncated": False}
     conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('external_observations',?)",
                  (json.dumps(report),))
@@ -118,14 +120,15 @@ def test_collection_status_links_only_authored_owner_and_escapes_message_ec_11(t
     _report(conn, definition, message="bad <script>alert(1)</script>")
     conn.execute("INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
                  "opened_ts,last_change_ts,notify_count,occurrences) "
-                 "VALUES(1,'probe','health','device','open',2,'other-rule',900,900,1,1)")
+                 "VALUES(1,'probe','health','device','open',2,'other-rule',1699999900,1699999900,1,1)")
     conn.commit()
     query = Query(conn)
-    evidence = query.collection_health(definition, now=1000, daemon_stale=False)
+    evidence = query.collection_health(definition, now=1700000000, daemon_stale=False)
     assert evidence["state"] == "failed" and evidence["incident"] is None
     conn.execute("UPDATE incidents SET owning_rule='probe-health' WHERE id=1")
     conn.commit()
-    assert query.collection_health(definition, now=1000, daemon_stale=False)["incident"]["id"] == 1
+    linked = query.collection_health(definition, now=1700000000, daemon_stale=False)
+    assert linked["incident"]["id"] == 1
     conn.close()
     page = client.get("/", headers={"host": "localhost:8420"}).text
     assert 'data-collection-state="failed"' in page
@@ -141,10 +144,10 @@ def test_partial_panels_older_history_and_rule_unknown_ec_11(tmp_path):
     _report(conn, definition, plugin_state=0, message="OK")
     conn.execute("INSERT INTO series VALUES(1,'probe','device','temperature',1)")
     conn.execute("INSERT INTO rollup5m VALUES(1,?,30,30,30,30,1)",
-                 (1000 - 3 * 86400,))
+                 (1700000000 - 3 * 86400,))
     conn.execute("INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
                  "opened_ts,last_change_ts,notify_count,occurrences) "
-                 "VALUES(2,'probe','fan','device','open',2,'fan-low',900,900,1,1)")
+                 "VALUES(2,'probe','fan','device','open',2,'fan-low',1699999900,1699999900,1,1)")
     conn.commit()
     conn.close()
     headers = {"host": "localhost:8420"}
@@ -182,46 +185,46 @@ def test_collection_identity_freshness_and_disabled_ec_11(tmp_path):
     conn = connect(paths.db_file)
     query = Query(conn)
     assert query.collection_health(
-        definition, now=1000, daemon_stale=False
+        definition, now=1700000000, daemon_stale=False
     )["state"] == "unavailable"
-    _report(conn, definition, sampled_at=800)
+    _report(conn, definition, sampled_at=1699999800)
     conn.execute("INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
                  "opened_ts,last_change_ts,notify_count,occurrences) "
-                 "VALUES(7,'probe','health','device','open',2,'probe-health',900,900,1,1)")
+                 "VALUES(7,'probe','health','device','open',2,'probe-health',1699999900,1699999900,1,1)")
     conn.commit()
     stale = query.collection_health(
-        definition, now=1000, daemon_stale=False
+        definition, now=1700000000, daemon_stale=False
     )
     assert stale["state"] == "sample_stale" and stale["incident"]["id"] == 7
     assert query.collection_health(
-        definition, now=1000, daemon_stale=True
+        definition, now=1700000000, daemon_stale=True
     )["state"] == "daemon_stale"
     _report(conn, definition, pid=999)
     conn.commit()
     assert query.collection_health(
-        definition, now=1000, daemon_stale=False
+        definition, now=1700000000, daemon_stale=False
     )["state"] == "unavailable"
     _report(conn, definition, plugin_state=1.5)
     conn.commit()
     assert query.collection_health(
-        definition, now=1000, daemon_stale=False
+        definition, now=1700000000, daemon_stale=False
     )["state"] == "unavailable"
     _report(conn, definition, plugin_state=0, rules={"probe-health": []})
     conn.commit()
     assert query.collection_health(
-        definition, now=1000, daemon_stale=False
+        definition, now=1700000000, daemon_stale=False
     )["state"] == "unconfirmed"
     conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('external_observations',?)",
                  ("x" * 65537,))
     conn.commit()
     assert query.collection_health(
-        definition, now=1000, daemon_stale=False
+        definition, now=1700000000, daemon_stale=False
     )["state"] == "unavailable"
     short_interval = load_text(_MONITOR.replace('interval = "60s"', 'interval = "15s"'))
-    _report(conn, short_interval, sampled_at=954)
+    _report(conn, short_interval, sampled_at=1699999954)
     conn.commit()
     assert query.collection_health(
-        short_interval, now=1000, daemon_stale=False
+        short_interval, now=1700000000, daemon_stale=False
     )["state"] == "sample_stale"
     conn.close()
     disabled = _MONITOR.replace("enabled = true", "enabled = false")
@@ -258,7 +261,7 @@ def test_valid_warning_can_keep_authored_health_rule_true_ec_11(tmp_path):
     _report(conn, definition, plugin_state=1,
             rules={"probe-health": "TRUE", "fan-low": "UNKNOWN"})
     conn.commit()
-    evidence = Query(conn).collection_health(definition, now=1000, daemon_stale=False)
+    evidence = Query(conn).collection_health(definition, now=1700000000, daemon_stale=False)
     assert evidence["state"] == "alerting"
     assert "remains TRUE" in evidence["reason"]
     conn.close()
@@ -275,9 +278,9 @@ def test_unknown_health_rule_does_not_claim_recovery_ec_11(tmp_path):
             rules={"probe-health": "UNKNOWN", "fan-low": "UNKNOWN"})
     conn.execute("INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,owning_rule,"
                  "opened_ts,last_change_ts,notify_count,occurrences) "
-                 "VALUES(8,'probe','health','device','open',2,'probe-health',900,900,1,1)")
+                 "VALUES(8,'probe','health','device','open',2,'probe-health',1699999900,1699999900,1,1)")
     conn.commit()
-    evidence = Query(conn).collection_health(definition, now=1000, daemon_stale=False)
+    evidence = Query(conn).collection_health(definition, now=1700000000, daemon_stale=False)
     assert evidence["state"] == "unconfirmed"
     assert "cannot clear" in evidence["reason"]
     assert evidence["incident"]["id"] == 8
@@ -304,7 +307,7 @@ def test_partial_current_panel_keeps_empty_declared_panel_ec_11(tmp_path):
     conn = connect(paths.db_file)
     _report(conn, definition, plugin_state=0)
     conn.execute("INSERT INTO series VALUES(1,'probe','device','temperature',1)")
-    conn.execute("INSERT INTO rollup5m VALUES(1,900,35,35,35,35,1)")
+    conn.execute("INSERT INTO rollup5m VALUES(1,1699999900,35,35,35,35,1)")
     conn.commit()
     conn.close()
     data = client.get(
@@ -330,9 +333,9 @@ def test_old_rollup_summary_is_not_labeled_current_when_raw_is_fresh_ec_11(tmp_p
     client, paths, _definition = _site(tmp_path)
     conn = connect(paths.db_file)
     conn.execute("INSERT INTO series VALUES(1,'probe','device','temperature',1)")
-    conn.execute("INSERT INTO samples VALUES(1,1000,50)")
+    conn.execute("INSERT INTO samples VALUES(1,1700000000,50)")
     conn.execute("INSERT INTO rollup1h VALUES(1,?,30,30,30,30,1)",
-                 (1000 - 40 * 86400,))
+                 (1700000000 - 40 * 86400,))
     conn.commit()
     conn.close()
     page = client.get(
@@ -369,7 +372,7 @@ message = "Temperature rising"
                               (11, "health", "probe-health")):
         conn.execute("INSERT INTO incidents(id,monitor,grp,entity_id,state,severity,"
                      "owning_rule,opened_ts,last_change_ts,notify_count,occurrences) "
-                     "VALUES(?,'probe',?,'device','open',2,?,900,900,1,1)",
+                     "VALUES(?,'probe',?,'device','open',2,?,1699999900,1699999900,1,1)",
                      (iid, group, owner))
     conn.commit()
     conn.close()
@@ -379,7 +382,7 @@ message = "Temperature rising"
     assert "Derived windows or baselines may need fresh evidence" in page
     assert "does not count as recovery" in page
     conn = connect(paths.db_file)
-    conn.execute("UPDATE incidents SET state='cleared',cleared_ts=999 WHERE id=10")
+    conn.execute("UPDATE incidents SET state='cleared',cleared_ts=1699999999 WHERE id=10")
     conn.commit()
     conn.close()
     cleared = client.get("/incidents/10", headers={"host": "localhost:8420"}).text
@@ -396,7 +399,7 @@ def test_capped_availability_does_not_claim_an_omitted_metric_is_missing_ec_11(t
     report["monitors"]["probe"]["metrics_truncated"] = True
     conn.execute("UPDATE meta SET value=? WHERE key='external_observations'",
                  (json.dumps(report),))
-    evidence = Query(conn).collection_health(definition, now=1000, daemon_stale=False)
+    evidence = Query(conn).collection_health(definition, now=1700000000, daemon_stale=False)
     assert evidence["rule_details"][1]["evaluation"] == "UNKNOWN"
     assert evidence["rule_details"][1]["missing_metrics"] == []
     assert "report limit" in evidence["reason"]
