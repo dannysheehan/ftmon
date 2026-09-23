@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.49**. Companion to `SPEC.md` v0.66 — every design element
+Status: **DRAFT v0.49**. Companion to `SPEC.md` v0.67 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -94,6 +94,7 @@ PROJECTS/ftmon/                  # monorepo root (git)
 │   │   ├── trust.py             # EC-01/SE-07 executable trust predicate
 │   │   ├── runner.py            # no-shell process-group deadline (EC-02)
 │   │   ├── sampler.py           # fair alias execution + declared projection (EC-04/08)
+│   │   ├── health.py            # proven authored coverage or runtime health rung (EC-11)
 │   │   ├── model.py  text.py    # check result types + bounded output handling
 │   │   └── nagios.py jsoncheck.py # strict output adapters (EC-03/04/10)
 │   ├── engine/
@@ -581,7 +582,9 @@ class CompiledExpr:
 class NameEnv:   # built at validation from SourceDecl + parameters (MD-04, EX-02)
 class EvalContext(Protocol):
     def metric_last(self, m: str) -> float | None
-    def metric_window(self, m: str, seconds: float) -> Sequence[tuple[float, float]]
+    # v0.67 / EC-11 amendment: None means a current external input is unavailable;
+    # [] remains a valid cold window (coverage zero), preserving other sources.
+    def metric_window(self, m: str, seconds: float) -> Sequence[tuple[float, float]] | None
     def attr(self, a: str) -> str | None
     def param(self, p: str) -> float
     def baseline(self, m: str) -> float | None
@@ -1909,3 +1912,18 @@ Detailed WPs (with frozen file lists + pre-written tests) follow in TESTPLAN.md;
   dependency-deprecation sweep (DO-09).
 
 Each WP names its FROZEN interfaces from §4–5; an implementing model receives: SPEC excerpt, this document's relevant sections, the WP's test files, and the interface stubs — nothing else is in scope for it.
+
+### External collection health (EC-11, issue #198)
+
+Runtime rules supply a reserved `@check-health` warning when no call-free,
+authored predicate proves UNKNOWN coverage independent of other measurements. The ordinary
+incident engine owns confirmation, persistence, ack, backoff and recovery, so
+no parallel notification channel is introduced. Existing health owners retain
+their policy and identity. Completed observations mask missing external inputs
+from current evaluation, including derived inputs, while retaining their rings
+for historical analysis. An unavailable window differs from an empty valid
+window, so coverage guards cannot fabricate recovery on collection failure.
+A capped daemon report records actual rule truth values
+and available metrics; read consumers validate definition/entity/lifetime and
+freshness before describing evidence. Missing historical chart points and a
+current failed check are independent facts.

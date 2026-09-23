@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 FTMON contributors
+"""Report one NVIDIA GPU through FTMON JSON (EC-10, XR-05).
+
+Adapted from the author's local FTMON check_gpu. A failed nvidia-smi call is
+unknown even when it writes plausible CSV to stdout; only a successful call
+can provide health evidence.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import json
+import math
+import re
+import subprocess
+import sys
+
+QUERY = (
+    "index,name,temperature.gpu,utilization.gpu,utilization.memory,"
+    "memory.used,memory.total,power.draw,power.limit,fan.speed,"
+    "clocks.current.graphics,clocks.current.memory"
+)
+LABELS = (
+    ("temp", "C"),
+    ("util", "%"),
+    ("mem_util", "%"),
+    ("mem_used", "MiB"),
+    ("mem_total", "MiB"),
+    ("power", "W"),
+    ("power_limit", "W"),
+    ("fan_pct", "%"),
+    ("sm_clock", "MHz"),
+    ("mem_clock", "MHz"),
+)
+_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+
+
+def _safe(raw: str | bytes | None) -> str:
+    """Keep a bounded, single-line diagnostic safe for stored plugin messages."""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    # nvidia-smi diagnostics are small; cap work before cleaning hostile output.
+    raw = _ANSI.sub("", (raw or "")[:4096])
+    clean = " ".join("".join(c if c.isprintable() else " " for c in raw).split())
+    return clean[:200]
+
+
+def _emit(state: int, message: str, metrics: dict[str, dict[str, float | str]]) -> None:
+    print(json.dumps({"schema": 1, "state": state, "message": _safe(message), "metrics": metrics}))
+
+
+def _number(raw: str) -> float | None:
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _pair(raw: str) -> tuple[float, float] | None:
+    parts = raw.split(",")
+    if len(parts) != 2:
+        return None
+    values = (_number(parts[0]), _number(parts[1]))
+    return values if all(value is not None for value in values) else None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="check_gpu")
+    parser.add_argument("-i", "--index", type=int, default=0)
+    parser.add_argument("-w", "--warn", default="80,95", help="TEMP_C,UTIL_PCT")
+    parser.add_argument("-c", "--crit", default="90,98", help="TEMP_C,UTIL_PCT")
+    parser.add_argument("-t", "--timeout", type=float, default=3.0)
+    args = parser.parse_args(argv)
+    warn, crit = _pair(args.warn), _pair(args.crit)
+    if (
+        args.index < 0
+        or warn is None
+        or crit is None
+        or warn[0] >= crit[0]
+        or warn[1] >= crit[1]
+        or not math.isfinite(args.timeout)
+        or not 0 < args.timeout <= 10
+    ):
+        _emit(3, "GPU check failed: invalid index, threshold, or timeout", {})
+        return 0
+
+    cmd = [
+        "nvidia-smi",
+        f"--id={args.index}",
+        f"--query-gpu={QUERY}",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=args.timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _emit(3, f"GPU check failed: nvidia-smi timed out after {args.timeout:g}s", {})
+        return 0
+    except OSError as exc:
+        _emit(3, f"GPU check failed: {_safe(str(exc)) or 'cannot start nvidia-smi'}", {})
+        return 0
+
+    if proc.returncode != 0:
+        detail = _safe(proc.stderr) or _safe(proc.stdout) or "nvidia-smi exited unsuccessfully"
+        _emit(3, f"GPU check failed: {detail}", {})
+        return 0
+    if not proc.stdout.strip():
+        _emit(3, "GPU check failed: nvidia-smi returned no data", {})
+        return 0
+    if len(proc.stdout) > 16384:
+        _emit(3, "GPU check failed: nvidia-smi CSV exceeds limit", {})
+        return 0
+
+    try:
+        rows = list(csv.reader(io.StringIO(proc.stdout)))
+    except csv.Error:
+        rows = []
+    if len(rows) != 1 or len(rows[0]) != 12:
+        _emit(3, "GPU check failed: invalid nvidia-smi CSV", {})
+        return 0
+    cells = [cell.strip() for cell in rows[0]]
+    if cells[0] != str(args.index) or not cells[1]:
+        _emit(3, "GPU check failed: unexpected GPU identity", {})
+        return 0
+
+    metrics: dict[str, dict[str, float | str]] = {}
+    for (label, uom), raw in zip(LABELS, cells[2:], strict=True):
+        value = _number(raw)
+        if value is not None:
+            metrics[label] = {"value": value, "uom": uom}
+    if not metrics:
+        _emit(3, "GPU check failed: no supported numeric readings", {})
+        return 0
+
+    temp = metrics.get("temp", {}).get("value")
+    util = metrics.get("util", {}).get("value")
+    if temp is None and util is None:
+        _emit(3, "GPU check failed: no temperature or utilization reading", {})
+        return 0
+    state = 0
+    for value, warning, critical in ((temp, warn[0], crit[0]), (util, warn[1], crit[1])):
+        if isinstance(value, float):
+            state = max(state, 2 if value >= critical else 1 if value >= warning else 0)
+
+    parts = [f"GPU {cells[0]}: {cells[1]}"]
+    if isinstance(temp, float):
+        parts.append(f"{temp:.0f}C")
+    if isinstance(util, float):
+        parts.append(f"{util:.0f}% util")
+    used = metrics.get("mem_used", {}).get("value")
+    total = metrics.get("mem_total", {}).get("value")
+    if isinstance(used, float) and isinstance(total, float):
+        parts.append(f"{used:.0f}/{total:.0f} MiB")
+    _emit(state, ", ".join(parts), metrics)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

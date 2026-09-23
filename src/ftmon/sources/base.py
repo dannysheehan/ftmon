@@ -303,7 +303,10 @@ SOURCE_DECLS: dict[str, SourceDecl] = {
             _m("plugin_ok", "bool", "gauge", "1 only for plugin state OK"),
             _m("duration_s", "seconds", "gauge", "Check execution duration"),
         ),
-        attrs=(_a("plugin_message", "Sanitized first-line check message"),),
+        attrs=(
+            _a("plugin_message", "Sanitized first-line check message"),
+            _a("plugin_failure", "Execution/protocol failure category, empty on valid output"),
+        ),
     ),
     "events": SourceDecl(
         name="events",

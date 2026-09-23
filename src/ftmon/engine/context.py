@@ -29,14 +29,25 @@ class EntityCtx:
     params: Mapping[str, float]
     wall: float
     baseline_lookup: Callable[[str, str, str], float | None] = field(default=_no_baseline)
+    # A completed external observation is authoritative about absent inputs;
+    # retained windows must not turn those absences into current evidence (EC-11).
+    unavailable_metrics: frozenset[str] = frozenset()
 
     def metric_last(self, m: str) -> float | None:
+        if m in self.unavailable_metrics:
+            return None
         return self.rings.last(self.monitor, self.entity_id, m)
 
     def metric_last_ts(self, m: str) -> float | None:
+        if m in self.unavailable_metrics:
+            return None
         return self.rings.last_ts(self.monitor, self.entity_id, m)
 
-    def metric_window(self, m: str, seconds: float) -> list[tuple[float, float]]:
+    def metric_window(self, m: str, seconds: float) -> list[tuple[float, float]] | None:
+        if m in self.unavailable_metrics:
+            # A missing current input is not a cold but valid window: coverage
+            # of an empty valid window is zero, which could falsely clear an alert.
+            return None
         return self.rings.window(self.monitor, self.entity_id, m, self.wall - seconds)
 
     def attr(self, a: str) -> str | None:
@@ -46,6 +57,8 @@ class EntityCtx:
         return self.params[p]
 
     def baseline(self, m: str) -> float | None:
+        if m in self.unavailable_metrics:
+            return None
         return self.baseline_lookup(self.monitor, self.entity_id, m)
 
     def now(self) -> float:

@@ -123,7 +123,7 @@ class ExternalSampler:
             metrics[mapping["metric"]] = scaled
         entity = EntitySample(
             entity_id=options["entity"],
-            attrs={"plugin_message": raw.message},
+            attrs={"plugin_message": raw.message, "plugin_failure": raw.failure or ""},
             metrics=metrics,
         )
         return Snapshot(source="external", ts=now, entities=(entity,))
