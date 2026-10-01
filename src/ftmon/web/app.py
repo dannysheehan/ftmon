@@ -59,6 +59,7 @@ class MonitorTile:
     max_severity: int | None
     trends: tuple
     glance: TileGlance | None
+    collection: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -375,6 +376,9 @@ def _monitor_tiles(
     for mdef in defs:
         live = live_by_monitor.get(mdef.name, [])
         maximum = max((row["severity"] for row in live), default=None)
+        collection = None if q is None else q.collection_health(
+            mdef, now=now, daemon_stale=status["daemon_stale"]
+        )
         state = glance.health_state(
             stale=status["daemon_stale"],
             has_evidence=glance.has_evidence(q, mdef),
@@ -385,7 +389,7 @@ def _monitor_tiles(
         readout = _tile_glance(glance.reading(mdef, q, state, now))
         tiles.append(MonitorTile(
             mdef.name, mdef.description, mdef.enabled, state, icon, label,
-            len(live), maximum, mdef.trends, readout,
+            len(live), maximum, mdef.trends, readout, collection,
         ))
 
     # Invalid files have no MonitorDef; omitting them would hide the highest
@@ -517,6 +521,27 @@ async def incident_detail(request: Request):
             "SELECT attrs FROM entities WHERE monitor=? AND entity_id=? LIMIT 1",
             (row["monitor"], row["entity_id"])).fetchone()
         status = _status(request, q)
+        collection = None
+        if row is not None and q is not None:
+            definitions = (
+                _demo_definitions(q)[0] if getattr(request.app.state, "demo", False)
+                else loader.load_dir(request.app.state.paths.monitors_dir,
+                                     actions_dir=request.app.state.paths.actions_dir,
+                                     require_actions=True)[0]
+            )
+            mdef = next((d for d in definitions if d.name == row["monitor"]), None)
+            if mdef is not None and row["entity_id"] == mdef.source_options.get("entity"):
+                collection = q.collection_health(
+                    mdef, now=request.app.state.clock.now(), daemon_stale=status["daemon_stale"]
+                )
+                if collection and collection.get("rule_details") is not None:
+                    collection = {**collection, "incident_rule": next((
+                        detail for detail in collection["rule_details"]
+                        if detail["id"] == row["owning_rule"] and detail["group"] == row["grp"]
+                    ), next((
+                        {**detail, "missing_metrics": []} for detail in collection["rules"]
+                        if detail["id"] == row["owning_rule"] and detail["group"] == row["grp"]
+                    ), None))}
     if row is None:
         return Response("Incident not found", status_code=404)
     # SA-09 SHOULD: this is a loopback, single-user surface (NG-05/SE-04), so
@@ -526,7 +551,7 @@ async def incident_detail(request: Request):
     evidence_links = _incident_evidence_links(row, _trend_catalog(request))
     return _render("incident.html", request, title=f"Incident #{iid}", row=row,
                    history=history, status=status, evidence_links=evidence_links,
-                   entity_attrs=entity_attrs, refresh_ms=5000)
+                   entity_attrs=entity_attrs, collection=collection, refresh_ms=5000)
 
 
 def _incident_evidence_links(row, catalog) -> tuple[IncidentEvidenceLink, ...]:
@@ -657,6 +682,8 @@ async def metrics(request: Request):
             request.app.state.paths, q, rows[0], monitor, entity, metric,
             statistic, now-seconds, now, incident_group,
         )
+        if payload is not None:
+            _add_metric_evidence(q, payload, now=now)
     selected = {"monitor": monitor, "entity": entity, "metric": metric,
                 "range": range_text, "statistic": statistic,
                 "group": incident_group}
@@ -850,6 +877,46 @@ def _series_payload(
     }
 
 
+def _add_metric_evidence(q: Query, payload: dict, *, now: float) -> dict:
+    payload["last_retained"] = q.last_retained_observation(
+        payload["monitor"], payload["entity"], payload["metric"], now=now
+    )
+    latest = payload["last_retained"]
+    payload["current_fresh"] = bool(
+        latest and payload["resolution"] == "raw" and latest["resolution"] == "raw"
+        and latest["age_s"] <= 15 and payload["panel"]["points"]
+        and payload["panel"]["points"][-1][0] == latest["ts"]
+        and not glance.daemon_stale(q.status(now=now)["last_tick_age_s"])
+    )
+    return payload
+
+
+def _add_trend_evidence(
+    q: Query, trend: dict, mdef, profile, *, now: float
+) -> dict:
+    trend["panel_evidence"] = q.trend_panel_evidence(mdef, trend["entity"], profile, now=now)
+    age = q.status(now=now)["last_tick_age_s"]
+    trend["collection"] = (
+        q.collection_health(mdef, now=now, daemon_stale=glance.daemon_stale(age))
+        if mdef.source == "external" and trend["entity"] == mdef.source_options["entity"]
+        else None
+    )
+    for panel, evidence in trend["panel_evidence"].items():
+        last = evidence["last_retained"]
+        older_range = q.older_history_range(
+            mdef.name, trend["entity"], evidence["metric"],
+            now=now, current_start=trend["range"]["start"],
+        ) if last and last["ts"] < trend["range"]["start"] else None
+        evidence["older_history_href"] = (
+            f"/trends/{mdef.name}/{profile.id}?" + urlencode({
+                **{"entity": trend["entity"], "range": older_range},
+                **({"group": trend["incident_group"]} if trend["incident_group"] else {}),
+            }) if older_range else None
+        )
+        evidence["has_points_in_range"] = bool(trend["panels"][panel]["points"])
+    return trend
+
+
 async def series_api(request: Request):
     """Return one selected series for non-template consumers (TS-11)."""
     p = request.query_params
@@ -882,6 +949,7 @@ async def series_api(request: Request):
             request.app.state.paths, q, rows[0], monitor, entity, metric,
             statistic, now-seconds, now, incident_group,
         )
+        _add_metric_evidence(q, payload, now=now)
     return JSONResponse(payload)
 
 
@@ -1038,6 +1106,7 @@ async def trend_api(request: Request):
             mdef.name, entity, profile, now=end, start=start, end=end,
             parameters=mdef.parameters, incident_group=incident_group,
         )
+        _add_trend_evidence(q, trend, mdef, profile, now=end)
     trend["range"]["label"] = range_text
     return JSONResponse(trend)
 
@@ -1074,11 +1143,15 @@ async def trends(request: Request):
         # diagnostic surface (UI-12/UI-13).
         if entity and entity not in entities:
             entities.append(entity)
+        if not entity and not entities and mdef is not None and mdef.source == "external":
+            entities.append(mdef.source_options["entity"])
         entity = entity or (entities[0] if entities else None)
         trend = None if q is None or entity is None or profile is None else q.trend(
             mdef.name, entity, profile, now=end, start=start, end=end,
             parameters=mdef.parameters, incident_group=incident_group,
         )
+        if trend is not None:
+            _add_trend_evidence(q, trend, mdef, profile, now=end)
     if trend:
         trend["range"]["label"] = range_text
     clear_group_href = f"/trends/{mdef.name}/{profile.id}?" + urlencode({

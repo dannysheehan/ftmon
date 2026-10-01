@@ -270,6 +270,17 @@ processes are identical.
 Dashboard, incident, and Events pages reload every five seconds. Monitors and
 Self reload every fifteen seconds; Metrics, Trends, and Baselines stay fixed
 while you inspect them. Refreshing preserves the current URL and its filters.
+
+For external checks, the dashboard also shows **Collection** evidence from the
+latest completed check: whether the daemon is current, whether the monitor is
+disabled, how old the check result is, the plugin state and message, and a
+link to a live collection incident. An UNKNOWN check result means collection
+failed; WARNING and CRITICAL results can still contain useful measurements.
+If the daemon has not published evidence for this definition yet, the page says
+so instead of treating old metric history as a current check result. A check
+sample older than three monitor intervals (at least 15 seconds) is marked
+stale. Incident detail shows the owning rule's latest evaluation and missing
+current metrics when recovery cannot be confirmed.
 The Events monitor tile shows the latest raw ingest rate in events/minute.
 That rate includes repeated messages coalesced before the reader queue, so a
 duplicate storm remains visible even when it produces only compact stored
@@ -352,6 +363,15 @@ as separate synchronized panels because their units and meanings differ. Long
 ranges use stored 5-minute or hourly rollups with min/max envelopes; missing
 observations remain visible gaps. The complete selection stays in the URL for
 bookmarking and links from dashboards or incidents open the same explorer.
+
+Each declared panel remains visible when its selected range has no points.
+The panel evidence lists its last retained sample, or the start of its latest
+five-minute or hourly bucket, with its age. A link to older history appears
+when a longer supported range includes that evidence. If no tier retains an
+observation, the page says the panel was never sampled or its history expired.
+The summary labels values as the latest in the selected range; it does not
+claim that an old value is current. External-check Trends also show the same
+collection evidence as the dashboard, independently of the chart range.
 The entity selector lists recently seen active entities so exited or stale
 process identities cannot overwhelm it; a bookmark or incident link for an
 older entity still opens its retained history. Use Metrics when you need to

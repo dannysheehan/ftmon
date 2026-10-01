@@ -72,7 +72,7 @@ def test_shared_alias_runs_once_and_projects_per_definition():
         "latency_s": 1.5,
     }
     assert snap2.entities[0].metrics["latency_ms"] == 1500
-    assert snap1.entities[0].attrs == {"plugin_message": "healthy"}
+    assert snap1.entities[0].attrs == {"plugin_message": "healthy", "plugin_failure": ""}
 
 
 def test_projection_omits_missing_uom_and_non_finite_values():

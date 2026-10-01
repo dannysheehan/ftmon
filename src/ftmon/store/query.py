@@ -1018,6 +1018,197 @@ class Query:
             "sample_age_s": round(now - ts),
         }
 
+    def last_retained_observation(
+        self, monitor: str, entity_id: str, metric: str, *, now: float
+    ) -> dict | None:
+        """Find retained evidence across every tier, including outside a chart range."""
+        row = self._conn.execute(
+            "SELECT id FROM series WHERE monitor=? AND entity_id=? AND metric=?",
+            (monitor, entity_id, metric),
+        ).fetchone()
+        if row is None:
+            return None
+        candidates = []
+        for table, column, resolution in (
+            ("samples", "ts", "raw"),
+            ("rollup5m", "bucket", "5m"),
+            ("rollup1h", "bucket", "1h"),
+        ):
+            latest = self._conn.execute(
+                f"SELECT MAX({column}) FROM {table} WHERE series_id=?", (row["id"],)
+            ).fetchone()[0]
+            if latest is not None:
+                candidates.append((int(latest), resolution))
+        if not candidates:
+            return None
+        ts, resolution = max(candidates, key=lambda item: item[0])
+        return {"ts": ts, "age_s": max(0, round(now - ts)),
+                "resolution": resolution, "time_basis": (
+                    "sample" if resolution == "raw" else "bucket_start")}
+
+    def trend_panel_evidence(self, mdef, entity_id: str, profile, *, now: float) -> dict:
+        """Describe each declared panel's retained evidence independently of chart range."""
+        metrics = {"value": profile.value_metric, "rate": profile.rate_metric,
+                   "confidence": profile.confidence_metric,
+                   "projection": profile.remaining_metric}
+        return {
+            panel: {"metric": metric, "last_retained": self.last_retained_observation(
+                mdef.name, entity_id, metric, now=now)}
+            for panel, metric in metrics.items() if metric is not None
+        }
+
+    def older_history_range(
+        self, monitor: str, entity_id: str, metric: str, *, now: float, current_start: float
+    ) -> str | None:
+        """Choose the shortest longer chart range with a point in its selected tier."""
+        series = self._conn.execute(
+            "SELECT id FROM series WHERE monitor=? AND entity_id=? AND metric=?",
+            (monitor, entity_id, metric),
+        ).fetchone()
+        if series is None:
+            return None
+        for label, seconds in (
+            ("6h", 21600), ("24h", 86400), ("7d", 7 * 86400),
+            ("30d", 30 * 86400), ("90d", 90 * 86400), ("400d", 400 * 86400),
+        ):
+            start = now - seconds
+            if start >= current_start:
+                continue
+            resolution = self.resolution_for(
+                now, start, now, monitor=monitor, entity_id=entity_id, metric=metric
+            )
+            table, column = self._tier_table(resolution)
+            found = self._conn.execute(
+                f"SELECT 1 FROM {table} WHERE series_id=? AND {column}>=? "
+                f"AND {column}<=? LIMIT 1",
+                (series["id"], start, now),
+            ).fetchone()
+            if found is not None:
+                return label
+        return None
+
+    def collection_health(self, mdef, *, now: float, daemon_stale: bool) -> dict | None:
+        """Read bounded same-definition check evidence without inferring from history."""
+        if mdef.source != "external":
+            return None
+        from ftmon.checks.health import collection_health_rules
+
+        owner_rules = collection_health_rules(mdef)
+        owners = {(rule.id, rule.group) for rule in owner_rules}
+        live = self._conn.execute(
+            "SELECT id,grp,owning_rule,state FROM incidents "
+            "WHERE monitor=? AND entity_id=? AND state!='cleared' ORDER BY id DESC",
+            (mdef.name, mdef.source_options["entity"]),
+        ).fetchall()
+        incident = next(({"id": row["id"], "group": row["grp"],
+                          "owning_rule": row["owning_rule"], "state": row["state"]}
+                         for row in live if (row["owning_rule"], row["grp"]) in owners), None)
+        unavailable = {"state": "unavailable",
+                       "reason": "Collection evidence is not yet available.",
+                       "incident": incident, "sample_age_s": None, "plugin_message": None,
+                       "failure": None, "available_metrics": [], "rules": []}
+        if not mdef.enabled:
+            return {**unavailable, "state": "disabled", "reason": "Monitor is disabled."}
+        if daemon_stale:
+            return {**unavailable, "state": "daemon_stale",
+                    "reason": "Daemon has not reported a recent tick."}
+        raw = self._conn.execute(
+            "SELECT substr(CAST(value AS BLOB),1,65537) AS value, "
+            "length(CAST(value AS BLOB)) AS size FROM meta "
+            "WHERE key='external_observations'"
+        ).fetchone()
+        if raw is None or raw["size"] > 65536:
+            return unavailable
+        try:
+            report = json.loads(raw["value"])
+            observation = report["monitors"][mdef.name]
+            if not isinstance(observation, dict):
+                return unavailable
+            sampled_at = float(observation["sampled_at"])
+            generated_at = float(report["generated_ts"])
+            raw_state = observation["plugin_state"]
+            if (isinstance(raw_state, bool) or not isinstance(raw_state, (int, float))
+                    or raw_state not in (0, 1, 2, 3)):
+                return unavailable
+            state = int(raw_state)
+        except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+            return unavailable
+        if (report.get("version") != 1 or observation.get("content_hash") != mdef.content_hash
+                or observation.get("entity_id") != mdef.source_options.get("entity")
+                or state not in (0, 1, 2, 3) or not math.isfinite(sampled_at)
+                or not math.isfinite(generated_at) or sampled_at > generated_at
+                or generated_at > now + 15):
+            return unavailable
+        pid = self._conn.execute("SELECT value FROM meta WHERE key='daemon_pid'").fetchone()
+        if pid is None or str(report.get("daemon_pid")) != pid["value"]:
+            return unavailable
+        age = max(0, now - sampled_at)
+        if age > max(15, 3 * mdef.interval_s):
+            return {**unavailable, "state": "sample_stale", "sample_age_s": round(age),
+                    "reason": "Check result is older than three monitor intervals."}
+        observed_rules = observation.get("rules", {})
+        if not isinstance(observed_rules, dict):
+            observed_rules = {}
+        def evaluation(rule_id: str) -> str:
+            value = observed_rules.get(rule_id)
+            return value if isinstance(value, str) and value in {
+                "TRUE", "FALSE", "UNKNOWN"
+            } else "UNKNOWN"
+
+        rules = [{"id": rule.id, "group": rule.group,
+                  "evaluation": evaluation(rule.id)}
+                 for rule in owner_rules]
+        available = observation.get("available_metrics", [])
+        if not isinstance(available, list):
+            available = []
+        available = [item for item in available if isinstance(item, str)][:128]
+        metrics_truncated = bool(observation.get("metrics_truncated"))
+        derived_names = {name for name, _expr in mdef.derived}
+        rule_details = [{
+            "id": rule.id, "group": rule.group,
+            "evaluation": evaluation(rule.id),
+            "missing_metrics": [] if metrics_truncated else sorted(
+                set(rule.when.metric_names) - set(available)
+            ),
+            "missing_derived_metrics": sorted(
+                (set(rule.when.metric_names) - set(available)) & derived_names
+            ) if not metrics_truncated else [],
+        } for rule in mdef.rules]
+        message = observation.get("plugin_message")
+        message = message[:500] if isinstance(message, str) else None
+        failure = observation.get("failure")
+        failure = failure if isinstance(failure, str) else None
+        missing_rules = [rule["id"] for rule in rules if rule["evaluation"] == "UNKNOWN"]
+        active_rules = [rule["id"] for rule in rules if rule["evaluation"] == "TRUE"]
+        if state == 3:
+            health_state, reason = "failed", "Check reported UNKNOWN; collection failed."
+        elif active_rules:
+            health_state, reason = "alerting", (
+                "Check returned a valid result (plugin state " + str(state) + "), but "
+                "collection health rule remains TRUE: " + ", ".join(active_rules) + "."
+            )
+        elif incident and missing_rules:
+            health_state, reason = "unconfirmed", (
+                "Check returned a valid result, but collection health cannot clear while "
+                "its rule evaluation is UNKNOWN: " + ", ".join(missing_rules) + "."
+            )
+        elif incident:
+            health_state, reason = "recovering", (
+                "Check returned a valid result; the collection incident is awaiting "
+                "its clear cycles."
+            )
+        else:
+            health_state, reason = "available", (
+                "Check returned a valid result (plugin state " + str(state) + ")."
+            )
+        if metrics_truncated or observation.get("rules_truncated"):
+            reason += " Some metric/rule evidence was omitted because the report limit was reached."
+        return {"state": health_state, "reason": reason, "incident": incident,
+                "sample_age_s": round(age), "sampled_at": sampled_at,
+                "plugin_state": state, "plugin_message": message, "failure": failure,
+                "available_metrics": available, "rules": rules,
+                "rule_details": rule_details}
+
     def events(
         self,
         *,

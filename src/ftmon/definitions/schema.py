@@ -163,7 +163,10 @@ def external_decl(perfdata: list[dict]) -> model.SourceDecl:
     return model.SourceDecl(
         name="external", kind="sampler", entity_kind="external",
         metrics=fixed + mapped,
-        attrs=(model.AttrDecl("plugin_message", "Sanitized first-line check message"),),
+        attrs=(
+            model.AttrDecl("plugin_message", "Sanitized first-line check message"),
+            model.AttrDecl("plugin_failure", "Execution/protocol failure category"),
+        ),
     )
 
 

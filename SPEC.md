@@ -1,6 +1,8 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.66** — v0.66 makes RB-01's CPU budget explicit about what it
+Status: **DRAFT v0.67** — v0.67 makes external collection health a core guarantee,
+shows unavailable evidence without false recovery, and explains empty Trends
+(issue #198, EC-11, UI-12). v0.66 makes RB-01's CPU budget explicit about what it
 scales with. The daemon's cost tracks **sampled** process count, not persisted
 cardinality, so the figure is stated for a reference server profile and a profile
 may carry a calibration derived in DM-16's worksheet — while a looser threshold is
@@ -699,7 +701,8 @@ rate_threshold_params = ["latency_growth_sph"]
   self-metric without discarding the valid check state.
 - **EC-05** Every run produces one synthetic entity with stable `entity_id =
   source_options.entity`, fixed metrics `plugin_state` (0–3), `plugin_ok`
-  (0/1), and `duration_s`, fixed attr `plugin_message`, plus valid mapped
+  (0/1), and `duration_s`, fixed attrs `plugin_message` and `plugin_failure` (stable execution/protocol
+  failure category, empty on valid output), plus valid mapped
   metrics. These are ordinary persisted series: they are queryable through
   CLI/MCP/Metrics, usable by parameters, derived expressions, baselines and
   confirmation rules, and eligible for explicit `[[trend]]` profiles. FTMON
@@ -751,6 +754,40 @@ rate_threshold_params = ["latency_growth_sph"]
   JSON `state`. A nonzero exit MUST yield unknown with failure `exit_status`
   and MUST discard the JSON object (including any `state` and metrics), even
   when stdout would otherwise parse successfully.
+
+- **EC-11** External collection health MUST work without an author-defined
+  health rule. For each enabled external monitor the runtime supplies a reserved
+  `@check-health` warning rung on `plugin_state == 3`, confirming after two
+  completed failed observations and clearing after two completed state 0/1/2
+  observations. It uses ordinary incidents, acknowledgment, restart continuity,
+  backoff and recovery notifications (IN-01..04); skipped observations freeze
+  counters. This rule is runtime-owned and does not change the definition hash
+  or write administrator configuration. To avoid duplicate incidents and
+  notifications, an existing rule that is provably TRUE for UNKNOWN regardless
+  of other measurement values owns collection health instead, retaining its
+  configured severity and confirmation/recovery policy (including conditions
+  that also alert on state 1/2). Recognition MUST use the validated condition,
+  not rule/group names: a call-free expression referencing `plugin_state` or
+  `plugin_ok`, constants, static parameters and measurements qualifies if it is
+  TRUE with state 3 and all other measurements UNKNOWN, but not TRUE with state
+  0 and those measurements UNKNOWN. Windowed or attribute-dependent conditions
+  do not prove coverage.
+  Missing measurements in a completed external observation MUST NOT reuse old
+  ring values as current inputs, including through derived/windowed expressions;
+  historical points remain available for history. Explicit applicability guards
+  retain EX-06 semantics. An unavailable optional measurement does not make
+  valid sibling measurements unavailable or itself imply a failed check.
+  The daemon MUST persist a bounded current external-observation report with
+  definition hash, entity, observation time, protocol failure category, available
+  measurements and rule truth values. The report is capped at 64 monitors,
+  128 rules and 128 available metric names per monitor, and 64 KiB, with explicit
+  truncation; removed/changed
+  definitions and daemon lifetimes cannot masquerade as current evidence.
+  Shared read queries MUST distinguish disabled monitoring, stale daemon,
+  observation age beyond `max(15 s, 3 * interval)`, a failed check, and available
+  partial measurements. Open incidents with UNKNOWN current rule evidence are
+  labelled as unable to evaluate recovery; their state and severity remain
+  governed by IN-01. No driver reload or reboot is performed automatically.
 
 ### 6.5 Curated extra-monitor recipes
 
@@ -1198,7 +1235,7 @@ A local, single-user, AI-optional interface — the modern successor to legacy's
 
 ---
 
-- **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Its entity selector MUST list recently seen active entities rather than every retained historical identity; an explicitly requested historical entity MUST remain selectable so incident links and bookmarks keep working. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. Incident evidence links into Trends MUST preserve the entity, range and incident group, and the selected group MUST filter chart markers even when it differs from the trend profile's default group. An active marker filter MUST be visible and clearable even when it matches no incidents, and changing the monitor/profile MUST discard the old monitor's group. The built-in `self` Trend mappings are explicit rather than inferred from names: `rss-growth` and `rss-budget` → `rss-growth`; `db-budget` → `db-capacity`; `cpu-budget` has no Trend link because CPU level evidence has no declared growth semantics. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays.
+- **UI-12** Primary navigation MUST expose one generic **Trends** explorer selecting monitor, profile, entity, and shareable range. Its entity selector MUST list recently seen active entities rather than every retained historical identity; an explicitly requested historical entity MUST remain selectable so incident links and bookmarks keep working. Dashboard monitor tiles, monitor details, and incident details link into that explorer with context preselected. Incident evidence links into Trends MUST preserve the entity, range and incident group, and the selected group MUST filter chart markers even when it differs from the trend profile's default group. An active marker filter MUST be visible and clearable even when it matches no incidents, and changing the monitor/profile MUST discard the old monitor's group. The built-in `self` Trend mappings are explicit rather than inferred from names: `rss-growth` and `rss-budget` → `rss-growth`; `db-budget` → `db-capacity`; `cpu-budget` has no Trend link because CPU level evidence has no declared growth semantics. `/disks` remains a compatibility redirect to the disk capacity profile. The page renders only declared panels and provides a profile-specific textual summary and incident overlays. Each empty panel MUST explain that no observations exist in the selected range, show the latest retained observation (including rollup resolution) when known, and provide a route to older retained history; absent evidence is labelled never sampled or expired rather than invented. Partial panels remain usable. Current EC-11 collection health and reliably associated health incidents are shown independently of the historical range; historical latest values MUST NOT be labelled as fresh current measurements.
 - **UI-13** Metrics Explorer remains the diagnostic single-series surface for any persisted metric, including metrics without a trend profile. Its cascading selectors MUST include only series with observations in the selected range and resolution tier; an explicitly requested persisted series remains selected after its observations expire and renders a textual no-observations state rather than an empty graph or silent fallback. It MUST use the same vendored chart renderer, time-axis/cursor behavior, gap semantics, min/max rollup envelopes, incident markers, and accessible summary as Trends. Incident evidence links into Metrics MUST preserve the entity, range and incident group. Their built-in `self` mappings are explicit rather than inferred: `cpu-budget` → `cpu_10m` average and `rss-budget` → `rss_bytes` maximum, matching the average CPU rule and instantaneous RSS level rule respectively. The selected group MUST filter chart markers; an active marker filter MUST be visible and clearable even when it matches no incidents, and changing the monitor MUST discard the old monitor's group. Metrics additionally exposes statistic selection (`avg|min|max|last`) and links to a matching Trend profile when one exists; it MUST NOT fabricate rate, confidence, or projection semantics for an undeclared metric. When CA-05 has a stored row for the selected series, Metrics also reports the current learning level, update-count coverage/readiness and effective half-life, visibly labels the Baseline as `learning` or `ready`, includes every retained baseline value in the chart Y-domain, and overlays only the reconstructable native five-minute baseline points. Consecutive buckets may be joined as clearly distinguishable dashed segments, but gaps larger than five minutes, raw-sample timestamps and hourly interpolation MUST NOT be invented; ranges without retained baseline history show the labelled current state in text without a historical reference line.
 - **UI-14** Every dashboard monitor tile MUST show one accessible health state derived from current configuration, daemon freshness, and live open/acked incidents. Fixed precedence is `config_error > stale_or_unknown > disabled > error_or_critical > notice_or_warning > clear`. States use color plus icon and visible text: grey `? unknown`/`● disabled`, red `✖ error`, yellow `▲ warning`, green `✓ clear`. Acknowledgment does not reduce severity or turn a tile green. Affected tiles show live incident count and link to incidents filtered by monitor; color never flashes or animates.
 - **UI-15** `ftmon web --demo` is a separate public-demonstration mode. It
@@ -1526,6 +1563,12 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.67 (2026-09-24)** — adds core external collection-health warnings with
+semantic reuse of existing health rules, unavailable current-input handling,
+and bounded observation evidence (EC-11). Trends explains missing observations
+and retained historical readings; dashboard and incident views distinguish
+collection failure from unverified recovery (UI-12, IN-01, issue #198).
 
 **v0.66 (2026-09-12)** — states what RB-01's CPU budget scales with. Seven days of
 TS-17 evidence on two 2.0.0a19 legs measured 0.62 % p95 of one core on a 99-process

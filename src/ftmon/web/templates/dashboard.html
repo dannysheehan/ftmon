@@ -86,7 +86,10 @@
   </div>
   {% endif %}
   <p class="tile-desc">{{ tile.description }}</p>
+  {% if tile.collection or tile.incident_count %}<div class="tile-details">
+  {% if tile.collection %}<p class="tile-meta" data-collection-state="{{ tile.collection.state }}"><strong>Collection:</strong> {{ tile.collection.reason }}{% if tile.collection.sample_age_s is not none %} Last check {{ tile.collection.sample_age_s }}s ago.{% endif %}{% if tile.collection.incident %} <a href="/incidents/{{ tile.collection.incident.id }}">Incident #{{ tile.collection.incident.id }}</a>{% endif %}</p>{% if tile.collection.plugin_message %}<p class="tile-meta">Check message: {{ tile.collection.plugin_message }}</p>{% endif %}{% endif %}
   {% if tile.incident_count %}<p class="tile-meta"><a href="/incidents?monitor={{ tile.name|urlencode }}">{{ tile.incident_count }} live incident{{ '' if tile.incident_count == 1 else 's' }}</a>{% if tile.max_severity is not none %}; highest {{ severity_name(tile.max_severity) }}{% endif %}</p>{% endif %}
+  </div>{% endif %}
   {% if tile.trends %}<p class="tile-trends">{% for profile in tile.trends %}<a href="/trends/{{ tile.name }}/{{ profile.id }}">View {{ profile.title }}</a>{% endfor %}</p>{% endif %}
 </article>
 {%- endmacro %}

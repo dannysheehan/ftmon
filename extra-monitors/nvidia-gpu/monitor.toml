@@ -1,0 +1,123 @@
+schema = 1
+
+[monitor]
+name = "nvidia_gpu"
+description = "NVIDIA GPU 0 temperature, utilization, memory and power"
+version = 1
+enabled = false
+platforms = ["linux"]
+interval = "60s"
+source = "external"
+
+[source_options]
+check = "nvidia_gpu"
+entity = "nvidia-gpu:0"
+
+[[source_options.perfdata]]
+label = "temp"
+metric = "temperature_c"
+plugin_uom = "C"
+unit = "celsius"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "util"
+metric = "utilization_pct"
+plugin_uom = "%"
+unit = "percent"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "mem_util"
+metric = "memory_utilization_pct"
+plugin_uom = "%"
+unit = "percent"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "mem_used"
+metric = "memory_used_mib"
+plugin_uom = "MiB"
+unit = "mebibytes"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "mem_total"
+metric = "memory_total_mib"
+plugin_uom = "MiB"
+unit = "mebibytes"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "power"
+metric = "power_w"
+plugin_uom = "W"
+unit = "watts"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "power_limit"
+metric = "power_limit_w"
+plugin_uom = "W"
+unit = "watts"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "fan_pct"
+metric = "fan_pct"
+plugin_uom = "%"
+unit = "percent"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "sm_clock"
+metric = "graphics_clock_mhz"
+plugin_uom = "MHz"
+unit = "megahertz"
+kind = "gauge"
+
+[[source_options.perfdata]]
+label = "mem_clock"
+metric = "memory_clock_mhz"
+plugin_uom = "MHz"
+unit = "megahertz"
+kind = "gauge"
+
+[parameters]
+warn_temperature_c = { value = 80, doc = "Temperature warning; keep --warn in checks.toml aligned" }
+crit_temperature_c = { value = 90, doc = "Temperature critical; keep --crit in checks.toml aligned" }
+warn_utilization_pct = { value = 95, doc = "Utilization warning; keep --warn in checks.toml aligned" }
+crit_utilization_pct = { value = 98, doc = "Utilization critical; keep --crit in checks.toml aligned" }
+
+[glance]
+metric = "temperature_c"
+unit = "celsius"
+aggregate = "max"
+thresholds = [
+  { label = "warn", parameter = "warn_temperature_c" },
+  { label = "critical", parameter = "crit_temperature_c" },
+]
+
+[[rule]]
+id = "plugin-warning"
+group = "gpu-health"
+when = "plugin_state == 1"
+severity = "warning"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-critical"
+group = "gpu-health"
+when = "plugin_state == 2"
+severity = "critical"
+confirm_cycles = 2
+message = "{plugin_message}"
+
+[[rule]]
+id = "plugin-unknown"
+group = "check-health"
+when = "plugin_state == 3"
+severity = "warning"
+confirm_cycles = 2
+message = "NVIDIA GPU check is unknown: {plugin_message}"
