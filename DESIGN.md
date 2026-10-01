@@ -780,6 +780,11 @@ Write path: `writer.py` accumulates the tick's samples/events/incident rows and
 commits **one** transaction at step 4 (PM-03). Notifications and their frozen
 initial delivery rows are part of that transaction (NO-04/DM-18); the dispatcher
 claims and updates delivery state afterward through its own short transactions.
+The writer's process-lifetime series-ID cache groups metrics by
+`(monitor, entity_id)`. Exemption purges (CA-07) and catalog reap (MD-09)
+evict only that owner's metrics; they never scan unrelated cached history,
+so their cache cost does not grow with process churn (RB-01). A failed tick
+clears the entire cache before rediscovery to avoid reusing rolled-back IDs.
 If `BEGIN IMMEDIATE` fails after `busy_timeout` with "database is locked"
 (PM-10), `commit_tick` still clears its pending buffers, the daemon counts
 `sqlite_lock_errors`, emits a self-event for the next successful tick, and

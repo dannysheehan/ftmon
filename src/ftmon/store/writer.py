@@ -72,7 +72,10 @@ class TickWriter:
         # non-durable stayed misclassified forever (issue #119). Caching
         # the known value lets a cache hit still queue a correction
         # without a SELECT per sample.
-        self._series_cache: dict[tuple[str, str, str], tuple[int, bool]] = {}
+        # CA-07 evicts every exempt entity on every run. Index by owner so
+        # that cost depends only on its metrics, not all historical series
+        # accumulated during this daemon lifetime (RB-01).
+        self._series_cache: dict[tuple[str, str], dict[str, tuple[int, bool]]] = {}
         # One-way 0 -> 1 promotions, applied as a single UPDATE per tick.
         self._pending_durability: set[int] = set()
         self._next_series_id: int | None = None
@@ -110,7 +113,8 @@ class TickWriter:
 
     def series_id(self, monitor: str, entity_id: str, metric: str, durable: bool) -> int:
         key = (monitor, entity_id, metric)
-        cached = self._series_cache.get(key)
+        metrics = self._series_cache.setdefault((monitor, entity_id), {})
+        cached = metrics.get(metric)
         if cached is not None:
             sid, known_durable = cached
             # The cache short-circuits before any SQL, and a monitor writes
@@ -118,7 +122,7 @@ class TickWriter:
             # SELECT path below would miss all but the first.
             if durable and not known_durable:
                 self._pending_durability.add(sid)
-                self._series_cache[key] = (sid, True)
+                metrics[metric] = (sid, True)
             return sid
 
         row = self._conn.execute(
@@ -132,7 +136,7 @@ class TickWriter:
             if durable and not stored:
                 self._pending_durability.add(sid)
                 stored = True
-            self._series_cache[key] = (sid, stored)
+            metrics[metric] = (sid, stored)
             return sid
 
         if self._next_series_id is None:
@@ -142,7 +146,7 @@ class TickWriter:
         self._next_series_id += 1
 
         self._pending_series.append((new_id, monitor, entity_id, metric, int(durable)))
-        self._series_cache[key] = (new_id, bool(durable))
+        metrics[metric] = (new_id, bool(durable))
         return new_id
 
 
@@ -199,10 +203,7 @@ class TickWriter:
         series id that no longer exists in `series` the next time this
         identity is seen, producing orphan samples/rollups instead of a
         fresh series row."""
-        for key in [
-            key for key in self._series_cache if key[:2] == (monitor, entity_id)
-        ]:
-            del self._series_cache[key]
+        self._series_cache.pop((monitor, entity_id), None)
 
     def add_event(self, ev: EventRecord) -> int:
         event_id = self._alloc_event_id()
