@@ -281,11 +281,85 @@ def test_forget_entity_removes_samples_rollups_baseline_and_catalog_state_ca_07(
     conn.commit()
 
     writer = TickWriter(conn)
+    assert writer.series_id("disk", "/snap", "used_pct", True) == 1
     writer.forget_entity("disk", "/snap")
     writer.commit_tick()
 
     for table in ("entities", "series", "samples", "rollup5m", "rollup1h", "baselines"):
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+    sid = writer.series_id("disk", "/snap", "used_pct", True)
+    writer.add_sample(sid, NOW, 42)
+    writer.commit_tick()
+    assert conn.execute(
+        "SELECT value FROM samples JOIN series ON series.id=samples.series_id"
+    ).fetchone()[0] == 42
+
+
+@pytest.mark.parametrize("entity_id", ["pid:0", "never-persisted"])
+def test_cache_eviction_does_not_scan_unrelated_history_rb_01(tmp_path, entity_id):
+    """[RB-01][CA-07] Exemption cost must not grow with unrelated process history."""
+    conn = _fresh(tmp_path)
+    writer = TickWriter(conn)
+    ids = {f"pid:{i}": writer.series_id("hog", f"pid:{i}", "cpu_pct", False)
+           for i in range(500)}
+    writer.commit_tick()
+
+    class NoScanCache(dict):
+        def __iter__(self):
+            raise AssertionError("eviction scanned unrelated history")
+
+        def keys(self):
+            raise AssertionError("eviction scanned unrelated history")
+
+        def items(self):
+            raise AssertionError("eviction scanned unrelated history")
+
+        def values(self):
+            raise AssertionError("eviction scanned unrelated history")
+
+    writer._series_cache = NoScanCache(writer._series_cache)
+    writer.forget_entity("hog", entity_id)
+    writer.commit_tick()
+    statements = []
+    conn.set_trace_callback(statements.append)
+    for other, sid in ids.items():
+        if other != entity_id:
+            assert writer.series_id("hog", other, "cpu_pct", False) == sid
+    assert statements == []
+
+
+@pytest.mark.parametrize("cold_writer", [False, True])
+def test_eviction_invalidates_only_target_entity_metrics_md_09(tmp_path, cold_writer):
+    """[MD-09][DM-04] Eviction drops all target metrics without disturbing other owners."""
+    conn = _fresh(tmp_path)
+    writer = TickWriter(conn)
+    ids = {(monitor, entity, metric): writer.series_id(monitor, entity, metric, False)
+           for monitor, entity in (("hog", "pid:1"), ("hog", "pid:2"), ("leak", "pid:1"))
+           for metric in ("cpu_pct", "rss_bytes", "num_fds")}
+    writer.commit_tick()
+    if cold_writer:
+        writer = TickWriter(conn)
+        for key, sid in ids.items():
+            assert writer.series_id(*key, False) == sid
+
+    writer.evict_series_cache("hog", "pid:1")
+    writer.evict_series_cache("hog", "pid:1")  # Retention/exemption eviction is idempotent.
+    statements = []
+    conn.set_trace_callback(statements.append)
+    for key, sid in ids.items():
+        if key[:2] != ("hog", "pid:1"):
+            assert writer.series_id(*key, False) == sid
+    assert statements == []
+    for key, sid in ids.items():
+        if key[:2] == ("hog", "pid:1"):
+            assert writer.series_id(*key, True) == sid
+    assert len(statements) == 3  # Each evicted metric must rediscover its stored row.
+    conn.set_trace_callback(None)
+    writer.commit_tick()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM series WHERE durable=1 AND monitor='hog' AND entity_id='pid:1'"
+    ).fetchone()[0] == 3
 
 
 def test_series_id_interned_across_writer_instances(tmp_path):
