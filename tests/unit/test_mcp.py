@@ -1267,7 +1267,7 @@ def test_mcp_cache_is_small_readonly_and_connection_local_rb_01(populated):
         before = writer.execute('SELECT COUNT(*) FROM samples').fetchone()[0]
         with api._query() as query:
             cache_kib = query._conn.execute('PRAGMA cache_size').fetchone()[0]
-            assert -256 <= cache_kib < 0
+            assert -64 <= cache_kib < 0
             assert query._conn.execute('SELECT COUNT(*) FROM samples').fetchone()[0] == before
             with pytest.raises(sqlite3.OperationalError, match='readonly'):
                 query._conn.execute('DELETE FROM samples')

@@ -47,7 +47,7 @@ _QM_MAX_ENTITIES = 50
 _QM_MAX_POINTS_PER_ENTITY = 2000
 _QM_MAX_TOTAL_POINTS = 10_000
 # RB-01: short-lived MCP readers share the OS cache; reserve RSS for SDK/results.
-_READ_CACHE_KIB = 256
+_READ_CACHE_KIB = 64
 
 
 class McpExtraRequired(ModuleNotFoundError):
@@ -882,6 +882,7 @@ def build_server(paths: Paths):
     tools = {}
     plans = {}
     adapters = {}
+    schemas = {}
     # RB-01: one active tool owns point buffers; queued calls do not spawn workers.
     tool_limiter = anyio.CapacityLimiter(1)
 
@@ -896,7 +897,9 @@ def build_server(paths: Paths):
                     adapters[annotation] = TypeAdapter(annotation)
                 adapter = adapters[annotation]
                 if key in hints:
-                    field = adapter.json_schema()
+                    if annotation not in schemas:
+                        schemas[annotation] = adapter.json_schema()
+                    field = schemas[annotation].copy()
                     field["title"] = key.replace("_", " ").title()
                 else:
                     # Preserve the SDK's advertised schema for unannotated Any arguments.

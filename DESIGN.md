@@ -1529,7 +1529,7 @@ The SDK import remains
 inside `build_server`, so core CLI/web/daemon imports have no MCP dependency.
 Only absence of the SDK root becomes the deterministic MC-08 exit-2 guidance;
 missing SDK internals or transitive modules retain their original diagnostics.
-MCP read connections close at request completion and use a 256 KiB SQLite
+MCP read connections close at request completion and use a 64 KiB SQLite
 page-cache target; the OS page cache remains shared with the daemon. MCP
 installation compiles bytecode before startup to avoid retaining SDK compiler
 allocations in the server process (RB-01). Tool responses use compact JSON text
