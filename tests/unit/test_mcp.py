@@ -1176,3 +1176,67 @@ class TestMixedCohortTierConsistency:
         # finer tier than the one reported.
         assert values["dur"] == [111.0], "durable member must come from hourly"
         assert values["proc"] == [222.0]
+
+
+@pytest.mark.parametrize(('method', 'kwargs'), [
+    ('get_status', {}),
+    ('query_metrics', {'monitor': 'leak', 'metric': 'rss_bytes', 'range': '90m'}),
+    ('query_metrics', {'monitor': 'leak', 'metric': 'rss_bytes', 'range': 'invalid'}),
+    ('list_baselines', {}),
+    ('top_consumers', {'resource': 'rss', 'range': '90m'}),
+    ('get_process_history', {'name_or_pid': 'leaky', 'range': '90m'}),
+    ('list_events', {'range': '90m'}),
+    ('list_incidents', {}),
+    ('explain_incident', {'id': -1}),
+    ('get_monitor', {'name': 'leak'}),
+    ('diagnose_monitor', {'name': 'leak'}),
+])
+def test_read_tools_close_connections_before_gc_rb_01_mc_08(populated, monkeypatch, method,
+                                                           kwargs):
+    """[RB-01][MC-08] Every read tool releases SQLite resources before returning."""
+    import sqlite3
+
+    from ftmon import mcp_server
+
+    _, _, api = populated
+    connections = []
+    original = mcp_server.connect
+
+    def track_connect(*args, **kwargs):
+        assert kwargs['readonly'] is True
+        conn = original(*args, **kwargs)
+        connections.append(conn)
+        return conn
+
+    monkeypatch.setattr(mcp_server, 'connect', track_connect)
+    getattr(api, method)(**kwargs)
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match='closed database'):
+        connections[0].execute('SELECT 1')
+
+
+def test_read_tool_closes_connection_on_exception_rb_01_mc_08(populated, monkeypatch):
+    """[RB-01][MC-08] Failed status queries release their page cache and handles too."""
+    import sqlite3
+
+    from ftmon import mcp_server
+
+    _, _, api = populated
+    connections = []
+    original = mcp_server.connect
+
+    def track_connect(*args, **kwargs):
+        conn = original(*args, **kwargs)
+        connections.append(conn)
+        return conn
+
+    def fail_status(self, *, now):
+        raise RuntimeError('status query failed')
+
+    monkeypatch.setattr(mcp_server, 'connect', track_connect)
+    monkeypatch.setattr(Query, 'status', fail_status)
+    with pytest.raises(RuntimeError, match='status query failed'):
+        api.get_status()
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match='closed database'):
+        connections[0].execute('SELECT 1')
