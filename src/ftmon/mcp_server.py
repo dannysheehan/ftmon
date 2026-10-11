@@ -882,7 +882,14 @@ def build_server(paths: Paths):
     tools = {}
     plans = {}
     adapters = {}
-    schemas = {}
+    # RB-01/MC-01: frozen scalar schemas avoid general schema-generator allocations.
+    # The catalogue compatibility test checks these against the SDK's own schemas.
+    schemas = {
+        str: {"type": "string"},
+        int: {"type": "integer"},
+        str | None: {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        bool | None: {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+    }
     # RB-01: one active tool owns point buffers; queued calls do not spawn workers.
     tool_limiter = anyio.CapacityLimiter(1)
 
@@ -897,8 +904,6 @@ def build_server(paths: Paths):
                     adapters[annotation] = TypeAdapter(annotation)
                 adapter = adapters[annotation]
                 if key in hints:
-                    if annotation not in schemas:
-                        schemas[annotation] = adapter.json_schema()
                     field = schemas[annotation].copy()
                     field["title"] = key.replace("_", " ").title()
                 else:

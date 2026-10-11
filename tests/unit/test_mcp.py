@@ -1363,6 +1363,18 @@ def test_sdk_argument_compatibility_and_errors_mc_01_mc_04(populated, mode):
     asyncio.run(exercise())
 
 
+def test_registration_avoids_general_schema_generation_rb_01(core_env, monkeypatch):  # noqa: F811
+    """[RB-01][MC-01] Frozen scalar registration avoids heavyweight schema generation."""
+    from pydantic import TypeAdapter
+
+    def unexpected_schema_generation(*args, **kwargs):
+        raise AssertionError('general schema generation adds startup memory')
+
+    monkeypatch.setattr(TypeAdapter, 'json_schema', unexpected_schema_generation)
+    server = build_server(core_env)
+    assert len(asyncio.run(_server_tools(server))) == 15
+
+
 def test_tool_worker_is_bounded_and_protocol_stays_responsive_rb_01(core_env, monkeypatch):  # noqa: F811
     """[RB-01][MC-01] Concurrent requests share one worker without blocking protocol requests."""
     import threading

@@ -1529,6 +1529,10 @@ The SDK import remains
 inside `build_server`, so core CLI/web/daemon imports have no MCP dependency.
 Only absence of the SDK root becomes the deterministic MC-08 exit-2 guidance;
 missing SDK internals or transitive modules retain their original diagnostics.
+The frozen scalar parameter schemas use small explicit templates, checked
+against the SDK-generated catalogue in tests. This avoids running the SDK's
+general schema generator at startup; shared SDK validators still enforce
+argument coercion. New annotated parameter types must extend that catalogue.
 MCP read connections close at request completion and use a 64 KiB SQLite
 page-cache target; the OS page cache remains shared with the daemon. MCP
 installation compiles bytecode before startup to avoid retaining SDK compiler
@@ -1537,8 +1541,8 @@ with the existing values and schemas; avoiding pretty-print buffers leaves
 headroom for bounded metric results. Immutable timestamp/value point tuples
 are shared directly with MCP JSON arrays rather than copied into pair lists;
 readers iterate SQL rows and allocate extrema only for chart requests.
-The static catalogue derives its frozen parameter schemas from the API methods
-using shared scalar TypeAdapters instead of allocating a separate model class
+The static catalogue selects its frozen parameter schemas from API annotations
+and uses shared scalar TypeAdapters instead of allocating a separate model class
 for each tool. Defaults, coercion, ignored extra arguments and JSON-in-a-string
 compatibility match the previous SDK registration. Blocking work and JSON serialization use one bounded tool worker, leaving
 protocol handling responsive while queued calls do not multiply point buffers. The catalogue does not advertise change subscriptions.
