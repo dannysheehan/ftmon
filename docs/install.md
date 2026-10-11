@@ -34,8 +34,13 @@ authentication dependency tree. If this host will run `ftmon mcp`, install the
 optional integration instead:
 
 ```sh
-uv tool install 'ftmon[mcp]'
+uv tool install --compile-bytecode 'ftmon[mcp]'
 ```
+
+Compile bytecode during installation so the first MCP process does not retain
+the extra memory used to compile the SDK. For an existing MCP installation,
+use `uv tool upgrade --compile-bytecode ftmon`. This does not change FTMON's
+configuration or database.
 
 `pipx install ftmon` is an equivalent isolated installer if you prefer pipx.
 PyPI's project page shows `pip install ftmon` in the sidebar; prefer
@@ -63,7 +68,7 @@ ftmon init --profile desktop
 ftmon check
 ```
 
-For development, use `uv sync --extra mcp` followed by `uv run ftmon ...` so
+For development, use `uv sync --extra mcp --compile-bytecode` followed by `uv run ftmon ...` so
 the complete test suite can exercise the optional server. `ftmon init`
 creates private directories, installs eight built-in monitor definitions (the
 Linux `desktop` profile uses calibrated thresholds documented in
@@ -907,7 +912,7 @@ retention and avoid query-string retention when it is not operationally useful.
 Install the optional server before registering it:
 
 ```sh
-uv tool install 'ftmon[mcp]'
+uv tool install --compile-bytecode 'ftmon[mcp]'
 ```
 
 Claude Code:

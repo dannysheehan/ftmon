@@ -1,6 +1,9 @@
 # FTMON v2 — Specification
 
-Status: **DRAFT v0.67** — v0.67 makes external collection health a core guarantee,
+Status: **DRAFT v0.68** — v0.68 uses the official SDK v2 low-level Server for
+the frozen MCP catalogue, sharing argument validators and preserving modern/legacy
+contracts while reducing memory overhead (MC-01/03/05/08, RB-01, issue #208).
+v0.67 makes external collection health a core guarantee,
 shows unavailable evidence without false recovery, and explains empty Trends
 (issue #198, EC-11, UI-12). v0.66 makes RB-01's CPU budget explicit about what it
 scales with. The daemon's cost tracks **sampled** process count, not persisted
@@ -1563,6 +1566,17 @@ Implementation lands in stages; each stage is independently usable, ships the §
 ---
 
 ## 21. Changelog & review disposition
+
+**v0.68 (2026-10-12)** — uses the official SDK v2 `Server` for the static MCP
+tool/resource catalogue instead of one dynamic argument-model class per tool.
+Shared scalar validation preserves the existing schemas, defaults, coercion and
+JSON-in-a-string compatibility. Modern/legacy protocols, annotations, resources
+and the two write paths remain unchanged. MCP readers close at request end and
+use a small connection-local SQLite cache; point records are shared with compact
+JSON arrays, rows are streamed, and unused chart extrema are not materialized.
+Installation guidance compiles bytecode before MCP startup to avoid compiler
+allocations in the server process. RB-01's memory limit is unchanged.
+(MC-01/03/05/08, DM-06/17, RB-01, issue #208.)
 
 **v0.67 (2026-09-24)** — adds core external collection-health warnings with
 semantic reuse of existing health rules, unavailable current-input handling,
