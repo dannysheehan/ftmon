@@ -308,6 +308,8 @@ the installed FTMON version and concise operating instructions to the client;
 tool annotations mark thirteen operations read-only and only the two proposal/
 acknowledgement operations writable. All tools are local and non-destructive,
 and approving a proposed monitor always remains a separate human action.
+Read tools release their database connections when each request finishes,
+so repeated requests do not accumulate SQLite caches in the MCP process.
 
 The assistant gets tools for status, metric queries with automatic
 resolution, top consumers, per-process history, events, incidents with a

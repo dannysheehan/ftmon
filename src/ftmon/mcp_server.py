@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
@@ -133,10 +135,14 @@ class McpApi:
 
     # -- plumbing ----------------------------------------------------------
 
-    def _query(self) -> Query | None:
+    @contextmanager
+    def _query(self) -> Iterator[Query | None]:
+        """Release SQLite page caches at request end, including errors (RB-01/MC-08)."""
         if not self._paths.db_file.exists():
-            return None
-        return Query(connect(self._paths.db_file, readonly=True))
+            yield None
+            return
+        with closing(connect(self._paths.db_file, readonly=True)) as conn:
+            yield Query(conn)
 
     def _no_db(self) -> dict:
         return _err("not_found", "no database yet",
@@ -173,186 +179,186 @@ class McpApi:
 
     def get_status(self) -> dict:
         now = self._clock.now()
-        q = self._query()
-        # Same load authority as the dashboard: an external monitor whose alias
-        # is missing from the registry is a configuration error, not a loaded
-        # monitor the model should trust (EC-01, issue #64).
-        defs, errors = loader.load_dir(
-            self._paths.monitors_dir,
-            actions_dir=self._paths.actions_dir,
-            require_actions=True,
-            check_aliases=glance.check_aliases(self._paths),
-            require_checks=True,
-        )
-        monitors = [{"name": d.name, "source": d.source, "enabled": d.enabled}
-                    for d in defs]
-        monitors += [{"name": p.stem, "state": "config_error", "error": str(e)[:200]}
-                     for p, e in errors]
-        drafts = sorted(p.stem for p in self._paths.drafts_dir.glob("*.toml")
-                        ) if self._paths.drafts_dir.exists() else []
-        # Bounds are reported even when nothing qualifies, so a model never has
-        # to guess whether an absent readout means "quiet" or "capped" (MC-01).
-        out = {"tz": _tz_name(now), "monitors": monitors, "drafts": drafts,
-               "glances": [], "glances_returned": 0, "glances_matched": 0,
-               "glances_truncated": False, "limits": glance.limits()}
-        if q is None:
-            out.update({"daemon_alive": False, "daemon_stale": True,
-                        "last_tick_age_s": None,
-                        "open_incidents": 0, "self_metrics": {}})
+        with self._query() as q:
+            # Same load authority as the dashboard: an external monitor whose alias
+            # is missing from the registry is a configuration error, not a loaded
+            # monitor the model should trust (EC-01, issue #64).
+            defs, errors = loader.load_dir(
+                self._paths.monitors_dir,
+                actions_dir=self._paths.actions_dir,
+                require_actions=True,
+                check_aliases=glance.check_aliases(self._paths),
+                require_checks=True,
+            )
+            monitors = [{"name": d.name, "source": d.source, "enabled": d.enabled}
+                        for d in defs]
+            monitors += [{"name": p.stem, "state": "config_error", "error": str(e)[:200]}
+                         for p, e in errors]
+            drafts = sorted(p.stem for p in self._paths.drafts_dir.glob("*.toml")
+                            ) if self._paths.drafts_dir.exists() else []
+            # Bounds are reported even when nothing qualifies, so a model never has
+            # to guess whether an absent readout means "quiet" or "capped" (MC-01).
+            out = {"tz": _tz_name(now), "monitors": monitors, "drafts": drafts,
+                   "glances": [], "glances_returned": 0, "glances_matched": 0,
+                   "glances_truncated": False, "limits": glance.limits()}
+            if q is None:
+                out.update({"daemon_alive": False, "daemon_stale": True,
+                            "last_tick_age_s": None,
+                            "open_incidents": 0, "self_metrics": {}})
+                return out
+            info = q.status(now=now)
+            age = info.get("last_tick_age_s")
+            rows = q._conn.execute(
+                "SELECT se.metric, s.value FROM series se JOIN samples s "
+                "ON s.series_id = se.id WHERE se.monitor = 'self' AND s.ts = "
+                "(SELECT MAX(ts) FROM samples WHERE series_id = se.id)"
+            ).fetchall()
+            batch = glance.monitor_glances(
+                defs, q, stale=glance.daemon_stale(age), now=now
+            )
+            out.update({
+                "daemon_alive": glance.daemon_alive(age),
+                "daemon_stale": glance.daemon_stale(age),
+                "last_tick_age_s": age,
+                # D1 (issue #104): db_bytes is file allocation, kept for
+                # backward compatibility; db_used_bytes is the DM-05 budget
+                # figure a caller should judge headroom against.
+                "db_bytes": info["db_bytes"],
+                "db_allocated_bytes": info["db_allocated_bytes"],
+                "db_used_bytes": info["db_used_bytes"],
+                "db_freelist_bytes": info["db_freelist_bytes"],
+                "open_incidents": info["open_incidents"],
+                "self_metrics": {r["metric"]: r["value"] for r in rows},
+                "glances": [_glance_json(r) for r in batch.readings],
+                "glances_returned": batch.returned,
+                "glances_matched": batch.matched,
+                "glances_truncated": batch.truncated,
+            })
             return out
-        info = q.status(now=now)
-        age = info.get("last_tick_age_s")
-        rows = q._conn.execute(
-            "SELECT se.metric, s.value FROM series se JOIN samples s "
-            "ON s.series_id = se.id WHERE se.monitor = 'self' AND s.ts = "
-            "(SELECT MAX(ts) FROM samples WHERE series_id = se.id)"
-        ).fetchall()
-        batch = glance.monitor_glances(
-            defs, q, stale=glance.daemon_stale(age), now=now
-        )
-        out.update({
-            "daemon_alive": glance.daemon_alive(age),
-            "daemon_stale": glance.daemon_stale(age),
-            "last_tick_age_s": age,
-            # D1 (issue #104): db_bytes is file allocation, kept for
-            # backward compatibility; db_used_bytes is the DM-05 budget
-            # figure a caller should judge headroom against.
-            "db_bytes": info["db_bytes"],
-            "db_allocated_bytes": info["db_allocated_bytes"],
-            "db_used_bytes": info["db_used_bytes"],
-            "db_freelist_bytes": info["db_freelist_bytes"],
-            "open_incidents": info["open_incidents"],
-            "self_metrics": {r["metric"]: r["value"] for r in rows},
-            "glances": [_glance_json(r) for r in batch.readings],
-            "glances_returned": batch.returned,
-            "glances_matched": batch.matched,
-            "glances_truncated": batch.truncated,
-        })
-        return out
 
     def query_metrics(self, monitor: str, metric: str, range,  # noqa: A002
                       entity=None, agg=None, filter_expr=None) -> dict:
         """Bounded metric series with empty-reason metadata (DM-06/MC-01, #61)."""
         now = self._clock.now()
-        q = self._query()
-        if q is None:
-            return self._no_db()
-        r = self._range(range, now)
-        if isinstance(r, dict):
-            return r
-        if agg not in (None, "avg", "min", "max", "last"):
-            return _err("invalid_params", f"unknown agg {agg!r}",
-                        "avg | min | max | last")
-        start, end = r[0], r[1]
-        # One WAL read snapshot for observed-list / preflight / fetch so an
-        # intervening daemon write cannot inflate points past the hard cap.
-        with q.read_snapshot():
-            # Same scope as the discovery call below, so an empty window
-            # reports the tier that would have served it rather than a more
-            # optimistic one (DM-06, issue #102).
-            resolution = q.resolution_for(
-                now, start, end, monitor=monitor, metric=metric, entity_id=entity,
-            )
-            # One tier for the whole answer: discovery, preflight and every
-            # fetch below are handed the cohort resolution rather than each
-            # re-deriving one, which for a mixed cohort would let a durable
-            # member drop to 5m while the response reports 1h (DM-06).
-            observed = q.list_observed_series_entities(
-                monitor, metric, now=now, start=start, end=end, entity_id=entity,
-                resolution=resolution,
-            )
-            keep = self._attr_filter(q, monitor, filter_expr, now)
-            if isinstance(keep, dict):
-                return keep
-            matched = [
-                (sid, eid) for sid, eid in observed
-                if keep is None or eid in keep
-            ]
-            base = {
-                "tz": _tz_name(now),
-                "resolution": resolution,
-                "limits": _qm_limits(),
-            }
-            if not matched:
-                available = self._available_metrics(q, monitor)
-                if filter_expr and observed:
-                    empty_reason = "filtered_out"
-                elif metric not in available:
-                    empty_reason = "unknown_metric"
-                else:
-                    empty_reason = "no_data_in_range"
+        with self._query() as q:
+            if q is None:
+                return self._no_db()
+            r = self._range(range, now)
+            if isinstance(r, dict):
+                return r
+            if agg not in (None, "avg", "min", "max", "last"):
+                return _err("invalid_params", f"unknown agg {agg!r}",
+                            "avg | min | max | last")
+            start, end = r[0], r[1]
+            # One WAL read snapshot for observed-list / preflight / fetch so an
+            # intervening daemon write cannot inflate points past the hard cap.
+            with q.read_snapshot():
+                # Same scope as the discovery call below, so an empty window
+                # reports the tier that would have served it rather than a more
+                # optimistic one (DM-06, issue #102).
+                resolution = q.resolution_for(
+                    now, start, end, monitor=monitor, metric=metric, entity_id=entity,
+                )
+                # One tier for the whole answer: discovery, preflight and every
+                # fetch below are handed the cohort resolution rather than each
+                # re-deriving one, which for a mixed cohort would let a durable
+                # member drop to 5m while the response reports 1h (DM-06).
+                observed = q.list_observed_series_entities(
+                    monitor, metric, now=now, start=start, end=end, entity_id=entity,
+                    resolution=resolution,
+                )
+                keep = self._attr_filter(q, monitor, filter_expr, now)
+                if isinstance(keep, dict):
+                    return keep
+                matched = [
+                    (sid, eid) for sid, eid in observed
+                    if keep is None or eid in keep
+                ]
+                base = {
+                    "tz": _tz_name(now),
+                    "resolution": resolution,
+                    "limits": _qm_limits(),
+                }
+                if not matched:
+                    available = self._available_metrics(q, monitor)
+                    if filter_expr and observed:
+                        empty_reason = "filtered_out"
+                    elif metric not in available:
+                        empty_reason = "unknown_metric"
+                    else:
+                        empty_reason = "no_data_in_range"
+                    return {
+                        **base,
+                        "series": [],
+                        "truncated": False,
+                        "entities_returned": 0,
+                        "entities_matched": 0,
+                        "points_returned": 0,
+                        "empty_reason": empty_reason,
+                        "available_metrics": available,
+                    }
+
+                series: list[dict] = []
+                points_returned = 0
+                truncated = False
+                for sid, eid in matched:
+                    if len(series) >= _QM_MAX_ENTITIES:
+                        truncated = True
+                        break
+                    if agg is None:
+                        budget = q.series_point_budget(
+                            sid, now=now, start=start, end=end,
+                            max_points=_QM_MAX_POINTS_PER_ENTITY,
+                            resolution=resolution,
+                        )
+                        if points_returned + budget > _QM_MAX_TOTAL_POINTS:
+                            truncated = True
+                            break
+                        res = q.series_points(
+                            sid, now=now, start=start, end=end,
+                            max_points=_QM_MAX_POINTS_PER_ENTITY,
+                            resolution=resolution,
+                        )
+                        n = len(res.points)
+                        # Belt-and-suspenders if preflight ever under-counts.
+                        if points_returned + n > _QM_MAX_TOTAL_POINTS:
+                            truncated = True
+                            break
+                        entry = {
+                            "entity": eid,
+                            "points": [[p.ts, p.value] for p in res.points],
+                        }
+                        points_returned += n
+                    else:
+                        res = q.series_points(
+                            sid, now=now, start=start, end=end,
+                            max_points=_QM_MAX_POINTS_PER_ENTITY,
+                            resolution=resolution,
+                        )
+                        if res.points:
+                            vals = [p.value for p in res.points]
+                            agg_val = {
+                                "avg": sum(vals) / len(vals),
+                                "min": min(vals),
+                                "max": max(vals),
+                                "last": vals[-1],
+                            }[agg]
+                        else:
+                            # Observed-list guarantees ≥1 observation; defensive None.
+                            agg_val = None
+                        entry = {"entity": eid, "agg": agg_val}
+                    series.append(entry)
+
+                if len(series) < len(matched):
+                    truncated = True
                 return {
                     **base,
-                    "series": [],
-                    "truncated": False,
-                    "entities_returned": 0,
-                    "entities_matched": 0,
-                    "points_returned": 0,
-                    "empty_reason": empty_reason,
-                    "available_metrics": available,
+                    "series": series,
+                    "truncated": truncated,
+                    "entities_returned": len(series),
+                    "entities_matched": len(matched),
+                    "points_returned": points_returned if agg is None else 0,
                 }
-
-            series: list[dict] = []
-            points_returned = 0
-            truncated = False
-            for sid, eid in matched:
-                if len(series) >= _QM_MAX_ENTITIES:
-                    truncated = True
-                    break
-                if agg is None:
-                    budget = q.series_point_budget(
-                        sid, now=now, start=start, end=end,
-                        max_points=_QM_MAX_POINTS_PER_ENTITY,
-                        resolution=resolution,
-                    )
-                    if points_returned + budget > _QM_MAX_TOTAL_POINTS:
-                        truncated = True
-                        break
-                    res = q.series_points(
-                        sid, now=now, start=start, end=end,
-                        max_points=_QM_MAX_POINTS_PER_ENTITY,
-                        resolution=resolution,
-                    )
-                    n = len(res.points)
-                    # Belt-and-suspenders if preflight ever under-counts.
-                    if points_returned + n > _QM_MAX_TOTAL_POINTS:
-                        truncated = True
-                        break
-                    entry = {
-                        "entity": eid,
-                        "points": [[p.ts, p.value] for p in res.points],
-                    }
-                    points_returned += n
-                else:
-                    res = q.series_points(
-                        sid, now=now, start=start, end=end,
-                        max_points=_QM_MAX_POINTS_PER_ENTITY,
-                        resolution=resolution,
-                    )
-                    if res.points:
-                        vals = [p.value for p in res.points]
-                        agg_val = {
-                            "avg": sum(vals) / len(vals),
-                            "min": min(vals),
-                            "max": max(vals),
-                            "last": vals[-1],
-                        }[agg]
-                    else:
-                        # Observed-list guarantees ≥1 observation; defensive None.
-                        agg_val = None
-                    entry = {"entity": eid, "agg": agg_val}
-                series.append(entry)
-
-            if len(series) < len(matched):
-                truncated = True
-            return {
-                **base,
-                "series": series,
-                "truncated": truncated,
-                "entities_returned": len(series),
-                "entities_matched": len(matched),
-                "points_returned": points_returned if agg is None else 0,
-            }
 
     def _available_metrics(self, q: Query, monitor: str) -> list[str]:
         """Declared (current def) ∪ persisted history for empty-series hints.
@@ -385,44 +391,44 @@ class McpApi:
     ) -> dict:
         """MC-07: bounded visibility into every stored learned baseline."""
         now = self._clock.now()
-        q = self._query()
-        if q is None:
-            return self._no_db()
-        try:
-            page = q.list_baselines(
-                monitor=monitor,
-                entity_id=entity,
-                metric=metric,
-                ready=ready,
-                limit=limit,
-                cursor=cursor,
-            )
-        except ValueError as exc:
-            return _err(
-                "invalid_params",
-                str(exc),
-                "use exact filters, limit 1..500, and a cursor returned "
-                "for the same filters",
-            )
-        return {
-            "tz": _tz_name(now),
-            "baselines": [
-                {
-                    "monitor": row.monitor,
-                    "entity": row.entity_id,
-                    "metric": row.metric,
-                    "level": row.level,
-                    "updates": row.updates,
-                    "required_updates": row.required_updates,
-                    "coverage": row.coverage,
-                    "ready": row.ready,
-                    "updated_at": row.updated_at,
-                    "half_life_s": row.half_life_s,
-                }
-                for row in page.baselines
-            ],
-            "next_cursor": page.next_cursor,
-        }
+        with self._query() as q:
+            if q is None:
+                return self._no_db()
+            try:
+                page = q.list_baselines(
+                    monitor=monitor,
+                    entity_id=entity,
+                    metric=metric,
+                    ready=ready,
+                    limit=limit,
+                    cursor=cursor,
+                )
+            except ValueError as exc:
+                return _err(
+                    "invalid_params",
+                    str(exc),
+                    "use exact filters, limit 1..500, and a cursor returned "
+                    "for the same filters",
+                )
+            return {
+                "tz": _tz_name(now),
+                "baselines": [
+                    {
+                        "monitor": row.monitor,
+                        "entity": row.entity_id,
+                        "metric": row.metric,
+                        "level": row.level,
+                        "updates": row.updates,
+                        "required_updates": row.required_updates,
+                        "coverage": row.coverage,
+                        "ready": row.ready,
+                        "updated_at": row.updated_at,
+                        "half_life_s": row.half_life_s,
+                    }
+                    for row in page.baselines
+                ],
+                "next_cursor": page.next_cursor,
+            }
 
     def _attr_filter(self, q: Query, monitor: str, filter_expr, now: float):
         """Compile filter_expr over entity attrs; returns the passing
@@ -451,191 +457,191 @@ class McpApi:
 
     def top_consumers(self, resource: str, range, n: int = 10) -> dict:  # noqa: A002
         now = self._clock.now()
-        q = self._query()
-        if q is None:
-            return self._no_db()
-        r = self._range(range, now)
-        if isinstance(r, dict):
-            return r
-        metric = {"cpu": "cpu_pct", "rss": "rss_bytes", "io": "io_write_bytes"}.get(
-            resource)
-        if metric is None:
-            return _err("invalid_params", f"unknown resource {resource!r}",
-                        "cpu | rss | io")
-        # io_* are counters: consumption over the range is max-min, not avg.
-        agg_sql = "MAX(s.value) - MIN(s.value)" if resource == "io" else "AVG(s.value)"
-        rows = q._conn.execute(
-            f"SELECT se.entity_id, {agg_sql} AS agg_value "
-            "FROM samples s JOIN series se ON se.id = s.series_id "
-            "WHERE se.metric = ? AND s.ts BETWEEN ? AND ? "
-            "GROUP BY se.monitor, se.entity_id",
-            (metric, round(r[0]), round(r[1])),
-        ).fetchall()
-        # the same process may be persisted by several monitors (leak+hog):
-        # keep one line per entity, the largest aggregate
-        best: dict[str, float] = {}
-        for row in rows:
-            v = row["agg_value"] or 0.0
-            if v > best.get(row["entity_id"], float("-inf")):
-                best[row["entity_id"]] = v
-        ranked = sorted(best.items(), key=lambda kv: -kv[1])[:max(1, int(n))]
-        out = []
-        for entity_id, value in ranked:
-            attrs_row = q._conn.execute(
-                "SELECT attrs FROM entities WHERE entity_id = ? LIMIT 1",
-                (entity_id,)).fetchone()
-            out.append({
-                "entity": entity_id,
-                "attrs": json.loads(attrs_row["attrs"]) if attrs_row else {},
-                "agg_value": value,
-            })
-        return {"tz": _tz_name(now), "resource": resource, "metric": metric,
-                "ranked": out}
+        with self._query() as q:
+            if q is None:
+                return self._no_db()
+            r = self._range(range, now)
+            if isinstance(r, dict):
+                return r
+            metric = {"cpu": "cpu_pct", "rss": "rss_bytes", "io": "io_write_bytes"}.get(
+                resource)
+            if metric is None:
+                return _err("invalid_params", f"unknown resource {resource!r}",
+                            "cpu | rss | io")
+            # io_* are counters: consumption over the range is max-min, not avg.
+            agg_sql = "MAX(s.value) - MIN(s.value)" if resource == "io" else "AVG(s.value)"
+            rows = q._conn.execute(
+                f"SELECT se.entity_id, {agg_sql} AS agg_value "
+                "FROM samples s JOIN series se ON se.id = s.series_id "
+                "WHERE se.metric = ? AND s.ts BETWEEN ? AND ? "
+                "GROUP BY se.monitor, se.entity_id",
+                (metric, round(r[0]), round(r[1])),
+            ).fetchall()
+            # the same process may be persisted by several monitors (leak+hog):
+            # keep one line per entity, the largest aggregate
+            best: dict[str, float] = {}
+            for row in rows:
+                v = row["agg_value"] or 0.0
+                if v > best.get(row["entity_id"], float("-inf")):
+                    best[row["entity_id"]] = v
+            ranked = sorted(best.items(), key=lambda kv: -kv[1])[:max(1, int(n))]
+            out = []
+            for entity_id, value in ranked:
+                attrs_row = q._conn.execute(
+                    "SELECT attrs FROM entities WHERE entity_id = ? LIMIT 1",
+                    (entity_id,)).fetchone()
+                out.append({
+                    "entity": entity_id,
+                    "attrs": json.loads(attrs_row["attrs"]) if attrs_row else {},
+                    "agg_value": value,
+                })
+            return {"tz": _tz_name(now), "resource": resource, "metric": metric,
+                    "ranked": out}
 
     def get_process_history(self, name_or_pid, range) -> dict:  # noqa: A002
         now = self._clock.now()
-        q = self._query()
-        if q is None:
-            return self._no_db()
-        r = self._range(range, now)
-        if isinstance(r, dict):
-            return r
-        needle = str(name_or_pid)
-        # entity_id convention: "{name}:{pid}:{create_time}" (sources/process)
-        pattern = f"%:{needle}:%" if needle.isdigit() else f"%{needle}%"
-        rows = q._conn.execute(
-            "SELECT * FROM entities WHERE entity_id LIKE ? "
-            "ORDER BY last_seen DESC LIMIT 20", (pattern,)
-        ).fetchall()
-        entities = []
-        for row in rows:
-            series: dict[str, list] = {}
-            for metric in ("cpu_pct", "rss_bytes"):
-                for res in q.series(row["monitor"], metric, now=now,
-                                    start=r[0], end=r[1],
-                                    entity_id=row["entity_id"], max_points=500):
-                    series[metric] = [[p.ts, p.value] for p in res.points]
-            entities.append({
-                "entity_id": row["entity_id"],
-                "monitor": row["monitor"],
-                "attrs": json.loads(row["attrs"] or "{}"),
-                "first_seen": row["first_seen"],
-                "last_seen": row["last_seen"],
-                "gone_ts": row["gone_ts"],
-                "series": series,
-            })
-        return {"tz": _tz_name(now), "entities": entities}
+        with self._query() as q:
+            if q is None:
+                return self._no_db()
+            r = self._range(range, now)
+            if isinstance(r, dict):
+                return r
+            needle = str(name_or_pid)
+            # entity_id convention: "{name}:{pid}:{create_time}" (sources/process)
+            pattern = f"%:{needle}:%" if needle.isdigit() else f"%{needle}%"
+            rows = q._conn.execute(
+                "SELECT * FROM entities WHERE entity_id LIKE ? "
+                "ORDER BY last_seen DESC LIMIT 20", (pattern,)
+            ).fetchall()
+            entities = []
+            for row in rows:
+                series: dict[str, list] = {}
+                for metric in ("cpu_pct", "rss_bytes"):
+                    for res in q.series(row["monitor"], metric, now=now,
+                                        start=r[0], end=r[1],
+                                        entity_id=row["entity_id"], max_points=500):
+                        series[metric] = [[p.ts, p.value] for p in res.points]
+                entities.append({
+                    "entity_id": row["entity_id"],
+                    "monitor": row["monitor"],
+                    "attrs": json.loads(row["attrs"] or "{}"),
+                    "first_seen": row["first_seen"],
+                    "last_seen": row["last_seen"],
+                    "gone_ts": row["gone_ts"],
+                    "series": series,
+                })
+            return {"tz": _tz_name(now), "entities": entities}
 
     def list_events(self, range, min_severity=None, provider=None,  # noqa: A002
                     match_expr=None, limit: int = 200) -> dict:
         now = self._clock.now()
-        q = self._query()
-        if q is None:
-            return self._no_db()
-        r = self._range(range, now)
-        if isinstance(r, dict):
-            return r
-        sev = self._severity_index(min_severity)
-        if isinstance(sev, dict):
-            return sev
-        expr = None
-        if match_expr:
-            try:
-                expr = compile_expr(match_expr, _EVENT_ENV)
-            except ExprError as e:
-                return _err("invalid_params", f"match_expr: {e}",
-                            "canonical fields: severity, provider, event_id, "
-                            "message, source")
-        rows = q.events(start=r[0], end=r[1], min_severity=sev,
-                        provider=provider, limit=int(limit))
-        events = []
-        for row in rows:
-            if expr is not None:
-                ctx = _AttrCtx(
-                    {"provider": row["provider"], "event_id": row["event_id"],
-                     "message": row["message"], "source": row["source"]},
-                    metrics={"severity": float(row["severity"])}, now=now)
-                if expr.eval(ctx) is not True:
-                    continue
-            events.append({k: row[k] for k in
-                           ("id", "ts", "source", "provider", "event_id",
-                            "severity", "message")})
-        return {"tz": _tz_name(now), "events": events}
-
-    def list_incidents(self, state=None, range=None, monitor=None) -> dict:  # noqa: A002
-        now = self._clock.now()
-        q = self._query()
-        if q is None:
-            return self._no_db()
-        since = None
-        if range is not None:
+        with self._query() as q:
+            if q is None:
+                return self._no_db()
             r = self._range(range, now)
             if isinstance(r, dict):
                 return r
-            since = r[0]
-        rows = q.incidents(state=state, monitor=monitor, since=since)
-        return {"tz": _tz_name(now), "incidents": [
-            {**{k: row[k] for k in
-                ("id", "monitor", "grp", "entity_id", "state", "severity",
-                 "owning_rule", "opened_ts", "last_change_ts", "cleared_ts",
-                 "clear_reason", "notify_count", "occurrences", "flapping")},
-             "severity_name": severity_name(row["severity"])}
-            for row in rows]}
+            sev = self._severity_index(min_severity)
+            if isinstance(sev, dict):
+                return sev
+            expr = None
+            if match_expr:
+                try:
+                    expr = compile_expr(match_expr, _EVENT_ENV)
+                except ExprError as e:
+                    return _err("invalid_params", f"match_expr: {e}",
+                                "canonical fields: severity, provider, event_id, "
+                                "message, source")
+            rows = q.events(start=r[0], end=r[1], min_severity=sev,
+                            provider=provider, limit=int(limit))
+            events = []
+            for row in rows:
+                if expr is not None:
+                    ctx = _AttrCtx(
+                        {"provider": row["provider"], "event_id": row["event_id"],
+                         "message": row["message"], "source": row["source"]},
+                        metrics={"severity": float(row["severity"])}, now=now)
+                    if expr.eval(ctx) is not True:
+                        continue
+                events.append({k: row[k] for k in
+                               ("id", "ts", "source", "provider", "event_id",
+                                "severity", "message")})
+            return {"tz": _tz_name(now), "events": events}
+
+    def list_incidents(self, state=None, range=None, monitor=None) -> dict:  # noqa: A002
+        now = self._clock.now()
+        with self._query() as q:
+            if q is None:
+                return self._no_db()
+            since = None
+            if range is not None:
+                r = self._range(range, now)
+                if isinstance(r, dict):
+                    return r
+                since = r[0]
+            rows = q.incidents(state=state, monitor=monitor, since=since)
+            return {"tz": _tz_name(now), "incidents": [
+                {**{k: row[k] for k in
+                    ("id", "monitor", "grp", "entity_id", "state", "severity",
+                     "owning_rule", "opened_ts", "last_change_ts", "cleared_ts",
+                     "clear_reason", "notify_count", "occurrences", "flapping")},
+                 "severity_name": severity_name(row["severity"])}
+                for row in rows]}
 
     def explain_incident(self, id: int) -> dict:  # noqa: A002
         now = self._clock.now()
-        q = self._query()
-        if q is None:
-            return self._no_db()
-        row = q._conn.execute("SELECT * FROM incidents WHERE id = ?",
-                              (int(id),)).fetchone()
-        if row is None:
-            return _err("not_found", f"no incident #{id}",
-                        "list_incidents shows what exists")
-        defs, _errors = loader.load_dir(
-            self._paths.monitors_dir,
-            actions_dir=self._paths.actions_dir,
-            require_actions=True,
-        )
-        rule_text = None
-        params: dict = {}
-        for d in defs:
-            if d.name != row["monitor"]:
-                continue
-            params = dict(d.parameters)
-            for rule in d.rules:
-                if rule.id == row["owning_rule"]:
-                    rule_text = rule.when.source
-        history = [
-            {"seq": h["seq"], "ts": h["ts"], "kind": h["kind"],
-             "detail": json.loads(h["detail"] or "{}")}
-            for h in q._conn.execute(
-                "SELECT * FROM incident_history WHERE incident_id = ? "
-                "ORDER BY seq", (int(id),))
-        ]
-        events = [dict(e) for e in q.events(
-            start=row["opened_ts"] - 600, end=row["opened_ts"] + 600,
-            min_severity=0, limit=50)]  # DM-12: context ±10m around opening
-        metrics = [m["metric"] for m in q._conn.execute(
-            "SELECT DISTINCT metric FROM series WHERE monitor = ? AND entity_id = ? "
-            "LIMIT 8", (row["monitor"], row["entity_id"]))]
-        series = {}
-        for metric in metrics:
-            for res in q.series(row["monitor"], metric, now=now,
-                                start=row["opened_ts"] - 1800,
-                                end=min(now, (row["cleared_ts"] or now) + 1800),
-                                entity_id=row["entity_id"], max_points=300):
-                series[metric] = [[p.ts, p.value] for p in res.points]
-        return {
-            "tz": _tz_name(now),
-            "incident": dict(row),
-            "severity_name": severity_name(row["severity"]),
-            "rule": {"id": row["owning_rule"], "expr": rule_text,
-                     "parameters": params},
-            "history": history,
-            "related_events": events,
-            "series": series,
-        }
+        with self._query() as q:
+            if q is None:
+                return self._no_db()
+            row = q._conn.execute("SELECT * FROM incidents WHERE id = ?",
+                                  (int(id),)).fetchone()
+            if row is None:
+                return _err("not_found", f"no incident #{id}",
+                            "list_incidents shows what exists")
+            defs, _errors = loader.load_dir(
+                self._paths.monitors_dir,
+                actions_dir=self._paths.actions_dir,
+                require_actions=True,
+            )
+            rule_text = None
+            params: dict = {}
+            for d in defs:
+                if d.name != row["monitor"]:
+                    continue
+                params = dict(d.parameters)
+                for rule in d.rules:
+                    if rule.id == row["owning_rule"]:
+                        rule_text = rule.when.source
+            history = [
+                {"seq": h["seq"], "ts": h["ts"], "kind": h["kind"],
+                 "detail": json.loads(h["detail"] or "{}")}
+                for h in q._conn.execute(
+                    "SELECT * FROM incident_history WHERE incident_id = ? "
+                    "ORDER BY seq", (int(id),))
+            ]
+            events = [dict(e) for e in q.events(
+                start=row["opened_ts"] - 600, end=row["opened_ts"] + 600,
+                min_severity=0, limit=50)]  # DM-12: context ±10m around opening
+            metrics = [m["metric"] for m in q._conn.execute(
+                "SELECT DISTINCT metric FROM series WHERE monitor = ? AND entity_id = ? "
+                "LIMIT 8", (row["monitor"], row["entity_id"]))]
+            series = {}
+            for metric in metrics:
+                for res in q.series(row["monitor"], metric, now=now,
+                                    start=row["opened_ts"] - 1800,
+                                    end=min(now, (row["cleared_ts"] or now) + 1800),
+                                    entity_id=row["entity_id"], max_points=300):
+                    series[metric] = [[p.ts, p.value] for p in res.points]
+            return {
+                "tz": _tz_name(now),
+                "incident": dict(row),
+                "severity_name": severity_name(row["severity"]),
+                "rule": {"id": row["owning_rule"], "expr": rule_text,
+                         "parameters": params},
+                "history": history,
+                "related_events": events,
+                "series": series,
+            }
 
     def list_monitors(self) -> dict:
         from ftmon.definitions.manage import list_monitors as list_monitor_catalog
@@ -665,15 +671,15 @@ class McpApi:
                 entry["state"] = state
                 entry["valid"] = False
                 entry["errors"] = e.errors
-            q = self._query()
-            if q is not None:
-                entry["load_history"] = [
-                    {"loaded_ts": r["loaded_ts"], "hash": r["hash"]}
-                    for r in q._conn.execute(
-                        "SELECT loaded_ts, hash FROM monitor_loads "
-                        "WHERE monitor = ? ORDER BY loaded_ts DESC", (name,))
-                ]  # PM-07
-            return entry
+            with self._query() as q:
+                if q is not None:
+                    entry["load_history"] = [
+                        {"loaded_ts": r["loaded_ts"], "hash": r["hash"]}
+                        for r in q._conn.execute(
+                            "SELECT loaded_ts, hash FROM monitor_loads "
+                            "WHERE monitor = ? ORDER BY loaded_ts DESC", (name,))
+                    ]  # PM-07
+                return entry
         return _err("not_found",
                     f"no {name}.toml in monitors_dir or drafts_dir",
                     "list_monitors shows what exists; monitor_paths shows "
@@ -725,41 +731,41 @@ class McpApi:
             out["valid"] = False
             out["errors"] = e.errors
             d = None
-        q = self._query()
-        if q is not None:
-            row = q._conn.execute(
-                "SELECT loaded_ts, hash FROM monitor_loads WHERE monitor = ? "
-                "ORDER BY loaded_ts DESC LIMIT 1", (name,)).fetchone()
-            out["last_load"] = (
-                {"hash": row["hash"], "age_s": round(now - row["loaded_ts"])}
-                if row else None)  # never loaded (PM-07)
-        # Always present for found monitors: null when non-external, no DB,
-        # unknown entity, or the configured entity has never sampled.
-        out["last_result"] = None
-        if d is not None and d.source == "external":
-            entity = d.source_options.get("entity")
-            if q is not None and entity:
-                out["last_result"] = q.last_plugin_result(
-                    name, entity, now=now)
-            alias = d.source_options.get("check")
-            check: dict = {"alias": alias}
-            try:
-                from ftmon.checks.registry import load as load_registry
-                from ftmon.checks.trust import trusted_executable_path
+        with self._query() as q:
+            if q is not None:
+                row = q._conn.execute(
+                    "SELECT loaded_ts, hash FROM monitor_loads WHERE monitor = ? "
+                    "ORDER BY loaded_ts DESC LIMIT 1", (name,)).fetchone()
+                out["last_load"] = (
+                    {"hash": row["hash"], "age_s": round(now - row["loaded_ts"])}
+                    if row else None)  # never loaded (PM-07)
+            # Always present for found monitors: null when non-external, no DB,
+            # unknown entity, or the configured entity has never sampled.
+            out["last_result"] = None
+            if d is not None and d.source == "external":
+                entity = d.source_options.get("entity")
+                if q is not None and entity:
+                    out["last_result"] = q.last_plugin_result(
+                        name, entity, now=now)
+                alias = d.source_options.get("check")
+                check: dict = {"alias": alias}
+                try:
+                    from ftmon.checks.registry import load as load_registry
+                    from ftmon.checks.trust import trusted_executable_path
 
-                registry = load_registry(self._paths.check_registry_file,
-                                         paths=self._paths)
-                spec = registry.get(alias)
-                check["registered"] = spec is not None
-                if spec is not None:
-                    check["executable_trusted"] = trusted_executable_path(
-                        spec.argv[0])
-            except (OSError, ValueError) as e:
-                # Registry errors expose only a stable category (SE-07).
-                check["registered"] = False
-                check["registry_error"] = str(e)[:120]
-            out["check"] = check
-        return out
+                    registry = load_registry(self._paths.check_registry_file,
+                                             paths=self._paths)
+                    spec = registry.get(alias)
+                    check["registered"] = spec is not None
+                    if spec is not None:
+                        check["executable_trusted"] = trusted_executable_path(
+                            spec.argv[0])
+                except (OSError, ValueError) as e:
+                    # Registry errors expose only a stable category (SE-07).
+                    check["registered"] = False
+                    check["registry_error"] = str(e)[:120]
+                out["check"] = check
+            return out
 
     def validate_monitor(self, toml_text: str) -> dict:
         try:
