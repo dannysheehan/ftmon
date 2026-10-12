@@ -1178,7 +1178,7 @@ message = "Disk {entity} at {used_pct:.0f}% used"
 
 ## 11. MCP server
 
-Served over stdio by `ftmon mcp` using the official MCP SDK v2 `MCPServer`.
+Served over stdio by `ftmon mcp` using the official MCP SDK v2 low-level `Server`.
 All tools are synchronous reads of local state except the two marked ✎.
 
 | Tool | Signature (abridged) | Behavior |
