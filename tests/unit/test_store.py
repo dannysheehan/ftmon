@@ -1118,3 +1118,68 @@ class TestDurabilityPromotionChangesTierSelection:
         assert Query(conn).resolution_for(
             NOW, NOW - 21 * 86400, NOW - 19 * 86400, monitor="service"
         ) == "5m"
+
+
+@pytest.mark.parametrize('resolution,age_s,step_s', [
+    ('raw', 600, 60), ('5m', 3 * 86400, 300), ('1h', 40 * 86400, 3600),
+])
+def test_mcp_points_match_charts_without_extrema_copies_dm_06_dm_17(tmp_path, resolution,
+                                                                 age_s, step_s):
+    """[DM-06][DM-17][RB-01] Plain reads preserve values; chart extrema remain opt-in."""
+    conn = _fresh(tmp_path)
+    writer = TickWriter(conn)
+    sid = writer.series_id('probe', 'entity', 'value', True)
+    writer.commit_tick()
+    start = round(NOW - age_s)
+    if resolution == 'raw':
+        conn.executemany('INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)',
+                         [(sid, start + i * step_s, float(i + 1)) for i in range(3)])
+    else:
+        conn.executemany(
+            f'INSERT INTO rollup{resolution}(series_id,bucket,avg,min,max,last,cnt) '
+            'VALUES(?,?,?,?,?,?,?)',
+            [(sid, start + i * step_s, float(i + 1), float(i), float(i + 2),
+              float(i + 1), 5) for i in range(3)],
+        )
+    conn.commit()
+    end = start + 2 * step_s
+    query = Query(conn)
+    plain = query.series_points(sid, now=NOW, start=start, end=end, resolution=resolution)
+    chart = query.series('probe', 'value', now=NOW, start=start, end=end,
+                         include_envelope=True)[0]
+    assert plain.points == chart.points
+    assert plain.lower is None and plain.upper is None
+    assert chart.lower is not None and chart.upper is not None
+    expected_low = [p.value if resolution == 'raw' else p.value - 1 for p in plain.points]
+    expected_high = [p.value if resolution == 'raw' else p.value + 1 for p in plain.points]
+    assert [p.value for p in chart.lower] == expected_low
+    assert [p.value for p in chart.upper] == expected_high
+    conn.close()
+
+
+def test_large_raw_read_avoids_duplicate_materialization_rb_01_dm_06(tmp_path):
+    """[RB-01][DM-06] A 20k-row read needs points, not SQL rows plus unused envelopes."""
+    import tracemalloc
+
+    conn = _fresh(tmp_path)
+    writer = TickWriter(conn)
+    sid = writer.series_id('probe', 'entity', 'value', True)
+    writer.commit_tick()
+    conn.executemany('INSERT INTO samples(series_id,ts,value) VALUES(?,?,?)',
+                     ((sid, round(NOW) - i, float(i)) for i in range(20_000)))
+    conn.commit()
+    query = Query(conn)
+    tracemalloc.start()
+    try:
+        result = query.series_points(sid, now=NOW, start=NOW - 20_000, end=NOW,
+                                     resolution='raw', max_points=20_000)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        conn.close()
+    assert len(result.points) == 20_000
+    assert result.points[0].value == 19_999
+    assert result.points[-1].value == 0
+    # The compact point/value list fits comfortably; the former three retained
+    # representations exceed this on supported interpreters even before LTTB.
+    assert peak < 3 * 1024 * 1024

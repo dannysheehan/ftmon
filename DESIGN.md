@@ -1,6 +1,6 @@
 # FTMON v2 — Design
 
-Status: **DRAFT v0.49**. Companion to `SPEC.md` v0.67 — every design element
+Status: **DRAFT v0.50**. Companion to `SPEC.md` v0.68 — every design element
 cites the requirement(s) it satisfies. Where this document says FROZEN,
 implementers MUST NOT alter names, signatures, or semantics; changes go through
 this document first.
@@ -179,7 +179,7 @@ Layering rule (enforced by a lint test): `expr` imports only stdlib; `model` imp
 | --- | --- | --- |
 | psutil | samplers | the entire PRECALCS layer |
 | platformdirs | FS-01 | |
-| mcp (optional extra) | §13 server | official SDK v2, `mcp.server.MCPServer`, stdio; excluded from core installs (MC-08) |
+| mcp (optional extra) | §13 server | official SDK v2, `mcp.server.Server`, stdio; excluded from core installs (MC-08) |
 | starlette + uvicorn | web UI | small ASGI; no FastAPI (no pydantic needed) |
 | jinja2 | web templates | autoescape on (SE-02) |
 | tomli-w | writing drafts/normalized TOML | reads use stdlib `tomllib` |
@@ -1519,7 +1519,7 @@ page contract serves MCP and the Baselines web index (MC-07/UI-02).
 
 ## 13. MCP server (`mcp_server.py`, MC-01..08)
 
-MCP SDK v2 `MCPServer` over stdio, selected with the named `mcp` package extra;
+MCP SDK v2 low-level `Server` over stdio, selected with the named `mcp` package extra;
 every tool = thin wrapper on `Query`/`SmallWrites`/`definitions`. One server
 negotiates both the modern and legacy protocol modes. It identifies itself as
 `ftmon`, reports the package version and operating instructions, and attaches
@@ -1529,6 +1529,26 @@ The SDK import remains
 inside `build_server`, so core CLI/web/daemon imports have no MCP dependency.
 Only absence of the SDK root becomes the deterministic MC-08 exit-2 guidance;
 missing SDK internals or transitive modules retain their original diagnostics.
+The frozen scalar parameter schemas use small explicit templates, checked
+against the SDK-generated catalogue in tests. This avoids running the SDK's
+general schema generator at startup; shared SDK validators still enforce
+argument coercion. New annotated parameter types must extend that catalogue.
+Bare `ftmon mcp` dispatches directly without importing the general CLI parser;
+help and other argument forms retain normal parsing. Parsing returns before
+service dispatch so the parser tree is collectible during long-running services.
+MCP read connections close at request completion and use a 64 KiB SQLite
+page-cache target; the OS page cache remains shared with the daemon. MCP
+installation compiles bytecode before startup to avoid retaining SDK compiler
+allocations in the server process (RB-01). Tool responses use compact JSON text
+with the existing values and schemas; avoiding pretty-print buffers leaves
+headroom for bounded metric results. Immutable timestamp/value point tuples
+are shared directly with MCP JSON arrays rather than copied into pair lists;
+readers iterate SQL rows and allocate extrema only for chart requests.
+The static catalogue selects its frozen parameter schemas from API annotations
+and uses shared scalar TypeAdapters instead of allocating a separate model class
+for each tool. Defaults, coercion, ignored extra arguments and JSON-in-a-string
+compatibility match the previous SDK registration. Blocking work and JSON serialization use one bounded tool worker, leaving
+protocol handling responsive while queued calls do not multiply point buffers. The catalogue does not advertise change subscriptions.
 Parameter schemas (FROZEN; `range` = duration string or `[iso, iso]`):
 
 | Tool | Params (required bold) | Returns |

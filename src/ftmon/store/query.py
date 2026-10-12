@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import NamedTuple
 
 __all__ = [
     "BaselineHistory", "BaselinePage", "BaselineRecord", "GlanceSample", "SeriesPoint",
@@ -39,8 +40,9 @@ _BASELINE_DEFAULT_LIMIT = 100
 _BASELINE_MAX_LIMIT = 500
 
 
-@dataclass(frozen=True)
-class SeriesPoint:
+class SeriesPoint(NamedTuple):
+    """Immutable [timestamp, value] read record, shared directly with MCP (RB-01)."""
+
     ts: int
     value: float
 
@@ -618,8 +620,8 @@ class Query:
             now, start, end, all_durable=self._cohort_all_durable(series_id=series_id)
         )
         istart, iend = round(start), round(end)
-        points, envelope = self._load_points(
-            series_id, resolution, istart, iend, statistic
+        points, _ = self._load_points(
+            series_id, resolution, istart, iend, statistic, include_envelope=False
         )
         downsampled = len(points) > max_points
         if downsampled:
@@ -641,31 +643,36 @@ class Query:
         istart: int,
         iend: int,
         statistic: str,
+        *,
+        include_envelope: bool,
     ) -> tuple[list[SeriesPoint], dict[int, tuple[float, float]]]:
+        # RB-01/DM-06: materialize points once, without a second list of SQL rows.
+        # Only DM-17 chart callers need extrema; MCP must not allocate that copy.
         if resolution == "raw":
             rows = self._conn.execute(
                 "SELECT ts, value FROM samples "
                 "WHERE series_id=? AND ts>=? AND ts<=? ORDER BY ts",
                 (series_id, istart, iend),
-            ).fetchall()
-            points = [SeriesPoint(ts=r["ts"], value=r["value"]) for r in rows]
-            envelope = {p.ts: (p.value, p.value) for p in points}
+            )
+            # These fixed two columns need no sqlite.Row wrapper per sample.
+            rows.row_factory = None
+            points = [SeriesPoint._make(row) for row in rows]
+            envelope = {p.ts: (p.value, p.value) for p in points} if include_envelope else {}
             return points, envelope
         table = "rollup5m" if resolution == "5m" else "rollup1h"
+        extrema = ", min, max" if include_envelope else ""
         rows = self._conn.execute(
-            f"SELECT bucket, {statistic} AS value, min, max FROM {table} "  # noqa: S608
+            f"SELECT bucket, {statistic} AS value{extrema} FROM {table} "  # noqa: S608
             "WHERE series_id=? AND bucket>=? AND bucket<=? ORDER BY bucket",
             (series_id, istart, iend),
-        ).fetchall()
-        points = [
-            SeriesPoint(ts=r["bucket"], value=r["value"])
-            for r in rows
-            if r["value"] is not None
-        ]
-        envelope = {
-            r["bucket"]: (r["min"], r["max"])
-            for r in rows if r["min"] is not None and r["max"] is not None
-        }
+        )
+        points = []
+        envelope = {}
+        for row in rows:
+            if row["value"] is not None:
+                points.append(SeriesPoint(ts=row["bucket"], value=row["value"]))
+            if include_envelope and row["min"] is not None and row["max"] is not None:
+                envelope[row["bucket"]] = (row["min"], row["max"])
         return points, envelope
 
     def series(
@@ -712,7 +719,8 @@ class Query:
         for row in series_rows:
             sid = row["id"]
             points, envelope = self._load_points(
-                sid, resolution, istart, iend, statistic
+                sid, resolution, istart, iend, statistic,
+                include_envelope=include_envelope,
             )
             downsampled = len(points) > max_points
             if downsampled:

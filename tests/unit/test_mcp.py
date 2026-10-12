@@ -60,6 +60,22 @@ def populated(core_env):  # noqa: F811 - pytest fixture injection
     return paths, clock, McpApi(paths, clock=clock)
 
 
+async def _server_tools(server):
+    async with Client(server, raise_exceptions=True) as client:
+        return (await client.list_tools()).tools
+
+
+async def _server_resources(server):
+    async with Client(server, raise_exceptions=True) as client:
+        return (await client.list_resources()).resources
+
+
+async def _server_resource_text(server, uri):
+    async with Client(server, raise_exceptions=True) as client:
+        result = await client.read_resource(uri)
+        return "".join(content.text for content in result.contents)
+
+
 def assert_err(res: dict, code: str) -> dict:
     """[MC-04] structured error contract: code+message+hint always present."""
     assert set(res) == {"error"}
@@ -110,7 +126,7 @@ class TestSurface:
     def test_tool_list_is_exactly_frozen_names(self, core_env):  # noqa: F811
         """[MC-01] build_server exposes exactly TOOL_NAMES, nothing else."""
         server = build_server(core_env)
-        tools = asyncio.run(server.list_tools())
+        tools = asyncio.run(_server_tools(server))
         assert {t.name for t in tools} == set(TOOL_NAMES)
 
     @pytest.mark.parametrize(
@@ -184,21 +200,19 @@ class TestSurface:
     ):
         """[MC-05] each authoring guide is exposed as a readable text resource."""
         server = build_server(core_env)
-        resources = asyncio.run(server.list_resources())
+        resources = asyncio.run(_server_resources(server))
         assert [str(r.uri) for r in resources] == [
             "ftmon://docs/definitions",
             "ftmon://docs/check-authoring",
             "ftmon://docs/external-checks",
         ]
-        contents = asyncio.run(server.read_resource(uri))
-        text = (contents if isinstance(contents, str)
-                else "".join(str(c.content) for c in contents))
+        text = asyncio.run(_server_resource_text(server, uri))
         assert expected in text
 
     def test_authoring_tool_descriptions_steer_to_docs(self, core_env):  # noqa: F811
         """[MC-05] tool descriptions point at traps, filter_expr, and exit-0."""
         server = build_server(core_env)
-        tools = {t.name: t.description for t in asyncio.run(server.list_tools())}
+        tools = {t.name: t.description for t in asyncio.run(_server_tools(server))}
         assert "filter_expr is attribute-only" in tools["query_metrics"]
         assert "ftmon://docs/definitions" in tools["query_metrics"]
         assert "authoring traps" in tools["define_monitor"]
@@ -1240,3 +1254,178 @@ def test_read_tool_closes_connection_on_exception_rb_01_mc_08(populated, monkeyp
     assert len(connections) == 1
     with pytest.raises(sqlite3.ProgrammingError, match='closed database'):
         connections[0].execute('SELECT 1')
+
+
+def test_mcp_cache_is_small_readonly_and_connection_local_rb_01(populated):
+    """[RB-01][MC-01] MCP bounds its reader cache without altering writer settings/data."""
+    import sqlite3
+    from contextlib import closing
+
+    paths, _, api = populated
+    with closing(connect(paths.db_file)) as writer:
+        original_cache = writer.execute('PRAGMA cache_size').fetchone()[0]
+        before = writer.execute('SELECT COUNT(*) FROM samples').fetchone()[0]
+        with api._query() as query:
+            cache_kib = query._conn.execute('PRAGMA cache_size').fetchone()[0]
+            assert -64 <= cache_kib < 0
+            assert query._conn.execute('SELECT COUNT(*) FROM samples').fetchone()[0] == before
+            with pytest.raises(sqlite3.OperationalError, match='readonly'):
+                query._conn.execute('DELETE FROM samples')
+        assert writer.execute('PRAGMA cache_size').fetchone()[0] == original_cache
+        assert writer.execute('SELECT COUNT(*) FROM samples').fetchone()[0] == before
+
+
+@pytest.mark.parametrize('mode', ['auto', 'legacy'])
+def test_stdio_tool_json_is_compact_and_preserves_values_mc_01(core_env, mode):  # noqa: F811
+    """[MC-01][MC-05][RB-01] Both protocols preserve JSON data without pretty-print buffers."""
+    server = build_server(core_env)
+
+    async def exercise():
+        async with Client(server, mode=mode, raise_exceptions=True) as client:
+            result = await client.call_tool('monitor_paths', {})
+            assert result.is_error is False
+            assert len(result.content) == 1
+            text = result.content[0].text
+            assert json.loads(text) == McpApi(core_env).monitor_paths()
+            assert '\n' not in text
+            tools = await client.list_tools()
+            assert all(tool.output_schema is None for tool in tools.tools)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('mode', ['auto', 'legacy'])
+def test_point_records_remain_json_pairs_on_wire_mc_01(populated, monkeypatch, mode):
+    """[MC-01][MC-02][RB-01] Sharing immutable points preserves each JSON [ts,value] pair."""
+    paths, clock, api = populated
+    monkeypatch.setattr('ftmon.mcp_server.SystemClock', lambda: clock)
+    expected = api.query_metrics('leak', 'rss_bytes', '5m')
+    assert expected['points_returned'] > 0
+    server = build_server(paths)
+
+    async def exercise():
+        async with Client(server, mode=mode, raise_exceptions=True) as client:
+            result = await client.call_tool('query_metrics', {
+                'monitor': 'leak', 'metric': 'rss_bytes', 'range': '5m',
+            })
+            assert result.is_error is False
+            data = json.loads(result.content[0].text)
+            assert data == json.loads(json.dumps(expected))
+            pair = data['series'][0]['points'][0]
+            assert isinstance(pair, list) and len(pair) == 2
+
+    asyncio.run(exercise())
+
+
+def test_catalogue_schemas_match_sdk_registration_mc_01(core_env):  # noqa: F811
+    """[MC-01][MC-03][MC-05] Lean registration preserves the SDK's entire tool schema."""
+    from mcp.server import MCPServer
+
+    server = build_server(core_env)
+    actual = asyncio.run(_server_tools(server))
+    reference = MCPServer('schema-reference')
+    api = McpApi(core_env)
+    for tool in actual:
+        reference.tool(name=tool.name, description=tool.description,
+                       annotations=tool.annotations)(getattr(api, tool.name))
+    expected = asyncio.run(reference.list_tools())
+    assert [t.model_dump(mode='json', by_alias=True, exclude_none=True) for t in actual] == [
+        t.model_dump(mode='json', by_alias=True, exclude_none=True) for t in expected
+    ]
+
+
+@pytest.mark.parametrize('mode', ['auto', 'legacy'])
+def test_sdk_argument_compatibility_and_errors_mc_01_mc_04(populated, mode):
+    """[MC-01][MC-04] Defaults, scalar coercion, extra args and JSON-string ranges survive."""
+    paths, _, _ = populated
+    server = build_server(paths)
+
+    async def exercise():
+        async with Client(server, mode=mode, raise_exceptions=True) as client:
+            missing = await client.call_tool('get_monitor', {})
+            assert missing.is_error and json.loads(missing.content[0].text)['error']['code'] == (
+                'invalid_params'
+            )
+            wrong = await client.call_tool('get_monitor', {'name': []})
+            assert wrong.is_error
+            assert json.loads(wrong.content[0].text)['error']['message'] == 'invalid parameter name'
+            normal = await client.call_tool('top_consumers', {'resource': 'cpu', 'range': '5m'})
+            coerced = await client.call_tool('top_consumers', {
+                'resource': 'cpu', 'range': '5m', 'n': '10', 'unused': 'ignored',
+            })
+            assert json.loads(normal.content[0].text) == json.loads(coerced.content[0].text)
+            ranged = await client.call_tool('list_events', {
+                'range': '["2023-11-14T21:00:00+00:00","2023-11-14T23:00:00+00:00"]',
+            })
+            assert ranged.is_error is False
+            assert 'error' not in json.loads(ranged.content[0].text)
+
+    asyncio.run(exercise())
+
+
+def test_registration_avoids_general_schema_generation_rb_01(core_env, monkeypatch):  # noqa: F811
+    """[RB-01][MC-01] Frozen scalar registration avoids heavyweight schema generation."""
+    from pydantic import TypeAdapter
+
+    def unexpected_schema_generation(*args, **kwargs):
+        raise AssertionError('general schema generation adds startup memory')
+
+    monkeypatch.setattr(TypeAdapter, 'json_schema', unexpected_schema_generation)
+    server = build_server(core_env)
+    assert len(asyncio.run(_server_tools(server))) == 15
+
+
+def test_tool_worker_is_bounded_and_protocol_stays_responsive_rb_01(core_env, monkeypatch):  # noqa: F811
+    """[RB-01][MC-01] Concurrent requests share one worker without blocking protocol requests."""
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+    counts = {'active': 0, 'peak': 0, 'calls': 0}
+
+    def blocked_status(self):
+        counts['active'] += 1
+        counts['peak'] = max(counts['peak'], counts['active'])
+        entered.set()
+        assert release.wait(5)
+        counts['active'] -= 1
+        counts['calls'] += 1
+        return {'ok': True}
+
+    monkeypatch.setattr(McpApi, 'get_status', blocked_status)
+    server = build_server(core_env)
+
+    async def exercise():
+        async with Client(server, raise_exceptions=True) as client:
+            first = asyncio.create_task(client.call_tool('get_status', {}))
+            while not entered.is_set():
+                await asyncio.sleep(0)
+            second = asyncio.create_task(client.call_tool('get_status', {}))
+            try:
+                assert len((await asyncio.wait_for(client.list_tools(), 5)).tools) == 15
+                assert counts['peak'] == 1
+            finally:
+                release.set()
+            results = await asyncio.gather(first, second)
+            assert all(not result.is_error for result in results)
+
+    asyncio.run(exercise())
+    assert counts['calls'] == 2 and counts['peak'] == 1
+
+
+def test_unexpected_tool_failure_does_not_leak_details_mc_04(core_env, monkeypatch):  # noqa: F811
+    """[MC-04] Unexpected errors give a safe structured hint, not internal details."""
+    def broken_status(self):
+        raise RuntimeError('private-token-internal-detail')
+
+    monkeypatch.setattr(McpApi, 'get_status', broken_status)
+    server = build_server(core_env)
+
+    async def exercise():
+        async with Client(server, raise_exceptions=True) as client:
+            result = await client.call_tool('get_status', {})
+            assert result.is_error is True
+            assert 'private-token-internal-detail' not in result.content[0].text
+            error = json.loads(result.content[0].text)['error']
+            assert error['code'] == 'internal_error' and error['hint']
+
+    asyncio.run(exercise())

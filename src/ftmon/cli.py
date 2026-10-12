@@ -11,13 +11,17 @@ supports --json (CL-03). Status exit codes: 0 all-clear, 1 warnings,
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import ftmon
 from ftmon.paths import get_paths
+
+if TYPE_CHECKING:
+    import argparse
 
 # Profile -> calibrated-tree subdirectory under profile/. desktop's is real
 # host-tuning data (docs/tuning-desktop-xps15.md); platform profile pairs share
@@ -1017,6 +1021,8 @@ def _dispatch_check_install(argv: list[str]) -> int | None:
     """`ftmon check install` shares recipe install without breaking `check <path>`."""
     if len(argv) < 2 or argv[0] != "check" or argv[1] != "install":
         return None
+    import argparse
+
     parser = argparse.ArgumentParser(prog="ftmon check install")
     parser.add_argument(
         "recipe_ref",
@@ -1041,6 +1047,8 @@ def _dispatch_check_trust(argv: list[str]) -> int | None:
     condition of the EC-01/SE-07 predicate; never executes the candidate."""
     if len(argv) < 2 or argv[0] != "check" or argv[1] != "trust":
         return None
+    import argparse
+
     parser = argparse.ArgumentParser(prog="ftmon check trust")
     parser.add_argument(
         "executable", help="Absolute path to a candidate check executable"
@@ -1058,24 +1066,9 @@ def _dispatch_check_trust(argv: list[str]) -> int | None:
     return 1
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Main entry point (CL-01). Returns exit code.
-
-    Subcommands:
-    - version: print version
-    - init: setup paths and install defaults
-    - check [file]: validate definitions
-    - status: daemon status (exit code 0/1/2 per CL-04)
-    - demo build: atomically create deterministic synthetic demonstration data
-    - daemon, mcp, web: run services; top, query: stubs (return 2)
-    """
-    argv = list(sys.argv[1:] if argv is None else argv)
-    install_rc = _dispatch_check_install(argv)
-    if install_rc is not None:
-        return install_rc
-    trust_rc = _dispatch_check_trust(argv)
-    if trust_rc is not None:
-        return trust_rc
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    """Release the parser tree before entering long-running services (RB-01)."""
+    import argparse
 
     parser = argparse.ArgumentParser(
         prog="ftmon",
@@ -1310,6 +1303,37 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "web" and args.port is not None and not 1 <= args.port <= 65535:
         parser.error("web --port must be between 1 and 65535")
 
+    if args.command is None:
+        parser.print_help()
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Main entry point (CL-01). Returns exit code.
+
+    Subcommands:
+    - version: print version
+    - init: setup paths and install defaults
+    - check [file]: validate definitions
+    - status: daemon status (exit code 0/1/2 per CL-04)
+    - demo build: atomically create deterministic synthetic demonstration data
+    - daemon, mcp, web: run services; top, query: stubs (return 2)
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["mcp"]:
+        # RB-01: this option-free service needs no general CLI parser or gettext.
+        from ftmon.mcp_server import run as mcp_run
+
+        return mcp_run(SimpleNamespace(command="mcp"))
+    install_rc = _dispatch_check_install(argv)
+    if install_rc is not None:
+        return install_rc
+    trust_rc = _dispatch_check_trust(argv)
+    if trust_rc is not None:
+        return trust_rc
+
+    args = _parse_args(argv)
+
     # Dispatch to handler
     if args.command == "version":
         return cmd_version(args)
@@ -1368,7 +1392,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"built synthetic demo database: {output}")
         return 0
     else:
-        parser.print_help()
         return 1
 
 

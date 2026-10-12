@@ -39,6 +39,41 @@ def _seed_db(tmp_path, monkeypatch, setup_fn):
     conn.close()
 
 
+@pytest.mark.parametrize('command', ['mcp', 'daemon'])
+def test_cli_releases_parser_tree_before_service_rb_01(monkeypatch, command):
+    """[RB-01][CL-01] The service frame retains arguments, not the CLI parser catalogue."""
+    import argparse
+    import gc
+    import weakref
+
+    from ftmon import daemon, mcp_server
+
+    parsers = weakref.WeakSet()
+    original_init = argparse.ArgumentParser.__init__
+
+    def tracked_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        parsers.add(self)
+
+    def service(args):
+        assert args.command == command
+        gc.collect()
+        assert not parsers
+        return 0
+
+    monkeypatch.setattr(argparse.ArgumentParser, '__init__', tracked_init)
+    monkeypatch.setattr(mcp_server if command == 'mcp' else daemon, 'run', service)
+    assert main([command]) == 0
+
+
+@pytest.mark.parametrize('argument, exit_code', [('--help', 0), ('--unknown', 2)])
+def test_mcp_nonbare_arguments_use_normal_cli_validation_cl_01(argument, exit_code):
+    """[CL-01] The minimal MCP launch path preserves help and argument rejection."""
+    with pytest.raises(SystemExit) as error:
+        main(['mcp', argument])
+    assert error.value.code == exit_code
+
+
 class TestVersion:
     """[CL-01] ftmon version subcommand."""
 

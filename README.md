@@ -138,7 +138,7 @@ The local AI integration is optional. Install it only on hosts that run the
 stdio MCP server:
 
 ```sh
-uv tool install 'ftmon[mcp]'
+uv tool install --compile-bytecode 'ftmon[mcp]'
 ```
 
 For a headless single server, initialize with `--profile server`. This writes
@@ -153,7 +153,7 @@ UI through a public reverse proxy.
 ```sh
 git clone https://github.com/dannysheehan/ftmon.git
 cd ftmon
-uv sync --extra mcp
+uv sync --extra mcp --compile-bytecode
 uv run ftmon init --profile desktop
 uv run ftmon check
 uv run ftmon daemon
@@ -206,7 +206,7 @@ repository is MIT licensed, while the original SourceForge project is GPLv2.
 ## Development
 
 ```sh
-uv sync --extra mcp
+uv sync --extra mcp --compile-bytecode
 uv run ruff check src tests
 uv run pytest -q
 ```

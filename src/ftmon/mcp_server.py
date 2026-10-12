@@ -5,7 +5,7 @@ Two layers on purpose:
   is the tested surface; it never touches stdio and takes injected `now`
   values (TS-03), so the whole tool surface unit-tests against a prepared
   database without an MCP client in sight.
-- `build_server` — MCPServer registration only. Thin enough that the frozen
+- `build_server` — SDK Server registration only. Thin enough that the frozen
   tool list (MC-01) is checkable by introspecting the returned server.
 
 Error philosophy (MC-04): tools return `{"error": {code, message, hint}}`
@@ -20,12 +20,15 @@ an action.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import datetime
 from importlib.resources import files
+from inspect import Parameter, signature
 from pathlib import Path
+from typing import Any, get_type_hints
 
 from ftmon import __version__, glance
 from ftmon.clock import SystemClock
@@ -43,6 +46,8 @@ _EVENT_ENV = NameEnv(metrics=frozenset({"severity"}),
 _QM_MAX_ENTITIES = 50
 _QM_MAX_POINTS_PER_ENTITY = 2000
 _QM_MAX_TOTAL_POINTS = 10_000
+# RB-01: short-lived MCP readers share the OS cache; reserve RSS for SDK/results.
+_READ_CACHE_KIB = 64
 
 
 class McpExtraRequired(ModuleNotFoundError):
@@ -142,6 +147,7 @@ class McpApi:
             yield None
             return
         with closing(connect(self._paths.db_file, readonly=True)) as conn:
+            conn.execute(f"PRAGMA cache_size = -{_READ_CACHE_KIB}")
             yield Query(conn)
 
     def _no_db(self) -> dict:
@@ -326,7 +332,7 @@ class McpApi:
                             break
                         entry = {
                             "entity": eid,
-                            "points": [[p.ts, p.value] for p in res.points],
+                            "points": res.points,
                         }
                         points_returned += n
                     else:
@@ -520,7 +526,7 @@ class McpApi:
                     for res in q.series(row["monitor"], metric, now=now,
                                         start=r[0], end=r[1],
                                         entity_id=row["entity_id"], max_points=500):
-                        series[metric] = [[p.ts, p.value] for p in res.points]
+                        series[metric] = res.points
                 entities.append({
                     "entity_id": row["entity_id"],
                     "monitor": row["monitor"],
@@ -631,7 +637,7 @@ class McpApi:
                                     start=row["opened_ts"] - 1800,
                                     end=min(now, (row["cleared_ts"] or now) + 1800),
                                     entity_id=row["entity_id"], max_points=300):
-                    series[metric] = [[p.ts, p.value] for p in res.points]
+                    series[metric] = res.points
             return {
                 "tz": _tz_name(now),
                 "incident": dict(row),
@@ -850,38 +856,79 @@ def _guide_text(name: str) -> str:
 
 def build_server(paths: Paths):
     try:
-        from mcp.server import MCPServer
-        from mcp.types import ToolAnnotations
+        import anyio.to_thread
+        from mcp.server import Server
+        from mcp.types import (
+            CallToolResult,
+            ListResourcesResult,
+            ListResourceTemplatesResult,
+            ListToolsResult,
+            ReadResourceResult,
+            Resource,
+            TextContent,
+            TextResourceContents,
+            Tool,
+            ToolAnnotations,
+        )
+        from pydantic import TypeAdapter, ValidationError
+        from pydantic_core import to_json
     except ModuleNotFoundError as exc:
-        # Only translate an absent SDK root. A broken SDK or missing transitive
-        # dependency must retain its original diagnostic instead of being
-        # misreported as an unselected extra.
+        # Only an absent SDK root means an unselected extra (MC-08).
         if exc.name != "mcp":
             raise
         raise McpExtraRequired from exc
 
-    server = MCPServer(
-        "ftmon",
-        description="Local FTMON health, metrics, incidents, and monitor authoring",
-        instructions=(
-            "Investigate with the read-only status, metric, event, incident, and "
-            "monitor tools. Read the packaged authoring resources before proposing "
-            "a monitor. Only define_monitor and ack_incident write state; monitor "
-            "approval remains a human action."
-        ),
-        version=__version__,
-    )
     api = McpApi(paths)
+    tools = {}
+    plans = {}
+    adapters = {}
+    # RB-01/MC-01: frozen scalar schemas avoid general schema-generator allocations.
+    # The catalogue compatibility test checks these against the SDK's own schemas.
+    schemas = {
+        str: {"type": "string"},
+        int: {"type": "integer"},
+        str | None: {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        bool | None: {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+    }
+    # RB-01: one active tool owns point buffers; queued calls do not spawn workers.
+    tool_limiter = anyio.CapacityLimiter(1)
 
     def register_tool(*, name: str, description: str):
-        read_only = name not in {"define_monitor", "ack_incident"}
-        annotations = ToolAnnotations(
-            read_only_hint=read_only,
-            destructive_hint=False,
-            idempotent_hint=True if read_only else None,
-            open_world_hint=False,
-        )
-        return server.tool(name=name, description=description, annotations=annotations)
+        def decorate(fn):
+            hints = get_type_hints(fn)
+            params = signature(fn).parameters
+            properties, required, validators = {}, [], {}
+            for key, param in params.items():
+                annotation = hints.get(key, Any)
+                if annotation not in adapters:
+                    adapters[annotation] = TypeAdapter(annotation)
+                adapter = adapters[annotation]
+                if key in hints:
+                    field = schemas[annotation].copy()
+                    field["title"] = key.replace("_", " ").title()
+                else:
+                    # Preserve the SDK's advertised schema for unannotated Any arguments.
+                    field = {"title": key, "type": "string"}
+                if param.default is Parameter.empty:
+                    required.append(key)
+                else:
+                    field["default"] = param.default
+                properties[key] = field
+                validators[key] = (annotation, adapter, param.default)
+            schema = {"properties": properties, "title": f"{name}Arguments", "type": "object"}
+            if required:
+                schema["required"] = required
+            read_only = name not in {"define_monitor", "ack_incident"}
+            tools[name] = Tool(
+                name=name, description=description, input_schema=schema,
+                annotations=ToolAnnotations(
+                    read_only_hint=read_only, destructive_hint=False,
+                    idempotent_hint=True if read_only else None, open_world_hint=False,
+                ),
+            )
+            plans[name] = (fn, validators)
+            return fn
+        return decorate
 
     register_tool(name="get_status",
                 description="Daemon liveness, monitors, open incidents, "
@@ -956,24 +1003,106 @@ def build_server(paths: Paths):
                 description="Acknowledge an incident (stops re-notifying, "
                 "keeps watching)")(api.ack_incident)
 
-    @server.resource("ftmon://docs/definitions",
-                     description="Monitor-definition reference: authoring "
-                     "traps, CI recipes, attribute-only filter_expr (DO-01)")
-    def definitions_guide() -> str:
-        return _guide_text("definitions")
+    guides = {
+        "ftmon://docs/definitions": (
+            "definitions", "definitions_guide",
+            "Monitor-definition reference: authoring traps, CI recipes, "
+            "attribute-only filter_expr (DO-01)",
+        ),
+        "ftmon://docs/check-authoring": (
+            "check-authoring", "check_authoring_guide",
+            "Write a bounded external-check executable; ftmon-json must exit 0 (DO-07)",
+        ),
+        "ftmon://docs/external-checks": (
+            "external-checks", "external_checks_guide",
+            "External-check registry, trust, and privilege guide (DO-07)",
+        ),
+    }
+    resources = [Resource(uri=uri, name=name, description=description, mime_type="text/plain")
+                 for uri, (_, name, description) in guides.items()]
 
-    @server.resource("ftmon://docs/check-authoring",
-                     description="Write a bounded external-check executable; "
-                     "ftmon-json must exit 0 (DO-07)")
-    def check_authoring_guide() -> str:
-        return _guide_text("check-authoring")
+    async def list_tools(ctx, params):
+        return ListToolsResult(tools=list(tools.values()))
 
-    @server.resource("ftmon://docs/external-checks",
-                     description="External-check registry, trust, and privilege guide (DO-07)")
-    def external_checks_guide() -> str:
-        return _guide_text("external-checks")
+    async def call_tool(ctx, params):
+        if params.name not in plans:
+            return CallToolResult(is_error=True, content=[TextContent(type="text", text=to_json(
+                _err("not_found", f"unknown tool {params.name}", "Use tools/list")
+            ).decode())])
+        fn, validators = plans[params.name]
+        arguments = params.arguments or {}
+        kwargs = {}
+        for key, (annotation, adapter, default) in validators.items():
+            if key not in arguments:
+                if default is Parameter.empty:
+                    error = _err("invalid_params", f"missing parameter {key}", "Use tools/list")
+                    break
+                kwargs[key] = default
+                continue
+            value = arguments[key]
+            # Match the SDK's JSON-in-a-string compatibility and scalar coercion.
+            if isinstance(value, str) and annotation is not str:
+                try:
+                    parsed = json.loads(value)
+                    if not isinstance(parsed, str | int | float):
+                        value = parsed
+                except (ValueError, RecursionError):
+                    pass
+            try:
+                kwargs[key] = adapter.validate_python(value)
+            except ValidationError:
+                error = _err("invalid_params", f"invalid parameter {key}", "Use tools/list")
+                break
+        else:
+            # RB-01: share scalar adapters instead of a model class per tool.
+            # Keep blocking DB/file work and compact serialization off the event loop.
+            def invoke():
+                return to_json(fn(**kwargs), fallback=str).decode()
 
-    return server
+            try:
+                text = await anyio.to_thread.run_sync(invoke, limiter=tool_limiter)
+            except Exception:
+                logging.getLogger(__name__).exception("MCP tool %s failed", params.name)
+                text = to_json(_err(
+                    "internal_error", "Tool execution failed", "Check ftmon doctor and local logs",
+                )).decode()
+                return CallToolResult(is_error=True, content=[TextContent(type="text", text=text)])
+            return CallToolResult(content=[TextContent(type="text", text=text)])
+        return CallToolResult(is_error=True, content=[
+            TextContent(type="text", text=to_json(error).decode()),
+        ])
+
+    async def list_resources(ctx, params):
+        return ListResourcesResult(resources=resources)
+
+    async def list_templates(ctx, params):
+        return ListResourceTemplatesResult(resource_templates=[])
+
+    async def read_resource(ctx, params):
+        uri = str(params.uri)
+        if uri not in guides:
+            from mcp.shared.exceptions import MCPError
+            from mcp.types import INVALID_PARAMS, ErrorData
+
+            raise MCPError(ErrorData(code=INVALID_PARAMS, message="Unknown authoring resource"))
+        return ReadResourceResult(contents=[TextResourceContents(
+            uri=params.uri, mime_type="text/plain", text=_guide_text(guides[uri][0]),
+        )])
+
+    return Server(
+        "ftmon", version=__version__,
+        description="Local FTMON health, metrics, incidents, and monitor authoring",
+        instructions=(
+            "Investigate with the read-only status, metric, event, incident, and "
+            "monitor tools. Read the packaged authoring resources before proposing "
+            "a monitor. Only define_monitor and ack_incident write state; monitor "
+            "approval remains a human action."
+        ),
+        on_list_tools=list_tools, on_call_tool=call_tool,
+        on_list_resources=list_resources, on_list_resource_templates=list_templates,
+        on_read_resource=read_resource,
+        get_tool_input_schema=lambda name: tools[name].input_schema if name in tools else None,
+    )
 
 
 def run(args) -> int:
@@ -983,9 +1112,17 @@ def run(args) -> int:
     except McpExtraRequired:
         print(
             "ftmon mcp requires the optional MCP support; install it with "
-            "`uv tool install 'ftmon[mcp]'` (or `uv sync --extra mcp` from a checkout)",
+            "`uv tool install --compile-bytecode 'ftmon[mcp]'` "
+            "(or `uv sync --extra mcp --compile-bytecode` from a checkout)",
             file=sys.stderr,
         )
         return 2
-    server.run()
+    import anyio
+    from mcp.server.stdio import stdio_server
+
+    async def serve():
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+
+    anyio.run(serve)
     return 0

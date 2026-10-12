@@ -92,7 +92,7 @@ itself misbehaves.
 
 ```sh
 git clone <repo> && cd ftmon
-uv sync --extra mcp
+uv sync --extra mcp --compile-bytecode
 uv run ftmon init --profile desktop  # use "server" for a headless host
 uv run ftmon check     # validates every monitor definition
 ```
@@ -294,8 +294,8 @@ open in the same browser must not be able to frame or retarget FTMON controls.
 ## 6. AI integration (MCP)
 
 MCP is an optional installation component. For a published install, enable it
-with `uv tool install 'ftmon[mcp]'`; from a checkout use
-`uv sync --extra mcp`. The daemon, CLI, and web UI do not require this extra.
+with `uv tool install --compile-bytecode 'ftmon[mcp]'`; from a checkout use
+`uv sync --extra mcp --compile-bytecode`. The daemon, CLI, and web UI do not require this extra.
 
 Register `ftmon mcp` with your AI client. For Claude Code:
 
