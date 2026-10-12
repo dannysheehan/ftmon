@@ -95,24 +95,9 @@ command or credentials. See [External checks](https://github.com/dannysheehan/ft
 
 ### Install
 
-**Windows:** download the per-user x64 MSI from the
-[GitHub Releases](https://github.com/dannysheehan/ftmon/releases) page
-(`ftmon-<version>-windows-x64.msi`), install it (no elevation), then:
-
-```powershell
-ftmon init --profile desktop
-Install-FTMONTasks.ps1
-Start-ScheduledTask -TaskName 'FTMON daemon'
-ftmon web   # optional; or Install-FTMONTasks.ps1 -IncludeWeb for logon start
-```
-
-Open <http://127.0.0.1:8420/>. Full MSI, Task Scheduler, upgrade, and uninstall
-steps are in the
-[installation guide](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md#windows-msi--task-scheduler).
-
-**Linux / macOS / Windows with Python:** FTMON requires Python 3.11 or newer and
-[uv](https://docs.astral.sh/uv/). The recommended operator install uses an
-isolated tool environment from
+**Linux / macOS / Windows:** FTMON requires Python 3.11 or newer and
+[uv](https://docs.astral.sh/uv/). The recommended operator install on all three
+platforms uses an isolated tool environment from
 [PyPI](https://pypi.org/project/ftmon/):
 
 ```sh
@@ -133,6 +118,12 @@ loads no external assets. Prefer `uv tool` or `pipx` over a bare
 `pip install ftmon` into a shared environment. Upgrade, systemd, launchd, Task
 Scheduler, and server account setup are in the
 [installation guide](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md).
+
+On Windows, use the [Task Scheduler setup](https://github.com/dannysheehan/ftmon/blob/main/docs/install.md#windows-uv--task-scheduler)
+for monitoring at logon. The MSI remains an optional package; unsigned
+prerelease installers can show an unverified-publisher or SmartScreen warning,
+so they are not the recommended installation route. ZIP packages contain the
+same unsigned executable and can also show warnings.
 
 The local AI integration is optional. Install it only on hosts that run the
 stdio MCP server:
