@@ -1533,6 +1533,9 @@ The frozen scalar parameter schemas use small explicit templates, checked
 against the SDK-generated catalogue in tests. This avoids running the SDK's
 general schema generator at startup; shared SDK validators still enforce
 argument coercion. New annotated parameter types must extend that catalogue.
+Bare `ftmon mcp` dispatches directly without importing the general CLI parser;
+help and other argument forms retain normal parsing. Parsing returns before
+service dispatch so the parser tree is collectible during long-running services.
 MCP read connections close at request completion and use a 64 KiB SQLite
 page-cache target; the OS page cache remains shared with the daemon. MCP
 installation compiles bytecode before startup to avoid retaining SDK compiler

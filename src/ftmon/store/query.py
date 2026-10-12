@@ -654,7 +654,9 @@ class Query:
                 "WHERE series_id=? AND ts>=? AND ts<=? ORDER BY ts",
                 (series_id, istart, iend),
             )
-            points = [SeriesPoint(ts=r["ts"], value=r["value"]) for r in rows]
+            # These fixed two columns need no sqlite.Row wrapper per sample.
+            rows.row_factory = None
+            points = [SeriesPoint._make(row) for row in rows]
             envelope = {p.ts: (p.value, p.value) for p in points} if include_envelope else {}
             return points, envelope
         table = "rollup5m" if resolution == "5m" else "rollup1h"
