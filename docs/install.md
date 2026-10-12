@@ -10,13 +10,17 @@ a server. Definitions and actions are intentionally confined to that account
 Python 3.11 or newer and [uv](https://docs.astral.sh/uv/) are required.
 
 Install the pinned `uv` release as the account that will run FTMON when `uv`
-is not already available:
+is not already available. On Linux and macOS:
 
 ```sh
 curl -LsSf https://astral.sh/uv/0.11.28/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 uv --version
 ```
+
+On Windows, follow the [uv Windows installation instructions](https://docs.astral.sh/uv/getting-started/installation/)
+and open a new PowerShell window after installation. Use the same account that
+will run FTMON; no administrator shell is needed.
 
 ### From PyPI (recommended)
 
@@ -168,47 +172,31 @@ Web process output goes to `~/Library/Logs/ftmon-web.log`.
 Send SIGHUP to the daemon's managed PID to reload in place. `launchctl kickstart
 -k` is an explicit restart with a new PID, not a reload substitute.
 
-### Windows (MSI + Task Scheduler)
+<a id="windows-msi--task-scheduler"></a>
 
-On Windows, the recommended operator install is the per-user x64 MSI from the
-GitHub Release (`ftmon-<version>-windows-x64.msi`). It needs no elevation and
-installs under `%LOCALAPPDATA%\Programs\FTMON`, adding that directory to the
-current user's `PATH`. Configuration, monitors, checks, actions, logs, and the
-database stay in the normal platformdirs locations — never under the MSI
-directory.
+### Windows (uv + Task Scheduler)
 
-Silent install / repair / uninstall:
+The recommended Windows installation uses the PyPI package in an isolated
+`uv` tool environment, as described above. Run these commands in PowerShell
+as the account that will monitor the machine:
 
 ```powershell
-msiexec /i ftmon-<version>-windows-x64.msi /qn
-msiexec /fa ftmon-<version>-windows-x64.msi /qn   # repair files + PATH only
-msiexec /x ftmon-<version>-windows-x64.msi /qn
-```
-
-Repair restores application files and PATH; it never runs `ftmon init` and never
-changes user state. Ordinary uninstall removes the install directory and that
-exact PATH entry while leaving configuration and databases intact. Before
-uninstalling an MSI that had startup tasks configured, remove them first:
-
-```powershell
-Install-FTMONTasks.ps1 -Action Remove
-```
-
-Prerelease MSIs may be unsigned until Authenticode / Azure Trusted Signing
-credentials are configured. Windows SmartScreen may warn on first run; that is
-expected for unsigned builds.
-
-PyPI / `uv` remains supported when you already manage a Python toolchain:
-
-```powershell
-uv tool install ftmon
+uv tool install --compile-bytecode ftmon
 ftmon init --profile desktop    # selects windesktop on Windows
 ftmon check
 ```
 
-After either install path, initialize once, then register Task Scheduler
-startup. The helpers ship beside `ftmon.exe` (MSI layout and `uv tool`
-`Scripts\`) and as package data under `ftmon/windows/`:
+If `ftmon` is not found after installation, run `uv tool update-shell` and open
+a new PowerShell window before continuing.
+
+If moving from an MSI installation, remove its startup tasks and uninstall the
+MSI first using the [optional MSI instructions](#optional-msi-installation).
+The uninstall preserves configuration and databases. Then install with `uv`
+and register startup tasks again so they use the new executable path.
+
+After installation, register Task Scheduler startup. The helpers ship beside
+`ftmon.exe` (MSI layout and `uv tool` `Scripts\`) and as package data under
+`ftmon/windows/`:
 
 ```powershell
 ftmon init --profile desktop
@@ -255,17 +243,49 @@ authoritative. Task Scheduler Operational history is under Event Viewer →
 Applications and Services Logs → Microsoft → Windows → TaskScheduler →
 Operational.
 
-Upgrade ordering (MSI or `uv tool upgrade`):
+Upgrade ordering (`uv tool upgrade` or an optional MSI upgrade):
 
 1. `Stop-ScheduledTask` for daemon/web
 2. `ftmon doctor --backup <explicit-path>`
-3. install the newer MSI / upgrade the tool
+3. run `uv tool upgrade --compile-bytecode ftmon` / install the newer MSI
 4. re-run `Install-FTMONTasks.ps1` (refreshes the runner copy and absolute path)
 5. `Start-ScheduledTask` and verify with `ftmon status` / `ftmon doctor`
 
 `Stop-ScheduledTask` terminates the wrapper and its FTMON child process tree.
 Before upgrading, confirm that no stale `ftmon.exe daemon` or `ftmon.exe web`
 process remains; v2.0.0a17 and earlier could leave those children running.
+
+#### Optional MSI installation
+
+The optional per-user x64 MSI is available from the
+GitHub Release (`ftmon-<version>-windows-x64.msi`). It needs no elevation and
+installs under `%LOCALAPPDATA%\Programs\FTMON`, adding that directory to the
+current user's `PATH`. Configuration, monitors, checks, actions, logs, and the
+database stay in the normal platformdirs locations — never under the MSI
+directory.
+
+Silent install / repair / uninstall:
+
+```powershell
+msiexec /i ftmon-<version>-windows-x64.msi /qn
+msiexec /fa ftmon-<version>-windows-x64.msi /qn   # repair files + PATH only
+msiexec /x ftmon-<version>-windows-x64.msi /qn
+```
+
+Repair restores application files and PATH; it never runs `ftmon init` and never
+changes user state. Ordinary uninstall removes the install directory and that
+exact PATH entry while leaving configuration and databases intact. Before
+uninstalling an MSI that had startup tasks configured, remove them first:
+
+```powershell
+Install-FTMONTasks.ps1 -Action Remove
+```
+
+Unsigned prerelease MSIs can show an unverified-publisher or SmartScreen
+warning. They are not the recommended installation route while trusted signing
+is unavailable. The ZIP contains the same unsigned executable and can also
+show warnings. Signing establishes publisher identity; it does not guarantee
+that SmartScreen warnings immediately disappear.
 
 Windows Installer rolls the application payload back automatically if an MSI
 upgrade transaction fails. MSI downgrades are blocked by design. To roll back
@@ -278,6 +298,8 @@ deliberately to an earlier release:
    schema migration (`ftmon doctor` / the backup from step 2 of upgrade)
 5. re-run `Install-FTMONTasks.ps1`, start the tasks, and verify with
    `ftmon status` / `ftmon doctor`
+
+#### Native service verification
 
 Native verification checklist (run on a real Windows host when changing Task
 Scheduler helpers or MSI packaging). Record evidence with:

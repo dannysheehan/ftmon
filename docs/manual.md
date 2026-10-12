@@ -90,12 +90,23 @@ itself misbehaves.
 
 ## 2. Installation
 
+The recommended operator installation on Linux, macOS, and Windows uses
+[uv](https://docs.astral.sh/uv/) and Python 3.11 or newer:
+
 ```sh
-git clone <repo> && cd ftmon
-uv sync --extra mcp --compile-bytecode
-uv run ftmon init --profile desktop  # use "server" for a headless host
-uv run ftmon check     # validates every monitor definition
+uv tool install --compile-bytecode ftmon
+ftmon init --profile desktop  # use "server" for a headless host
+ftmon check                  # validates every monitor definition
 ```
+
+For the optional AI integration, install `'ftmon[mcp]'` instead of `ftmon`.
+For development from a checkout, use `uv sync --extra mcp --compile-bytecode`
+and prefix the commands with `uv run`.
+
+See the [installation guide](install.md) for prerequisites and service setup,
+including [Windows Task Scheduler](install.md#windows-uv--task-scheduler).
+The MSI is an optional distribution; unsigned prerelease installers can show
+publisher/SmartScreen warnings and are not the recommended Windows route.
 
 The generic `desktop`/`server` names select the current host's calibrated
 tree. Their explicit equivalents are `windesktop`/`winserver` on Windows and
