@@ -1,11 +1,13 @@
 # FTMON desktop profile: journal/event-log entries of interest (SPEC 7.7.3)
 # Calibrated on a GNOME dev workstation (docs/tuning-desktop-xps15.md).
+# 2026-10-14: kernel GPU/display rules + UI-freeze precursors (compositor
+# lockup with host still alive — lid open was recovery, not the trigger).
 schema = 1
 
 [monitor]
 name = "events"
 description = "Raises incidents for journal entries of interest"
-version = 2
+version = 4
 enabled = true
 platforms = ["linux"]
 source = "events"
@@ -27,3 +29,61 @@ confirm_window = "1h"
 cooldown = "15m"
 clear_after = "30m"
 message = "OOM killer fired: {message}"
+
+# Display/GPU — do not alert on routine EVDI "Edid length too small"
+# (fires every DisplayLink connect). Watch modeset/GPU failure signals.
+[[rule]]
+id = "i915-atomic"
+when = 'provider == "kernel" and contains(message, "Atomic update failure")'
+severity = "warning"
+confirm_count = 2
+confirm_window = "1h"
+cooldown = "30m"
+clear_after = "1h"
+message = "i915 modeset stress: {message}"
+
+[[rule]]
+id = "gpu-hang"
+when = 'provider == "kernel" and (contains(message, "GPU hang") or contains(message, "gpu hang"))'
+severity = "error"
+cooldown = "15m"
+clear_after = "1h"
+message = "GPU hang: {message}"
+
+[[rule]]
+id = "nvidia-xid"
+when = 'provider == "kernel" and contains(message, "NVRM: Xid")'
+severity = "error"
+cooldown = "15m"
+clear_after = "1h"
+message = "NVIDIA Xid: {message}"
+
+[[rule]]
+id = "lockup"
+when = 'provider == "kernel" and (contains(message, "soft lockup") or contains(message, "hard LOCKUP") or contains(message, "hung_task"))'
+severity = "critical"
+cooldown = "15m"
+clear_after = "1h"
+message = "Kernel lockup/hang: {message}"
+
+# UI freeze precursors (2026-10-14): host kept logging/sampling while the
+# desktop was dead. Stage-view allocation spam is too common on DisplayLink
+# modeset (~2k/boot) to alert on alone — use input lag + shell dispose instead.
+[[rule]]
+id = "x11-input-lag"
+when = 'contains(message, "lagging behind") and contains(message, "too slow")'
+severity = "warning"
+confirm_count = 1
+cooldown = "30m"
+clear_after = "1h"
+message = "X11 input lag (UI stall risk): {message}"
+
+[[rule]]
+id = "gnome-shell-disposed"
+when = 'contains(message, "already disposed")'
+severity = "warning"
+confirm_count = 2
+confirm_window = "10m"
+cooldown = "30m"
+clear_after = "1h"
+message = "gnome-shell UI object dispose storm (compositor stress): {message}"
