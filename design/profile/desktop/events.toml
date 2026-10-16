@@ -44,7 +44,8 @@ message = "i915 modeset stress: {message}"
 
 [[rule]]
 id = "gpu-hang"
-when = 'provider == "kernel" and (contains(message, "GPU hang") or contains(message, "gpu hang"))'
+# i915 emits "GPU HANG"; other driver diagnostics use mixed case.
+when = 'provider == "kernel" and matches(message, "(?i)gpu hang")'
 severity = "error"
 cooldown = "15m"
 clear_after = "1h"
@@ -80,7 +81,7 @@ message = "X11 input lag (UI stall risk): {message}"
 
 [[rule]]
 id = "gnome-shell-disposed"
-when = 'contains(message, "already disposed")'
+when = 'provider == "gnome-shell" and contains(message, "already disposed")'
 severity = "warning"
 confirm_count = 2
 confirm_window = "10m"

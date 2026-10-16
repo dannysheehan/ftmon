@@ -249,6 +249,12 @@ journal (that's what `journalctl` is for). A matching entry opens an
 and the episode closes itself after 30 quiet minutes without a popup. A
 log-spamming app is automatically collapsed after 100 stored events/minute.
 
+The Linux desktop profile also watches for GPU failures and UI-freeze
+precursors. Its GPU-hang rule accepts kernel diagnostics regardless of case,
+including Intel's `GPU HANG`. Disposal warnings require two matching
+`gnome-shell` entries within ten minutes; other applications' disposal
+messages do not count as compositor stress. Both rules clear after one quiet hour.
+
 For applications that write only to non-standard log files, use Fluent Bit's
 `tail` input and send its selected records to standard output. When Fluent Bit
 runs as a systemd service, systemd records that output in journald, where
